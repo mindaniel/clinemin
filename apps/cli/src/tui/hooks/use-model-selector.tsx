@@ -440,12 +440,28 @@ export function useModelSelector(opts: {
 				return changed;
 			};
 
+			// llamacpp's own setup wizard (folder → model → context size)
+			// already fully configures the model — there's no real catalog to
+			// pick from afterward like there is for cloud providers, and
+			// showing the generic model picker here would present a stale
+			// "known models" list (whatever the *previous* llama-server run
+			// had loaded) and silently overwrite the model the wizard just set.
+			const finalizeIfLlamaCpp = async (): Promise<boolean> => {
+				if (config.providerId !== "llamacpp") return false;
+				await withLoadingDialog(dialog, "Applying model...", async () => {
+					await onModelChange();
+				});
+				refocusTextarea();
+				return true;
+			};
+
 			if (options?.startWithProviderChange) {
 				const changed = await changeProvider();
 				if (!changed) {
 					await handleCancel();
 					return;
 				}
+				if (await finalizeIfLlamaCpp()) return;
 			}
 
 			let pickingModel = true;
@@ -470,7 +486,8 @@ export function useModelSelector(opts: {
 						return;
 					}
 					if (modelId === CHANGE_PROVIDER_ACTION) {
-						await changeProvider();
+						const changed = await changeProvider();
+						if (changed && (await finalizeIfLlamaCpp())) return;
 						continue;
 					}
 					config.modelId = modelId;
@@ -508,7 +525,8 @@ export function useModelSelector(opts: {
 						return;
 					}
 					if (clineResult === CHANGE_PROVIDER_ACTION) {
-						await changeProvider();
+						const changed = await changeProvider();
+						if (changed && (await finalizeIfLlamaCpp())) return;
 						continue;
 					}
 					if (clineResult === BROWSE_ALL_ACTION) {
@@ -621,7 +639,8 @@ export function useModelSelector(opts: {
 				}
 
 				if (selectedKey === CHANGE_PROVIDER_ACTION) {
-					await changeProvider();
+					const changed = await changeProvider();
+					if (changed && (await finalizeIfLlamaCpp())) return;
 					continue;
 				}
 
