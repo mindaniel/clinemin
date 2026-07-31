@@ -1,0 +1,24 @@
+Project: clinemin — a personal fork of Cline (github.com/mindaniel/clinemin, forked from github.com/cline/cline).
+Repo folder just moved from inside OneDrive to a new location outside it — update any paths below to match.
+
+What this fork is:
+- CLI-only. VS Code extension, JetBrains plugin, and Kanban board (apps/vscode, apps/vscode-rollout) were deleted entirely. Only apps/cli, sdk/packages/*, apps/cline-hub (dashboard) remain.
+- Bun workspace monorepo. Package manager/runtime is bun, not plain npm/node.
+- Main addition: a "llamacpp" provider — local llama.cpp inference with auto-download of the llama-server binary + a default model, auto-start/auto-restart, and a TUI setup wizard (folder scan -> pick .gguf -> pick context size preset, with GGUF metadata read to suggest the model's real max context).
+- Multiple llama.cpp servers can now run concurrently as named profiles (llamacpp, llamacpp-<name>), each on its own port, registered via addLocalProvider (a general custom-provider mechanism already in @cline/core) so they show up in the normal provider picker.
+- bun install auto-adds "cline"/"clinemin" shell functions to the user's PowerShell $PROFILE (sdk/scripts/setup-cli-alias.ts, wired as root package.json's postinstall) so the CLI can be launched from any project folder without a manual bun --conditions=development ... command each time.
+
+Key architecture facts (see memory file clinemin_custom_provider_registration.md if available):
+- Provider id != family. Multiple provider ids (llamacpp, lmstudio, qwen-code, custom ones) share family "openai-compatible" for the AI SDK dispatch in sdk/packages/llms/src/providers/vendors/ai-sdk.ts, but are distinguished at runtime via context.provider.id.
+- @cline/core re-exports @cline/llms as `Llms` namespace. @cline/core's package.json exports map has NO "development" condition, so sdk-side code changes always require `bun run build:sdk` to actually take effect, even when apps/cli itself runs with --conditions=development.
+- ProviderSettingsManager / saveLocalProviderSettings persist per-provider settings to ~/.cline/settings/providers.json (model, baseUrl, contextWindow, apiKey, headers, timeout are first-class fields).
+- addLocalProvider (sdk/packages/core/src/services/providers/local-provider-service.ts) registers an arbitrary-named custom provider at runtime (not limited to the static BUILT_IN_PROVIDER enum), writing both providers.json and a sibling models.json, and calling registerProvider() so it's live immediately and shows up in the CLI's provider picker automatically. Use protocol: "openai-chat", client: "openai-compatible" to route through the same code path as builtin openai-compatible providers.
+- llama.cpp runtime code: sdk/packages/llms/src/providers/vendors/llamacpp-runtime.ts. State file is now per-port (server-state-<port>.json) so multiple instances don't clobber each other; the port a given instance manages is parsed from its own baseUrl, not a shared config singleton.
+
+Workflow notes:
+- git identity for this repo is local (not global): user.email "shyt2112@gmail.com", user.name "mindaniel".
+- gitleaks pre-commit hook is required (husky); portable binary was installed at $env:USERPROFILE\tools\gitleaks\gitleaks.exe and added to user PATH — Bash commits need `export PATH="$USERPROFILE/tools/gitleaks:$PATH"` since Bash tool sessions don't always inherit the Windows PATH update.
+- Always run `bun run build:sdk` after sdk-side changes and `bun run --filter @cline/cli typecheck` (and `--filter @cline/llms typecheck`) before considering a change done.
+- Fork intentionally ignores upstream cline/cline's new commits for now — no plan to merge upstream, only push our own work.
+
+Ask me to confirm the current git status / recent commits when you start, since some of the above may have moved on since this prompt was written.
