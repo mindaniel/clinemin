@@ -8,11 +8,11 @@
 Personal fork of <a href="https://github.com/cline/cline">Cline</a>, CLI-only. Adds a local llama.cpp provider with automatic download/start of the server and models — no Ollama, no manual server setup.
 </p>
 
-This fork drops the VS Code extension, JetBrains plugin, and Kanban board — only `apps/cli`, the SDK, and the Hub dashboard remain. If you want those, use [upstream](https://github.com/cline/cline) instead.
+This fork drops the VS Code extension, JetBrains plugin, and Kanban board — only `apps/cli`, the SDK, and the Hub dashboard remain. If you want those, use [upstream](https://github.com/cline/cline).
 
 ## What's different from upstream
 
-- **`llamacpp` provider**: pick it from the provider list like any other. First message auto-downloads `llama-server` + a default model, starts it detached, and reuses it across runs. Change model/context size later via `Ctrl+P` → Change Provider → llama.cpp → Configure again — it scans a folder for `.gguf` files and lets you pick a context-size preset, no manual JSON/flag editing.
+- **`llamacpp` provider**: pick it from the provider list like any other. First message auto-downloads `llama-server` + a default model, starts it detached, and reuses it across runs. Change model/config via env vars.
 
 ## Install (no admin required)
 
@@ -35,11 +35,19 @@ $env:CLINE_BUILD_ENV="development"; bun --conditions=development ./src/index.ts 
 
 Optional: `bun link` inside `apps/cli` to get a global `cline` command instead of typing the full command each time.
 
+## Update
+
+```powershell
+git pull origin main
+bun install
+bun run build:sdk
+```
+
 ## Using llama.cpp
 
-Open the provider picker (`Ctrl+P` → Change Provider), select **llama.cpp**. First prompt triggers the download (binary + a small default model, one-time). To point it at your own models: `Ctrl+P` → Change Provider → llama.cpp → Configure again → type your models folder path → pick a `.gguf` → pick a context-size preset.
+Open the provider picker (`Ctrl+P` → Change Provider), select **llama.cpp**. First prompt triggers the download (binary + a small default model, one-time). To point it at your own models: `Ctrl+P` → Change Provider, then set `LLAMACPP_MODEL_PATH`.
 
-Config lives in `~/.cline/llamacpp/` (binary, default model, server state). Advanced overrides (binary path, port, extra `llama-server` flags, autostart toggle) via env vars: `LLAMACPP_BINARY_PATH`, `LLAMACPP_MODEL_PATH`, `LLAMACPP_INSTALL_DIR`, `LLAMACPP_PORT`, `LLAMACPP_EXTRA_ARGS`, `LLAMACPP_AUTOSTART`.
+Config lives in `~/.cline/llamacpp/` (binary, default model, server state). Advanced overrides (binary path, port, extra `llama-server` flags, autostart toggle) via env vars: `LLAMACPP_BINARY_PATH`, `LLAMACPP_PORT`, `LLAMACPP_ARGS`, `LLAMACPP_AUTO_START`.
 
 ## Other providers
 
