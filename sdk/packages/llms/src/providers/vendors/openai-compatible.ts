@@ -7,7 +7,10 @@ import type {
 import { wrapLanguageModel } from "ai";
 import { ensureFetch, resolveApiKey } from "../http";
 import { splitToolImagesMiddleware } from "../middleware/split-tool-images";
+import { ensureLlamaCppRunning } from "./llamacpp-runtime";
 import type { ProviderFactoryResult } from "./types";
+
+const LLAMACPP_DEFAULT_BASE_URL = "http://localhost:8080/v1";
 
 type FetchInput = Parameters<typeof fetch>[0];
 type FetchWithOptionalPreconnect = typeof fetch & {
@@ -108,6 +111,18 @@ export async function createOpenAICompatibleProviderModule(
 	config: GatewayResolvedProviderConfig,
 	context: GatewayProviderContext,
 ): Promise<ProviderFactoryResult> {
+	// llama.cpp is the one openai-compatible vendor Cline can fully manage
+	// itself: no daemon to start by hand like Ollama/LM Studio. Ensure the
+	// local llama-server is up (downloading the binary/model on first run)
+	// before handing off to the generic openai-compatible client below.
+	if (context.provider.id === "llamacpp") {
+		const baseURL = config.baseUrl?.trim() || LLAMACPP_DEFAULT_BASE_URL;
+		const result = await ensureLlamaCppRunning(baseURL, (message) => context.logger?.log(message));
+		if (!result.ok) {
+			throw new Error(`llama.cpp: ${result.error ?? "failed to start local server"}`);
+		}
+	}
+
 	// Don't preflight-check for a missing API key. If credentials are
 	// missing or wrong, the provider's own response (e.g. 401) is the
 	// authoritative error and is surfaced to the user as-is. This keeps

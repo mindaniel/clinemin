@@ -27,8 +27,7 @@
 			"scope": [
 				"sdk/packages/core/src/**",
 				"sdk/packages/agents/src/**",
-				"apps/cli/src/**",
-				"apps/vscode/src/**"
+				"apps/cli/src/**"
 			],
 			"severity": "medium"
 		},

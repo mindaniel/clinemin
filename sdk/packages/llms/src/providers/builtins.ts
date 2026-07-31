@@ -929,6 +929,17 @@ const OPENAI_COMPATIBLE_SPEC_OVERRIDES: BuiltinSpecOverride[] = [
 		modelsSourceUrl: "http://localhost:1234/v1/models",
 	},
 	{
+		id: "llamacpp",
+		name: "llama.cpp",
+		description: "Local llama-server inference (auto-start/download supported)",
+		family: "openai-compatible",
+		defaultModelId: "",
+		apiKeyEnv: ["LLAMACPP_API_KEY"],
+		modelsProviderId: "llamacpp",
+		defaults: { baseUrl: "http://localhost:8080/v1" },
+		modelsSourceUrl: "http://localhost:8080/v1/models",
+	},
+	{
 		id: "oca",
 		name: "Oracle Code Assist",
 		description: "Oracle Code Assist (OCA) LiteLLM gateway",

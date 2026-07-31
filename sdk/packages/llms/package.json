@@ -50,6 +50,7 @@
 		}
 	},
 	"dependencies": {
+		"adm-zip": "^0.5.16",
 		"@ai-sdk/amazon-bedrock": "^4.0.89",
 		"@ai-sdk/anthropic": "^3.0.68",
 		"@ai-sdk/google": "^3.0.60",
@@ -78,6 +79,7 @@
 		"ai-sdk-provider-codex-cli": "^1.1.0"
 	},
 	"devDependencies": {
+		"@types/adm-zip": "^0.5.7",
 		"ai-sdk-provider-claude-code": "^3.4.3",
 		"ai-sdk-provider-codex-cli": "^1.1.0"
 	}
