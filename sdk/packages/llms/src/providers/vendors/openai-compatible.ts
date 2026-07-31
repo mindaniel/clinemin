@@ -117,7 +117,14 @@ export async function createOpenAICompatibleProviderModule(
 	// before handing off to the generic openai-compatible client below.
 	if (context.provider.id === "llamacpp") {
 		const baseURL = config.baseUrl?.trim() || LLAMACPP_DEFAULT_BASE_URL;
-		const result = await ensureLlamaCppRunning(baseURL, (message) => context.logger?.log(message));
+		// context.model.id is the provider's saved "model" setting — for llamacpp
+		// that's the .gguf path picked in the TUI setup wizard, not a catalog id.
+		// contextWindow likewise doubles as llama-server's `-c` flag (see
+		// ensureLlamaCppRunning's overrides).
+		const result = await ensureLlamaCppRunning(baseURL, (message) => context.logger?.log(message), {
+			modelPath: context.model.id,
+			contextWindow: context.model.contextWindow,
+		});
 		if (!result.ok) {
 			throw new Error(`llama.cpp: ${result.error ?? "failed to start local server"}`);
 		}

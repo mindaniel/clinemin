@@ -109,3 +109,7 @@ export {
 	resolveProviderRequestHeaders,
 } from "./providers/request-headers";
 export { disposeLangfuseTelemetry } from "./services/langfuse-telemetry";
+export {
+	defaultModelsDir as llamaCppDefaultModelsDir,
+	scanLocalModels as scanLlamaCppModels,
+} from "./providers/vendors/llamacpp-runtime";

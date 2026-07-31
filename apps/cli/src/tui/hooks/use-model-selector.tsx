@@ -5,10 +5,12 @@ import {
 	ProviderSettingsManager,
 	refreshProviderModelsFromSource,
 	resolveProviderConfig,
+	saveLocalProviderSettings,
 } from "@cline/core";
 import { isClineProvider } from "@cline/shared";
 import type { ChoiceContext } from "@opentui-ui/dialog";
 import type { DialogActions } from "@opentui-ui/dialog/react";
+import * as path from "node:path";
 import { useCallback } from "react";
 import { isOpenAICodexCliProvider } from "../../utils/codex-cli";
 import {
@@ -18,6 +20,11 @@ import {
 } from "../../utils/provider-auth";
 import type { Config } from "../../utils/types";
 import { withLoadingDialog } from "../components/dialogs/loading-dialog";
+import {
+	LlamaCppContextSizeContent,
+	LlamaCppFolderInputContent,
+	LlamaCppModelPickerContent,
+} from "../components/dialogs/llamacpp-setup";
 import {
 	ClinePassSubscriptionContent,
 	CodexCliStatusContent,
@@ -260,6 +267,46 @@ async function runProviderChange(
 					provider: newProviderId,
 				});
 			}
+		} else if (newProviderId === "llamacpp") {
+			const suggestedFolder = existingSettings?.model
+				? path.dirname(existingSettings.model)
+				: Llms.llamaCppDefaultModelsDir();
+
+			const models = await dialog.choice<string[]>({
+				style: { maxHeight: termHeight - 2 },
+				closeOnEscape: false,
+				content: (ctx: ChoiceContext<string[]>) => (
+					<LlamaCppFolderInputContent {...ctx} initialFolder={suggestedFolder} />
+				),
+			});
+			if (!models?.length) return false;
+
+			const modelPath = await dialog.choice<string>({
+				style: { maxHeight: termHeight - 2 },
+				content: (ctx: ChoiceContext<string>) => (
+					<LlamaCppModelPickerContent {...ctx} models={models} />
+				),
+			});
+			if (!modelPath) return false;
+
+			const contextWindow = await dialog.choice<number>({
+				style: { maxHeight: termHeight - 2 },
+				content: (ctx: ChoiceContext<number>) => (
+					<LlamaCppContextSizeContent
+						{...ctx}
+						modelName={path.basename(modelPath)}
+					/>
+				),
+			});
+			if (!contextWindow) return false;
+
+			saveLocalProviderSettings(manager, {
+				providerId: newProviderId,
+				baseUrl: existingSettings?.baseUrl?.trim() || "http://localhost:8080/v1",
+				model: modelPath,
+				contextWindow,
+			});
+			saved = true;
 		} else {
 			const { fields } = getProviderConfigFields(newProviderId);
 			saved = await dialog.choice<boolean>({

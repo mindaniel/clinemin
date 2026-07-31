@@ -21,10 +21,13 @@ const DEFAULT_MODEL_URL =
 export type ProgressCallback = (message: string) => void;
 
 /**
- * Local settings for the auto-managed llama-server. There's no first-class
- * schema slot for these in Cline's provider settings, so they live in their
- * own small JSON file (editable by hand or by a future `cline config
- * llamacpp` command), with env var overrides for scripting/CI.
+ * Local settings for the auto-managed llama-server that don't have a
+ * first-class slot in Cline's provider settings (binary/install locations,
+ * port, extra CLI flags, autostart toggle) — the model path and context
+ * window DO have first-class slots (`model` / `contextWindow` on the
+ * provider settings, set via the TUI setup wizard) and are passed in as
+ * `EnsureRunningOverrides` instead. This file lives in its own small JSON
+ * config (editable by hand), with env var overrides for scripting/CI.
  */
 export interface LlamaCppRuntimeConfig {
 	binaryPath?: string;
@@ -155,6 +158,53 @@ function defaultModelPath(installDir: string): string {
 	return path.join(installDir, "models", DEFAULT_MODEL_NAME);
 }
 
+/** Default folder the setup wizard suggests before the user has pointed it elsewhere. */
+export function defaultModelsDir(): string {
+	return path.join(CONFIG_DIR, "models");
+}
+
+/**
+ * Scans a folder (one level of subfolders deep, matching how LM Studio lays out
+ * "modelsDir/publisher/ModelName/*.gguf") for .gguf model files, so users can pick
+ * a model without typing a full path. Skips mmproj-* companion files — those are
+ * vision projectors, not standalone models. Multi-part files ("...-00002-of-...")
+ * are skipped except for part 1, since llama.cpp loads the rest automatically.
+ */
+export function scanLocalModels(modelsDir: string): string[] {
+	const found: string[] = [];
+	const isUsableGguf = (name: string) => {
+		if (!name.toLowerCase().endsWith(".gguf")) return false;
+		if (/^mmproj-/i.test(name)) return false;
+		const part = name.match(/-(\d+)-of-\d+\.gguf$/i);
+		if (part && part[1] !== "00001") return false;
+		return true;
+	};
+
+	const scanDir = (dir: string) => {
+		let entries: fs.Dirent[];
+		try {
+			entries = fs.readdirSync(dir, { withFileTypes: true });
+		} catch {
+			return [];
+		}
+		return entries;
+	};
+
+	if (!fs.existsSync(modelsDir)) return [];
+	for (const entry of scanDir(modelsDir)) {
+		const full = path.join(modelsDir, entry.name);
+		if (entry.isFile() && isUsableGguf(entry.name)) found.push(full);
+	}
+	for (const entry of scanDir(modelsDir)) {
+		if (!entry.isDirectory()) continue;
+		for (const inner of scanDir(path.join(modelsDir, entry.name))) {
+			const full = path.join(modelsDir, entry.name, inner.name);
+			if (inner.isFile() && isUsableGguf(inner.name)) found.push(full);
+		}
+	}
+	return found.sort();
+}
+
 /** Ensures a default small model is present locally, downloading it if needed. */
 async function ensureDefaultModel(installDir: string, onProgress?: ProgressCallback): Promise<string> {
 	const modelPath = defaultModelPath(installDir);
@@ -182,8 +232,15 @@ function writeState(state: ServerState): void {
 }
 
 /** Throws if a model path was explicitly configured but doesn't exist, rather than silently
- *  falling back to the auto-downloaded default — a wrong/mistyped path should be a loud error. */
-function resolveModelPath(config: LlamaCppRuntimeConfig, installDir: string): string {
+ *  falling back to the auto-downloaded default — a wrong/mistyped path should be a loud error.
+ *  `modelOverride` (the provider's saved "model" setting) takes priority over the LLAMACPP_*
+ *  env/file config when it's actually a real file — for other providers (or before the
+ *  llamacpp setup wizard has ever run) this field holds a non-path catalog id, so a
+ *  non-existent override is treated as "no override" rather than an error. */
+function resolveModelPath(config: LlamaCppRuntimeConfig, installDir: string, modelOverride?: string): string {
+	if (modelOverride && fs.existsSync(modelOverride)) {
+		return modelOverride;
+	}
 	if (config.modelPath) {
 		if (!fs.existsSync(config.modelPath)) {
 			throw new Error(`Configured model not found: ${config.modelPath}`);
@@ -276,6 +333,23 @@ async function isLlamaServerPid(pid: number): Promise<boolean> {
 	}
 }
 
+export interface EnsureRunningOverrides {
+	/** Absolute path to a .gguf file, e.g. from the provider's saved "model" setting. Wins over LLAMACPP_MODEL_PATH. */
+	modelPath?: string;
+	/** Context window in tokens, e.g. from the provider's saved "contextWindow" setting. Becomes `-c <n>`. */
+	contextWindow?: number;
+}
+
+/** `-c <contextWindow>` (if set) plus whatever's in LLAMACPP_EXTRA_ARGS/config file, as a single string for state comparison. */
+function buildExtraArgs(config: LlamaCppRuntimeConfig, overrides: EnsureRunningOverrides | undefined): string {
+	const parts: string[] = [];
+	if (overrides?.contextWindow && overrides.contextWindow > 0) {
+		parts.push("-c", String(Math.round(overrides.contextWindow)));
+	}
+	if (config.extraArgs) parts.push(config.extraArgs);
+	return parts.join(" ");
+}
+
 /**
  * Ensures a llama.cpp server is reachable at baseURL, serving the configured
  * model with the configured extra args (context size, threads, etc). The
@@ -286,15 +360,19 @@ async function isLlamaServerPid(pid: number): Promise<boolean> {
  * llama-server — never anything merely guessed to be listening on the port.
  * The server is intentionally left running after Cline exits.
  */
-export async function ensureLlamaCppRunning(baseURL: string, onProgress?: ProgressCallback): Promise<EnsureRunningResult> {
+export async function ensureLlamaCppRunning(
+	baseURL: string,
+	onProgress?: ProgressCallback,
+	overrides?: EnsureRunningOverrides,
+): Promise<EnsureRunningResult> {
 	const config = resolveRuntimeConfig();
 	const installDir = installDirOf(config);
 
 	try {
-		const desiredModelPath = resolveModelPath(config, installDir);
+		const desiredModelPath = resolveModelPath(config, installDir, overrides?.modelPath);
 		resolveBinaryPath(config); // throws early if configured but missing
 		const desiredPort = config.port || "8080";
-		const desiredExtraArgs = config.extraArgs || "";
+		const desiredExtraArgs = buildExtraArgs(config, overrides);
 
 		onProgress?.("Checking for a running llama.cpp server…");
 		const isHealthy = await checkHealth(baseURL);
@@ -347,7 +425,8 @@ export async function ensureLlamaCppRunning(baseURL: string, onProgress?: Progre
 		}
 
 		const binaryPath = resolveBinaryPath(config) ?? (await ensureLlamaServerBinary(installDir, onProgress));
-		const modelPath = config.modelPath ? desiredModelPath : await ensureDefaultModel(installDir, onProgress);
+		const hasExplicitModel = (overrides?.modelPath && fs.existsSync(overrides.modelPath)) || !!config.modelPath;
+		const modelPath = hasExplicitModel ? desiredModelPath : await ensureDefaultModel(installDir, onProgress);
 
 		const port = config.port || "8080";
 		const args = [
@@ -357,7 +436,7 @@ export async function ensureLlamaCppRunning(baseURL: string, onProgress?: Progre
 			port,
 			"--host",
 			"127.0.0.1",
-			...(config.extraArgs ? config.extraArgs.split(/\s+/).filter(Boolean) : []),
+			...(desiredExtraArgs ? desiredExtraArgs.split(/\s+/).filter(Boolean) : []),
 		];
 
 		onProgress?.("Starting llama-server…");
@@ -371,7 +450,7 @@ export async function ensureLlamaCppRunning(baseURL: string, onProgress?: Progre
 			return { ok: false, alreadyRunning: false, baseURL, binaryPath, modelPath, error: "llama-server did not become reachable within 10 minutes" };
 		}
 
-		if (child.pid) writeState({ pid: child.pid, modelPath, port, extraArgs: config.extraArgs || "" });
+		if (child.pid) writeState({ pid: child.pid, modelPath, port, extraArgs: desiredExtraArgs });
 
 		return { ok: true, alreadyRunning: false, baseURL, binaryPath, modelPath };
 	} catch (e) {
