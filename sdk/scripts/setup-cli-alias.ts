@@ -1,3 +1,4 @@
+import { execFileSync } from "node:child_process";
 import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
@@ -26,14 +27,25 @@ function appendBlock(filePath: string, block: string): void {
 	fs.appendFileSync(filePath, `${prefix}${block}\n`);
 }
 
+/** Asks PowerShell itself for $PROFILE — "Documents" is frequently redirected
+ *  (OneDrive Known Folder Move, roaming profiles, etc), so guessing the path
+ *  by joining os.homedir() + "Documents" silently writes to a file PowerShell
+ *  never loads. */
+function resolvePowerShellProfilePath(): string {
+	try {
+		const out = execFileSync(
+			"powershell.exe",
+			["-NoProfile", "-NonInteractive", "-Command", "[Console]::Out.Write($PROFILE)"],
+			{ encoding: "utf-8" },
+		).trim();
+		if (out) return out;
+	} catch {}
+	// Fallback if powershell.exe couldn't be spawned (shouldn't normally happen on win32).
+	return path.join(os.homedir(), "Documents", "WindowsPowerShell", "Microsoft.PowerShell_profile.ps1");
+}
+
 function setupPowerShell(): string | undefined {
-	// $PROFILE for Windows PowerShell 5.1 (the default on Windows, incl. no-admin setups).
-	const profilePath = path.join(
-		os.homedir(),
-		"Documents",
-		"WindowsPowerShell",
-		"Microsoft.PowerShell_profile.ps1",
-	);
+	const profilePath = resolvePowerShellProfilePath();
 	if (alreadyInstalled(profilePath)) return undefined;
 	const block = [
 		MARKER,
