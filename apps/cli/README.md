@@ -14,10 +14,16 @@ git clone https://github.com/mindaniel/clinemin.git
 cd clinemin
 bun install
 bun run build:sdk
-cd apps/cli
 ```
 
-Run it: `CLINE_BUILD_ENV=development bun --conditions=development ./src/index.ts -i` (or `bun link` here for a global `cline` command).
+On Windows, `bun install` also adds `cline`/`clinemin` commands to your PowerShell profile automatically — open a new terminal and run `cline` from any project folder. See the [root README](../../README.md#install-no-admin-required) for the manual fallback (execution policy issues, other shells, etc).
+
+Otherwise run it directly:
+
+```sh
+cd apps/cli
+CLINE_BUILD_ENV=development bun --conditions=development ./src/index.ts -i
+```
 
 ## Quick start
 

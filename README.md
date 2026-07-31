@@ -26,14 +26,28 @@ bun install
 bun run build:sdk
 ```
 
-Run it:
+`bun install` also adds `cline` and `clinemin` commands to your PowerShell profile (`$PROFILE`) automatically — open a new terminal and run either one from any project folder:
 
 ```powershell
-cd apps/cli
-$env:CLINE_BUILD_ENV="development"; bun --conditions=development ./src/index.ts -i
+cd path\to\your\project
+cline
 ```
 
-Optional: `bun link` inside `apps/cli` to get a global `cline` command instead of typing the full command each time.
+If that doesn't work (e.g. PowerShell's execution policy blocks profile scripts — check with `Get-ExecutionPolicy`, fix with `Set-ExecutionPolicy -Scope CurrentUser RemoteSigned`, no admin needed), run it directly instead:
+
+```powershell
+bun --conditions=development "C:\path\to\clinemin\apps\cli\src\index.ts" -i
+```
+
+Or add the shortcut yourself — `notepad $PROFILE`, add:
+
+```powershell
+function cline {
+    bun --conditions=development "C:\path\to\clinemin\apps\cli\src\index.ts" -i @args
+}
+```
+
+then reload (`. $PROFILE` or a new terminal).
 
 ## Update
 
