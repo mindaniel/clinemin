@@ -19,6 +19,7 @@ import {
 	isProviderConfigured,
 } from "../../utils/provider-auth";
 import type { Config } from "../../utils/types";
+import { ConfigErrorContent } from "../components/dialogs/config-dialogs";
 import { withLoadingDialog } from "../components/dialogs/loading-dialog";
 import {
 	LlamaCppContextSizeContent,
@@ -302,12 +303,55 @@ async function runProviderChange(
 			});
 			if (!contextWindow) return false;
 
+			const baseUrl = existingSettings?.baseUrl?.trim() || "http://localhost:8080/v1";
 			saveLocalProviderSettings(manager, {
 				providerId: newProviderId,
-				baseUrl: existingSettings?.baseUrl?.trim() || "http://localhost:8080/v1",
+				baseUrl,
 				model: modelPath,
 				contextWindow,
 			});
+
+			// Swap the running server right now, with progress visible, instead of
+			// waiting for the next chat message to lazily trigger it — that lazy
+			// path left users unsure whether anything happened and, if the swap
+			// failed (e.g. the old process couldn't be positively identified), the
+			// error was easy to miss and looked like "nothing changed."
+			try {
+				const swapResult = await withLoadingDialog(
+					dialog,
+					`Switching to ${path.basename(modelPath)}...`,
+					async () =>
+						await Llms.ensureLlamaCppRunning(baseUrl, undefined, {
+							modelPath,
+							contextWindow,
+						}),
+				);
+				if (!swapResult.ok) {
+					await dialog.choice<void>({
+						closeOnEscape: true,
+						content: (ctx: ChoiceContext<void>) => (
+							<ConfigErrorContent
+								{...ctx}
+								title="llama.cpp server swap failed"
+								message={swapResult.error ?? "Unknown error"}
+							/>
+						),
+					});
+					return false;
+				}
+			} catch (error) {
+				await dialog.choice<void>({
+					closeOnEscape: true,
+					content: (ctx: ChoiceContext<void>) => (
+						<ConfigErrorContent
+							{...ctx}
+							title="llama.cpp server swap failed"
+							message={error instanceof Error ? error.message : String(error)}
+						/>
+					),
+				});
+				return false;
+			}
 			saved = true;
 		} else {
 			const { fields } = getProviderConfigFields(newProviderId);
