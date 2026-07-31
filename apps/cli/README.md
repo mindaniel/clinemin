@@ -4,46 +4,20 @@
   <img src="https://github.com/user-attachments/assets/7123f9d1-afeb-48d5-93fa-e750dec0ebba" width="70%" />
 </p>
 
-<div align="center">
-<table>
-<tbody>
-<td align="center">
-<a href="https://www.npmjs.com/package/cline" target="_blank">NPM</a>
-</td>
-<td align="center">
-<a href="https://marketplace.visualstudio.com/items?itemName=saoudrizwan.claude-dev" target="_blank">VS Code Extension</a>
-</td>
-<td align="center">
-<a href="https://discord.gg/cline" target="_blank">Discord</a>
-</td>
-<td align="center">
-<a href="https://www.reddit.com/r/cline/" target="_blank">r/cline</a>
-</td>
-<td align="center">
-<a href="https://github.com/cline/cline/discussions/categories/feature-requests?discussions_q=is%3Aopen+category%3A%22Feature+Requests%22+sort%3Atop" target="_blank">Feature Requests</a>
-</td>
-<td align="center">
-<a href="https://docs.cline.bot" target="_blank">Docs</a>
-</td>
-</tbody>
-</table>
-</div>
-
-Run Cline in your terminal. Interactive chat for paired sessions, or fully headless for CI/CD and scripting. The CLI shares its agent core with the [Cline VS Code extension](https://marketplace.visualstudio.com/items?itemName=saoudrizwan.claude-dev), JetBrains plugin, and SDK, so plan/act modes, MCP servers, checkpoints, rules, skills, and provider configuration all behave the same across surfaces.
+Run Cline in your terminal. Interactive chat for paired sessions, or fully headless for CI/CD and scripting. This is a fork ([root README](../../README.md)) — not published to npm. Install from source.
 
 ## Install
 
 ```sh
-npm install -g cline
+npm install -g bun
+git clone https://github.com/mindaniel/clinemin.git
+cd clinemin
+bun install
+bun run build:sdk
+cd apps/cli
 ```
 
-For nightly builds:
-
-```sh
-npm install -g cline@nightly
-```
-
-Platform binaries are published for macOS, Linux, and Windows on `arm64` and `x64`. The `cline` package resolves the correct binary for your platform via optional dependencies, so no Node, Bun, or Zig runtime is required at install time.
+Run it: `CLINE_BUILD_ENV=development bun --conditions=development ./src/index.ts -i` (or `bun link` here for a global `cline` command).
 
 ## Quick start
 
