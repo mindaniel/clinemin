@@ -9,7 +9,6 @@ const execAsync = promisify(exec);
 
 const CONFIG_DIR = path.join(os.homedir(), ".cline", "llamacpp");
 const CONFIG_FILE = path.join(CONFIG_DIR, "config.json");
-const STATE_FILE = path.join(CONFIG_DIR, "server-state.json");
 const GITHUB_LATEST_RELEASE_API =
 	"https://api.github.com/repos/ggml-org/llama.cpp/releases/latest";
 
@@ -302,9 +301,16 @@ async function ensureDefaultModel(installDir: string, onProgress?: ProgressCallb
 	return modelPath;
 }
 
-function readState(): ServerState | null {
+/** Each port gets its own state file so multiple llama-server instances (one per
+ *  provider profile) can run side by side without clobbering each other's PID
+ *  bookkeeping — see readGgufContextLength's caller for the multi-profile setup wizard. */
+function stateFilePath(port: string): string {
+	return path.join(CONFIG_DIR, `server-state-${port}.json`);
+}
+
+function readState(port: string): ServerState | null {
 	try {
-		return JSON.parse(fs.readFileSync(STATE_FILE, "utf-8"));
+		return JSON.parse(fs.readFileSync(stateFilePath(port), "utf-8"));
 	} catch {
 		return null;
 	}
@@ -313,7 +319,7 @@ function readState(): ServerState | null {
 function writeState(state: ServerState): void {
 	try {
 		fs.mkdirSync(CONFIG_DIR, { recursive: true });
-		fs.writeFileSync(STATE_FILE, JSON.stringify(state, null, 2));
+		fs.writeFileSync(stateFilePath(state.port), JSON.stringify(state, null, 2));
 	} catch {}
 }
 
@@ -457,14 +463,23 @@ export async function ensureLlamaCppRunning(
 	try {
 		const desiredModelPath = resolveModelPath(config, installDir, overrides?.modelPath);
 		resolveBinaryPath(config); // throws early if configured but missing
-		const desiredPort = config.port || "8080";
+		// The port a given provider profile actually talks to is whatever's in its
+		// baseUrl (e.g. a second llama.cpp profile on :8081) — config.port is only
+		// the fallback for the single legacy env/file-configured server.
+		const desiredPort = (() => {
+			try {
+				return new URL(baseURL).port || "8080";
+			} catch {
+				return config.port || "8080";
+			}
+		})();
 		const desiredExtraArgs = buildExtraArgs(config, overrides);
 
 		onProgress?.("Checking for a running llama.cpp server…");
 		const isHealthy = await checkHealth(baseURL);
 
 		if (isHealthy) {
-			const state = readState();
+			const state = readState(desiredPort);
 			const stateMatches =
 				!!state &&
 				state.modelPath === desiredModelPath &&
@@ -514,12 +529,11 @@ export async function ensureLlamaCppRunning(
 		const hasExplicitModel = (overrides?.modelPath && fs.existsSync(overrides.modelPath)) || !!config.modelPath;
 		const modelPath = hasExplicitModel ? desiredModelPath : await ensureDefaultModel(installDir, onProgress);
 
-		const port = config.port || "8080";
 		const args = [
 			"-m",
 			modelPath,
 			"--port",
-			port,
+			desiredPort,
 			"--host",
 			"127.0.0.1",
 			...(desiredExtraArgs ? desiredExtraArgs.split(/\s+/).filter(Boolean) : []),
@@ -536,7 +550,7 @@ export async function ensureLlamaCppRunning(
 			return { ok: false, alreadyRunning: false, baseURL, binaryPath, modelPath, error: "llama-server did not become reachable within 10 minutes" };
 		}
 
-		if (child.pid) writeState({ pid: child.pid, modelPath, port, extraArgs: desiredExtraArgs });
+		if (child.pid) writeState({ pid: child.pid, modelPath, port: desiredPort, extraArgs: desiredExtraArgs });
 
 		return { ok: true, alreadyRunning: false, baseURL, binaryPath, modelPath };
 	} catch (e) {

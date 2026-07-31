@@ -256,7 +256,8 @@ export type ExistingProviderAction =
 	| "use_existing"
 	| "reconfigure"
 	| "open_subscription_page"
-	| "open_usage_billing";
+	| "open_usage_billing"
+	| "add_new_llamacpp_server";
 
 export interface ExistingProviderOption {
 	value: ExistingProviderAction;

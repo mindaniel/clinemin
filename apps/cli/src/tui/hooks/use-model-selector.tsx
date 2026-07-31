@@ -1,4 +1,5 @@
 import {
+	addLocalProvider,
 	fetchClineRecommendedModels,
 	getProviderConfigFields,
 	Llms,
@@ -25,6 +26,8 @@ import {
 	LlamaCppContextSizeContent,
 	LlamaCppFolderInputContent,
 	LlamaCppModelPickerContent,
+	LlamaCppNewProfileContent,
+	type LlamaCppProfileInput,
 } from "../components/dialogs/llamacpp-setup";
 import {
 	ClinePassSubscriptionContent,
@@ -178,6 +181,10 @@ async function runProviderChange(
 		),
 	});
 	if (!newProviderId) return false;
+	// Reassigned when the llama.cpp wizard creates a brand new server profile
+	// (a different provider id than the one initially picked) — everything after
+	// that point should operate on the resolved profile, not the original pick.
+	let finalProviderId: string = newProviderId;
 
 	const manager = new ProviderSettingsManager();
 	const displayName = await withLoadingDialog(
@@ -204,7 +211,10 @@ async function runProviderChange(
 			),
 		});
 
+	const isLlamaCppFamily = (id: string) => id === "llamacpp" || id.startsWith("llamacpp-");
+
 	let needsAuth = true;
+	let promptNewLlamaCppProfile = false;
 	if (isProviderConfigured(newProviderId, existingSettings)) {
 		let option: ExistingProviderOption | undefined;
 		const extraOptions = providerToExistingProviderOptions({
@@ -213,6 +223,15 @@ async function runProviderChange(
 			dialog,
 			termHeight,
 		});
+		// llama.cpp servers run as independent processes on separate ports, so
+		// switching to a different one shouldn't require ejecting this one — offer
+		// starting a whole new profile alongside it, right from this screen.
+		if (isLlamaCppFamily(newProviderId)) {
+			extraOptions.push({
+				value: "add_new_llamacpp_server",
+				label: "Add another llama.cpp server (runs alongside this one)",
+			});
+		}
 		while (true) {
 			option = await dialog.choice<ExistingProviderOption>({
 				style: { maxHeight: termHeight - 2 },
@@ -232,7 +251,12 @@ async function runProviderChange(
 			}
 			break;
 		}
-		needsAuth = option.value === "reconfigure";
+		if (option.value === "add_new_llamacpp_server") {
+			promptNewLlamaCppProfile = true;
+			needsAuth = true;
+		} else {
+			needsAuth = option.value === "reconfigure";
+		}
 	}
 
 	if (needsAuth) {
@@ -268,7 +292,43 @@ async function runProviderChange(
 					provider: newProviderId,
 				});
 			}
-		} else if (newProviderId === "llamacpp") {
+		} else if (isLlamaCppFamily(newProviderId)) {
+			let targetId = newProviderId;
+			let targetName = displayName;
+			let targetBaseUrl = existingSettings?.baseUrl?.trim() || "http://localhost:8080/v1";
+			let isNewProfile = false;
+
+			if (promptNewLlamaCppProfile) {
+				const existingLlamaCppIds = Llms.getProviderIds().filter(isLlamaCppFamily);
+				const existingPorts = existingLlamaCppIds
+					.map((id) => {
+						const settings = manager.getProviderSettings(id);
+						try {
+							return settings?.baseUrl ? new URL(settings.baseUrl).port || "8080" : undefined;
+						} catch {
+							return undefined;
+						}
+					})
+					.filter((p): p is string => !!p);
+
+				const profile = await dialog.choice<LlamaCppProfileInput>({
+					style: { maxHeight: termHeight - 2 },
+					closeOnEscape: false,
+					content: (ctx: ChoiceContext<LlamaCppProfileInput>) => (
+						<LlamaCppNewProfileContent
+							{...ctx}
+							existingPorts={existingPorts}
+							existingIds={existingLlamaCppIds}
+						/>
+					),
+				});
+				if (!profile) return false;
+				targetId = profile.id;
+				targetName = profile.name;
+				targetBaseUrl = profile.baseUrl;
+				isNewProfile = true;
+			}
+
 			const suggestedFolder = existingSettings?.model
 				? path.dirname(existingSettings.model)
 				: Llms.llamaCppDefaultModelsDir();
@@ -303,10 +363,19 @@ async function runProviderChange(
 			});
 			if (!contextWindow) return false;
 
-			const baseUrl = existingSettings?.baseUrl?.trim() || "http://localhost:8080/v1";
+			if (isNewProfile) {
+				await addLocalProvider(manager, {
+					providerId: targetId,
+					name: targetName,
+					baseUrl: targetBaseUrl,
+					models: [modelPath],
+					protocol: "openai-chat",
+					client: "openai-compatible",
+				});
+			}
 			saveLocalProviderSettings(manager, {
-				providerId: newProviderId,
-				baseUrl,
+				providerId: targetId,
+				baseUrl: targetBaseUrl,
 				model: modelPath,
 				contextWindow,
 			});
@@ -321,7 +390,7 @@ async function runProviderChange(
 					dialog,
 					`Switching to ${path.basename(modelPath)}...`,
 					async () =>
-						await Llms.ensureLlamaCppRunning(baseUrl, undefined, {
+						await Llms.ensureLlamaCppRunning(targetBaseUrl, undefined, {
 							modelPath,
 							contextWindow,
 						}),
@@ -352,6 +421,7 @@ async function runProviderChange(
 				});
 				return false;
 			}
+			finalProviderId = targetId;
 			saved = true;
 		} else {
 			const { fields } = getProviderConfigFields(newProviderId);
@@ -375,31 +445,31 @@ async function runProviderChange(
 		dialog,
 		`Loading ${displayName} models...`,
 		async () => {
-			await refreshProviderModelsFromSource(manager, newProviderId).catch(
+			await refreshProviderModelsFromSource(manager, finalProviderId).catch(
 				() => {},
 			);
-			const newSettings = manager.getProviderSettings(newProviderId);
+			const newSettings = manager.getProviderSettings(finalProviderId);
 			const newApiKey =
-				getPersistedProviderApiKey(newProviderId, newSettings) ?? "";
+				getPersistedProviderApiKey(finalProviderId, newSettings) ?? "";
 
 			manager.saveProviderSettings(
 				{
 					...(newSettings ?? {}),
-					provider: newProviderId,
+					provider: finalProviderId,
 				},
 				{ setLastUsed: true },
 			);
 
-			config.providerId = newProviderId;
+			config.providerId = finalProviderId;
 			config.apiKey = newApiKey;
 			const resolved = await resolveProviderConfig(
-				newProviderId,
+				finalProviderId,
 				{
 					loadLatestOnInit: true,
 					loadPrivateOnAuth: true,
 					failOnError: false,
 				},
-				manager.getProviderConfig(newProviderId, { includeKnownModels: false }),
+				manager.getProviderConfig(finalProviderId, { includeKnownModels: false }),
 			);
 			config.knownModels = resolved?.knownModels;
 			const modelIds = Object.keys(resolved?.knownModels ?? {});
@@ -491,7 +561,7 @@ export function useModelSelector(opts: {
 			// "known models" list (whatever the *previous* llama-server run
 			// had loaded) and silently overwrite the model the wizard just set.
 			const finalizeIfLlamaCpp = async (): Promise<boolean> => {
-				if (config.providerId !== "llamacpp") return false;
+				if (config.providerId !== "llamacpp" && !config.providerId.startsWith("llamacpp-")) return false;
 				await withLoadingDialog(dialog, "Applying model...", async () => {
 					await onModelChange();
 				});

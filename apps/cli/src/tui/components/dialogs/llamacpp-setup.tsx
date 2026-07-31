@@ -196,6 +196,136 @@ export function LlamaCppModelPickerContent(
 	);
 }
 
+function slugifyLlamaCppName(name: string): string {
+	const slug = name
+		.trim()
+		.toLowerCase()
+		.replace(/[^a-z0-9]+/g, "-")
+		.replace(/^-+|-+$/g, "");
+	return slug || "server";
+}
+
+export interface LlamaCppProfileInput {
+	id: string;
+	name: string;
+	baseUrl: string;
+}
+
+/**
+ * Names a new llama.cpp server profile and picks a free port for it, so
+ * multiple llama-server processes can run concurrently (one per profile)
+ * instead of each new model selection ejecting the previous one.
+ */
+export function LlamaCppNewProfileContent(
+	props: ChoiceContext<LlamaCppProfileInput> & {
+		existingPorts: string[];
+		existingIds: string[];
+	},
+) {
+	const { resolve, dismiss, dialogId, existingPorts, existingIds } = props;
+	const suggestedPort = String(
+		existingPorts.length > 0 ? Math.max(...existingPorts.map(Number)) + 1 : 8080,
+	);
+	const [phase, setPhase] = useState<"name" | "port">("name");
+	const [name, setName] = useState("");
+	const [port, setPort] = useState(suggestedPort);
+	const [error, setError] = useState<string | undefined>(undefined);
+
+	const submitName = () => {
+		if (!name.trim()) {
+			setError("Enter a name for this server.");
+			return;
+		}
+		setError(undefined);
+		setPhase("port");
+	};
+
+	const submitPort = () => {
+		const trimmed = port.trim();
+		const n = Number(trimmed);
+		if (!trimmed || !Number.isInteger(n) || n < 1 || n > 65535) {
+			setError("Enter a valid port (1-65535).");
+			return;
+		}
+		if (existingPorts.includes(trimmed)) {
+			setError(`Port ${trimmed} is already used by another llama.cpp server.`);
+			return;
+		}
+		const finalName = name.trim();
+		let id = `llamacpp-${slugifyLlamaCppName(finalName)}`;
+		if (existingIds.includes(id)) {
+			let suffix = 2;
+			while (existingIds.includes(`${id}-${suffix}`)) suffix++;
+			id = `${id}-${suffix}`;
+		}
+		resolve({ id, name: finalName, baseUrl: `http://localhost:${trimmed}/v1` });
+	};
+
+	useDialogKeyboard((key) => {
+		if (key.name === "escape") {
+			if (phase === "port") {
+				setPhase("name");
+				setError(undefined);
+				return;
+			}
+			dismiss();
+			return;
+		}
+		if (key.name === "return") {
+			if (phase === "name") submitName();
+			else submitPort();
+		}
+	}, dialogId);
+
+	return (
+		<box flexDirection="column" paddingX={1} gap={1}>
+			<text fg={palette.act}>
+				<strong>llama.cpp — new server profile</strong>
+			</text>
+			{phase === "name" ? (
+				<>
+					<text fg="gray">Name this server (e.g. "fast", "big-context").</text>
+					<box border borderStyle="rounded" borderColor={palette.act} paddingX={1}>
+						<input
+							value={name}
+							onInput={(v: string) => {
+								setName(v);
+								setError(undefined);
+							}}
+							placeholder="fast"
+							flexGrow={1}
+							focused
+						/>
+					</box>
+				</>
+			) : (
+				<>
+					<text fg="gray">
+						Port for this server (must differ from any other running llama.cpp
+						server).
+					</text>
+					<box border borderStyle="rounded" borderColor={palette.act} paddingX={1}>
+						<input
+							value={port}
+							onInput={(v: string) => {
+								setPort(v);
+								setError(undefined);
+							}}
+							placeholder={suggestedPort}
+							flexGrow={1}
+							focused
+						/>
+					</box>
+				</>
+			)}
+			{error && <text fg="red">{error}</text>}
+			<text fg="gray">
+				<em>Enter to continue, Esc to go back{phase === "port" ? " (name)" : ""}</em>
+			</text>
+		</box>
+	);
+}
+
 /**
  * Step 3: pick a context-size preset — fixed choices, no free-typed number.
  * This value both becomes llama-server's `-c` flag AND Cline's own

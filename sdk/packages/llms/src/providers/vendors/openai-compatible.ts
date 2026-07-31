@@ -115,7 +115,9 @@ export async function createOpenAICompatibleProviderModule(
 	// itself: no daemon to start by hand like Ollama/LM Studio. Ensure the
 	// local llama-server is up (downloading the binary/model on first run)
 	// before handing off to the generic openai-compatible client below.
-	if (context.provider.id === "llamacpp") {
+	// "llamacpp-<name>" ids are user-created profiles (multiple servers running
+	// concurrently on different ports, see the setup wizard) — same handling.
+	if (context.provider.id === "llamacpp" || context.provider.id.startsWith("llamacpp-")) {
 		const baseURL = config.baseUrl?.trim() || LLAMACPP_DEFAULT_BASE_URL;
 		// context.model.id is the provider's saved "model" setting — for llamacpp
 		// that's the .gguf path picked in the TUI setup wizard, not a catalog id.
