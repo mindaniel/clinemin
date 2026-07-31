@@ -163,6 +163,92 @@ export function defaultModelsDir(): string {
 	return path.join(CONFIG_DIR, "models");
 }
 
+// GGUF metadata value type tags (see ggml-org/ggml gguf spec).
+const GGUF_TYPE_SIZES: Record<number, number> = { 0: 1, 1: 1, 2: 2, 3: 2, 4: 4, 5: 4, 6: 4, 7: 1, 10: 8, 11: 8, 12: 8 };
+const GGUF_TYPE_STRING = 8;
+const GGUF_TYPE_ARRAY = 9;
+
+/**
+ * Reads a GGUF file's `<architecture>.context_length` metadata key — the max
+ * context the model was trained/converted for — without loading the whole
+ * file. Only reads a bounded prefix (metadata comes before tensor data, but
+ * large vocab arrays can still push the key back a few MB into the file);
+ * returns null on any parse failure or if the key isn't found in that
+ * window, since this is a UX nicety (pre-filling the context-size picker),
+ * not something callers should depend on.
+ */
+export function readGgufContextLength(modelPath: string): number | null {
+	const PREFIX_BYTES = 32 * 1024 * 1024;
+	let fd: number | undefined;
+	try {
+		fd = fs.openSync(modelPath, "r");
+		const size = Math.min(fs.fstatSync(fd).size, PREFIX_BYTES);
+		const buf = Buffer.alloc(size);
+		fs.readSync(fd, buf, 0, size, 0);
+
+		if (buf.length < 8 || buf.toString("ascii", 0, 4) !== "GGUF") return null;
+		let offset = 4;
+		offset += 4; // version
+		const tensorCount = buf.readBigUInt64LE(offset);
+		offset += 8;
+		const kvCount = buf.readBigUInt64LE(offset);
+		offset += 8;
+		void tensorCount;
+
+		const readString = (): string => {
+			const len = Number(buf.readBigUInt64LE(offset));
+			offset += 8;
+			const str = buf.toString("utf-8", offset, offset + len);
+			offset += len;
+			return str;
+		};
+		const skipValue = (valueType: number) => {
+			if (valueType === GGUF_TYPE_STRING) {
+				readString();
+				return;
+			}
+			if (valueType === GGUF_TYPE_ARRAY) {
+				const elemType = buf.readUInt32LE(offset);
+				offset += 4;
+				const count = Number(buf.readBigUInt64LE(offset));
+				offset += 8;
+				for (let i = 0; i < count; i++) skipValue(elemType);
+				return;
+			}
+			const size = GGUF_TYPE_SIZES[valueType];
+			if (size === undefined) throw new Error(`unknown GGUF value type ${valueType}`);
+			offset += size;
+		};
+
+		for (let i = 0n; i < kvCount; i++) {
+			if (offset >= buf.length - 8) return null; // ran past our bounded prefix
+			const key = readString();
+			const valueType = buf.readUInt32LE(offset);
+			offset += 4;
+			if (key.endsWith(".context_length") && GGUF_TYPE_SIZES[valueType] !== undefined) {
+				const size = GGUF_TYPE_SIZES[valueType];
+				const raw =
+					size === 8
+						? Number(buf.readBigUInt64LE(offset))
+						: valueType === 5 || valueType === 4
+							? buf.readUInt32LE(offset)
+							: Number(buf.readUInt32LE(offset));
+				return raw > 0 ? raw : null;
+			}
+			skipValue(valueType);
+		}
+		return null;
+	} catch {
+		return null;
+	} finally {
+		if (fd !== undefined) {
+			try {
+				fs.closeSync(fd);
+			} catch {}
+		}
+	}
+}
+
 /**
  * Scans a folder (one level of subfolders deep, matching how LM Studio lays out
  * "modelsDir/publisher/ModelName/*.gguf") for .gguf model files, so users can pick

@@ -289,12 +289,14 @@ async function runProviderChange(
 			});
 			if (!modelPath) return false;
 
+			const detectedMax = Llms.readGgufContextLength(modelPath);
 			const contextWindow = await dialog.choice<number>({
 				style: { maxHeight: termHeight - 2 },
 				content: (ctx: ChoiceContext<number>) => (
 					<LlamaCppContextSizeContent
 						{...ctx}
 						modelName={path.basename(modelPath)}
+						detectedMax={detectedMax}
 					/>
 				),
 			});

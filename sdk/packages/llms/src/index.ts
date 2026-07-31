@@ -111,5 +111,6 @@ export {
 export { disposeLangfuseTelemetry } from "./services/langfuse-telemetry";
 export {
 	defaultModelsDir as llamaCppDefaultModelsDir,
+	readGgufContextLength,
 	scanLocalModels as scanLlamaCppModels,
 } from "./providers/vendors/llamacpp-runtime";

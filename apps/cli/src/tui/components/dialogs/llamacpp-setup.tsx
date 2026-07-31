@@ -202,20 +202,50 @@ export function LlamaCppModelPickerContent(
  * contextWindow budget for compaction, since it's saved as the provider's
  * regular `contextWindow` setting (see ensureLlamaCppRunning's overrides).
  */
-const CONTEXT_SIZE_PRESETS: { value: number; label: string; desc: string }[] = [
+const BASE_CONTEXT_SIZE_PRESETS: { value: number; label: string; desc: string }[] = [
 	{ value: 4096, label: "4,096", desc: "Small — fastest, least RAM" },
 	{ value: 8192, label: "8,192", desc: "Default — good balance" },
 	{ value: 16384, label: "16,384", desc: "Medium — longer conversations" },
 	{ value: 32768, label: "32,768", desc: "Large — big files/contexts" },
 	{ value: 65536, label: "65,536", desc: "Extra large — needs more RAM" },
-	{ value: 131072, label: "131,072", desc: "Max — only if the model supports it" },
+	{ value: 131072, label: "131,072", desc: "128K" },
+	{ value: 262144, label: "262,144", desc: "256K" },
+	{ value: 1048576, label: "1,048,576", desc: "1M — only a few models support this" },
 ];
 
+function formatContextLabel(n: number): string {
+	return n.toLocaleString("en-US");
+}
+
+/**
+ * llama.cpp doesn't clamp an oversized `-c` for you — asking for more context
+ * than the model was trained for either gets silently truncated by
+ * llama-server or refuses to load, and Cline's own token-budget math (which
+ * reuses this same number) would be wrong either way. So instead of letting
+ * that happen silently, we read the model's real `context_length` from its
+ * GGUF metadata (see readGgufContextLength) and default the picker to that
+ * value, flagging any larger preset as exceeding it — still selectable, but
+ * an informed choice instead of a silent surprise.
+ */
 export function LlamaCppContextSizeContent(
-	props: ChoiceContext<number> & { modelName: string },
+	props: ChoiceContext<number> & { modelName: string; detectedMax: number | null },
 ) {
-	const { resolve, dismiss, dialogId, modelName } = props;
-	const [selected, setSelected] = useState(1); // default to the 8192 preset
+	const { resolve, dismiss, dialogId, modelName, detectedMax } = props;
+
+	const presets = detectedMax
+		? [
+				{
+					value: detectedMax,
+					label: `${formatContextLabel(detectedMax)} (recommended)`,
+					desc: "Detected from this model's metadata",
+				},
+				...BASE_CONTEXT_SIZE_PRESETS.filter((p) => p.value !== detectedMax).map((p) =>
+					p.value > detectedMax ? { ...p, desc: `${p.desc} — exceeds model's ${formatContextLabel(detectedMax)} limit` } : p,
+				),
+			]
+		: BASE_CONTEXT_SIZE_PRESETS;
+
+	const [selected, setSelected] = useState(0);
 
 	useDialogKeyboard((key) => {
 		if (key.name === "escape") {
@@ -223,16 +253,16 @@ export function LlamaCppContextSizeContent(
 			return;
 		}
 		if (key.name === "return" || key.name === "enter") {
-			const preset = CONTEXT_SIZE_PRESETS[selected];
+			const preset = presets[selected];
 			if (preset) resolve(preset.value);
 			return;
 		}
 		if (key.name === "up" || (key.ctrl && key.name === "p")) {
-			setSelected((s) => (s <= 0 ? CONTEXT_SIZE_PRESETS.length - 1 : s - 1));
+			setSelected((s) => (s <= 0 ? presets.length - 1 : s - 1));
 			return;
 		}
 		if (key.name === "down" || (key.ctrl && key.name === "n")) {
-			setSelected((s) => (s >= CONTEXT_SIZE_PRESETS.length - 1 ? 0 : s + 1));
+			setSelected((s) => (s >= presets.length - 1 ? 0 : s + 1));
 		}
 	}, dialogId);
 
@@ -240,11 +270,13 @@ export function LlamaCppContextSizeContent(
 		<box flexDirection="column" gap={1}>
 			<text>Context size for {modelName}</text>
 			<text fg="gray">
-				Bigger = more memory of the conversation, but slower and more RAM.
+				{detectedMax
+					? `Bigger = more memory of the conversation, but slower and more RAM. This model's metadata reports a ${formatContextLabel(detectedMax)} limit.`
+					: "Bigger = more memory of the conversation, but slower and more RAM. Couldn't detect this model's limit from its metadata — pick based on what you know about it."}
 			</text>
 
 			<box flexDirection="column">
-				{CONTEXT_SIZE_PRESETS.map((preset, i) => (
+				{presets.map((preset, i) => (
 					<box
 						key={preset.value}
 						paddingX={1}
