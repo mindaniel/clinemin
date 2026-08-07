@@ -296,12 +296,29 @@ function normalizeHeaders(
 	return entries.length > 0 ? Object.fromEntries(entries) : undefined;
 }
 
+// Local GGUF/OpenAI-compatible model ids carry no capability metadata of
+// their own (unlike catalog-backed providers), so a locally-served model
+// known to support hybrid/native thinking is detected from its id/filename.
+const REASONING_MODEL_ID_PATTERNS: readonly RegExp[] = [
+	/qwen[-_]?3/i,
+	/qwq/i,
+	/deepseek[-_]?r1/i,
+	/magistral/i,
+	/(?:^|[^a-z0-9])r1(?:[^a-z0-9]|$)/i,
+	/thinking/i,
+	/reasoning/i,
+];
+
+function inferLocalModelReasoningSupport(modelId: string): boolean {
+	return REASONING_MODEL_ID_PATTERNS.some((pattern) => pattern.test(modelId));
+}
+
 function buildProviderModels(
 	modelIds: string[],
 	capabilities: ProviderCapability[] | undefined,
 ) {
 	const supportsVision = capabilities?.includes("vision") ?? false;
-	const supportsReasoning = capabilities?.includes("reasoning") ?? false;
+	const explicitReasoning = capabilities?.includes("reasoning") ?? false;
 	return Object.fromEntries(
 		modelIds.map((id) => [
 			id,
@@ -310,7 +327,8 @@ function buildProviderModels(
 				name: id,
 				supportsVision,
 				supportsAttachments: supportsVision,
-				supportsReasoning,
+				supportsReasoning:
+					explicitReasoning || inferLocalModelReasoningSupport(id),
 			},
 		]),
 	);
