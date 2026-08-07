@@ -735,6 +735,8 @@ function App(props: TuiProps) {
 		setIsRunning: session.setIsRunning,
 		setIsStreaming: session.setIsStreaming,
 		addUsageDelta: session.addUsageDelta,
+		setLastTtftMs: session.setLastTtftMs,
+		setLastTokensPerSecond: session.setLastTokensPerSecond,
 		onTurnErrorReported: props.onTurnErrorReported,
 		verbose: props.config.verbose ?? false,
 		modelId: props.config.modelId,

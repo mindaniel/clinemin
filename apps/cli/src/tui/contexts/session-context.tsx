@@ -23,6 +23,8 @@ interface SessionContextValue {
 	compactionMode: CliCompactionMode;
 	lastTotalTokens: number;
 	lastTotalCost: number;
+	lastTtftMs: number | null;
+	lastTokensPerSecond: number | null;
 	isExitRequested: boolean;
 
 	appendEntry: (entry: ChatEntry) => void;
@@ -37,6 +39,8 @@ interface SessionContextValue {
 	setHasSubmitted: (v: boolean) => void;
 	setLastTotalTokens: (v: number) => void;
 	setLastTotalCost: (v: number) => void;
+	setLastTtftMs: (v: number | null) => void;
+	setLastTokensPerSecond: (v: number | null) => void;
 	addUsageDelta: (usage: UsageDelta) => void;
 	setUiMode: (mode: AgentMode) => void;
 	toggleMode: () => void;
@@ -124,6 +128,10 @@ export function SessionProvider(props: {
 	);
 	const [lastTotalCost, setLastTotalCost] = useState(
 		() => initialUsage?.totalCost ?? 0,
+	);
+	const [lastTtftMs, setLastTtftMs] = useState<number | null>(null);
+	const [lastTokensPerSecond, setLastTokensPerSecond] = useState<number | null>(
+		null,
 	);
 	const [isExitRequested, setIsExitRequested] = useState(false);
 
@@ -223,6 +231,8 @@ export function SessionProvider(props: {
 		setEntries([]);
 		setLastTotalTokens(0);
 		setLastTotalCost(0);
+		setLastTtftMs(null);
+		setLastTokensPerSecond(null);
 	}, []);
 
 	const addUsageDelta = useCallback((usage: UsageDelta) => {
@@ -259,6 +269,8 @@ export function SessionProvider(props: {
 		compactionMode,
 		lastTotalTokens,
 		lastTotalCost,
+		lastTtftMs,
+		lastTokensPerSecond,
 		isExitRequested,
 		appendEntry,
 		updateLastEntry,
@@ -271,6 +283,8 @@ export function SessionProvider(props: {
 		setHasSubmitted,
 		setLastTotalTokens,
 		setLastTotalCost,
+		setLastTtftMs,
+		setLastTokensPerSecond,
 		addUsageDelta,
 		setUiMode,
 		toggleMode,

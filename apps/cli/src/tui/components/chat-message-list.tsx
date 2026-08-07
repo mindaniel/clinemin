@@ -7,6 +7,7 @@ import {
 	useEffect,
 	useImperativeHandle,
 	useRef,
+	useState,
 } from "react";
 import type { TranscriptCommand } from "../hooks/transcript-keybinds";
 import { useTerminalTheme } from "../hooks/use-terminal-background";
@@ -25,6 +26,32 @@ interface ChatMessageListProps {
 	uiMode?: AgentMode;
 }
 
+// Ticks up while `active` is true so the "Thinking..." line visibly counts,
+// proving the run is alive rather than stuck.
+function useElapsedSeconds(active: boolean): number {
+	const startedAtRef = useRef<number | null>(null);
+	const [elapsedSec, setElapsedSec] = useState(0);
+
+	useEffect(() => {
+		if (!active) {
+			startedAtRef.current = null;
+			setElapsedSec(0);
+			return;
+		}
+		startedAtRef.current = Date.now();
+		setElapsedSec(0);
+		const id = setInterval(() => {
+			const startedAt = startedAtRef.current;
+			if (startedAt !== null) {
+				setElapsedSec((Date.now() - startedAt) / 1000);
+			}
+		}, 200);
+		return () => clearInterval(id);
+	}, [active]);
+
+	return elapsedSec;
+}
+
 export const ChatMessageList = forwardRef<
 	TranscriptScrollHandle,
 	ChatMessageListProps
@@ -35,6 +62,7 @@ export const ChatMessageList = forwardRef<
 	const accent = getModeAccent(props.uiMode ?? "act", terminalTheme);
 	const userSubmissionScrollKey =
 		lastEntry?.kind === "user_submitted" ? props.entries.length : 0;
+	const thinkingElapsedSec = useElapsedSeconds(!!props.isStreaming);
 
 	const runTranscriptCommand = useCallback((command: TranscriptCommand) => {
 		const scrollbox = scrollboxRef.current;
@@ -115,7 +143,9 @@ export const ChatMessageList = forwardRef<
 				{props.isStreaming && (
 					<box flexDirection="row" gap={1}>
 						<spinner name="dots" color={accent} />
-						<text fg="gray">Thinking... (esc to cancel)</text>
+						<text fg="gray">
+							Thinking... {thinkingElapsedSec.toFixed(1)}s (esc to cancel)
+						</text>
 					</box>
 				)}
 			</box>

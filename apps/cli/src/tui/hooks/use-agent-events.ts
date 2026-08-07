@@ -28,6 +28,8 @@ interface AgentEventDeps {
 		outputTokens?: number;
 		cost?: number;
 	}) => void;
+	setLastTtftMs: (v: number | null) => void;
+	setLastTokensPerSecond: (v: number | null) => void;
 	onTurnErrorReported: TuiProps["onTurnErrorReported"];
 	verbose: boolean;
 	modelId?: string;
@@ -44,10 +46,17 @@ export function useAgentEventHandlers(deps: AgentEventDeps) {
 		setIsRunning,
 		setIsStreaming,
 		addUsageDelta,
+		setLastTtftMs,
+		setLastTokensPerSecond,
 		onTurnErrorReported,
 		verbose,
 		modelId,
 	} = deps;
+
+	// Timing for the "time to first token" / tokens-per-second stats shown in
+	// the status bar. Reset every iteration since each is its own LLM call.
+	const iterationStartAtRef = useRef<number | null>(null);
+	const firstContentAtRef = useRef<number | null>(null);
 
 	// Compaction dividers that arrived while an assistant message was still
 	// streaming. Appending them immediately would split the message in two, so
@@ -128,6 +137,8 @@ export function useAgentEventHandlers(deps: AgentEventDeps) {
 				case "iteration_start":
 					setIsRunning(true);
 					setIsStreaming(true);
+					iterationStartAtRef.current = Date.now();
+					firstContentAtRef.current = null;
 					closeInlineStream();
 					flushPendingCompactionEntries();
 					break;
@@ -137,6 +148,18 @@ export function useAgentEventHandlers(deps: AgentEventDeps) {
 					break;
 				case "content_start": {
 					setIsStreaming(false);
+					if (
+						firstContentAtRef.current === null &&
+						(event.contentType === "text" || event.contentType === "reasoning")
+					) {
+						const now = Date.now();
+						firstContentAtRef.current = now;
+						setLastTtftMs(
+							iterationStartAtRef.current === null
+								? null
+								: now - iterationStartAtRef.current,
+						);
+					}
 					switch (event.contentType) {
 						case "text": {
 							if (activeInlineStreamRef.current !== "text") {
@@ -277,6 +300,12 @@ export function useAgentEventHandlers(deps: AgentEventDeps) {
 						outputTokens: event.outputTokens,
 						cost: event.cost,
 					});
+					if (event.outputTokens && firstContentAtRef.current !== null) {
+						const elapsedSec = (Date.now() - firstContentAtRef.current) / 1000;
+						if (elapsedSec > 0) {
+							setLastTokensPerSecond(event.outputTokens / elapsedSec);
+						}
+					}
 					break;
 			}
 		},
@@ -289,6 +318,8 @@ export function useAgentEventHandlers(deps: AgentEventDeps) {
 			setIsRunning,
 			setIsStreaming,
 			addUsageDelta,
+			setLastTtftMs,
+			setLastTokensPerSecond,
 			onTurnErrorReported,
 			verbose,
 			modelId,

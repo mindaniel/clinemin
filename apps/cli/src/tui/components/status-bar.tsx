@@ -48,6 +48,23 @@ function formatCost(cost: number): string {
 	return `$${cost.toFixed(2)}`;
 }
 
+export function formatSpeedStatsText(input: {
+	ttftMs: number | null | undefined;
+	tokensPerSecond: number | null | undefined;
+}): string {
+	const parts: string[] = [];
+	if (typeof input.ttftMs === "number" && Number.isFinite(input.ttftMs)) {
+		parts.push(`TTFT ${(input.ttftMs / 1000).toFixed(1)}s`);
+	}
+	if (
+		typeof input.tokensPerSecond === "number" &&
+		Number.isFinite(input.tokensPerSecond)
+	) {
+		parts.push(`${input.tokensPerSecond.toFixed(1)} tok/s`);
+	}
+	return parts.join(" · ");
+}
+
 function formatCostText(providerId: string, totalCost: number): string {
 	// Subscription providers (ClinePass) have no per-use cost worth surfacing.
 	if (shouldShowCliUsageCoveredBySubscription(providerId)) {
@@ -135,6 +152,8 @@ export interface StatusBarProps {
 	totalTokens: number;
 	totalCost: number;
 	maxInputTokens?: number;
+	ttftMs?: number | null;
+	tokensPerSecond?: number | null;
 	uiMode: AgentMode;
 	autoApproveAll: boolean;
 	workspaceName: string;
@@ -154,6 +173,8 @@ export function StatusBar(props: StatusBarProps) {
 		totalTokens,
 		totalCost,
 		maxInputTokens,
+		ttftMs,
+		tokensPerSecond,
 		uiMode,
 		autoApproveAll,
 		workspaceName,
@@ -234,6 +255,7 @@ export function StatusBar(props: StatusBarProps) {
 		pathPart.length > pathMax
 			? `${pathPart.slice(0, pathMax - 3)}...`
 			: pathPart;
+	const speedText = formatSpeedStatsText({ ttftMs, tokensPerSecond });
 	return (
 		<box flexDirection="column" paddingX={1}>
 			<box flexDirection="row" justifyContent="space-between">
@@ -256,6 +278,12 @@ export function StatusBar(props: StatusBarProps) {
 					<text fg="gray">(Tab)</text>
 				</box>
 			</box>
+
+			{speedText && (
+				<box flexDirection="row" justifyContent="flex-end">
+					<text fg="gray">{speedText}</text>
+				</box>
+			)}
 
 			{!firstRowFits && <text fg="gray">{renderContextText(false)}</text>}
 
