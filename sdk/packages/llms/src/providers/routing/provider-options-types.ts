@@ -18,7 +18,8 @@ export type AiSdkProviderOptionsTarget =
 	| "opencode"
 	| "dify"
 	| "ollama"
-	| "sapaicore";
+	| "sapaicore"
+	| "deepseek-web";
 
 export type ProviderOptionSuppression = {
 	genericThinking?: boolean;
@@ -89,6 +90,8 @@ export function inferProviderOptionsTarget(
 			return "ollama";
 		case "sapaicore":
 			return "sapaicore";
+		case "deepseek-web":
+			return "deepseek-web";
 		default:
 			return "openai-compatible";
 	}

@@ -650,6 +650,7 @@ function App(props: TuiProps) {
 		onExportHistorySession: props.onExportHistorySession,
 		onDeleteHistorySession: props.onDeleteHistorySession,
 		onCompact: props.onCompact,
+		onAutocompact: props.onAutocompact,
 		onFork: props.onFork,
 		onUndo: openCheckpointRestore,
 		onExit: exitCline,

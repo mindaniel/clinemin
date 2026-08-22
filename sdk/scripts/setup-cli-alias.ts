@@ -12,6 +12,16 @@ const COMMAND_NAMES = ["cline", "clinemin"];
 
 const repoRoot = path.resolve(import.meta.dir, "..", "..");
 const entryPath = path.join(repoRoot, "apps", "cli", "src", "index.ts");
+// Auto-start the Telegram bridge alongside the CLI (Windows/PowerShell only;
+// the POSIX branch stays plain because this fork runs the bridge on Windows).
+const bridgeScript = path.join(
+	repoRoot,
+	"apps",
+	"examples",
+	"telegram-bridge",
+	"scripts",
+	"start-telegram-bridge.ps1",
+);
 
 function alreadyInstalled(filePath: string): boolean {
 	try {
@@ -50,7 +60,12 @@ function setupPowerShell(): string | undefined {
 	const block = [
 		MARKER,
 		...COMMAND_NAMES.map((name) =>
-			[`function ${name} {`, `    bun --conditions=development "${entryPath}" -i @args`, "}"].join("\n"),
+			[
+				`function ${name} {`,
+				`    & "${bridgeScript}"`,
+				`    bun --conditions=development "${entryPath}" -i @args`,
+				"}\n",
+			].join("\n"),
 		),
 	].join("\n");
 	appendBlock(profilePath, block);

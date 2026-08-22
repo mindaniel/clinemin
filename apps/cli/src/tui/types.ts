@@ -201,6 +201,7 @@ export interface TuiProps {
 	) => Promise<string>;
 	onDeleteHistorySession: (sessionId: string) => Promise<boolean>;
 	onCompact: () => Promise<InteractiveCompactionResult>;
+	onAutocompact: (tokens: number) => Promise<void>;
 	onFork: () => Promise<
 		| {
 				forkedFromSessionId: string;

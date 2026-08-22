@@ -14,6 +14,7 @@ import {
 	getSuccessColor,
 } from "../palette";
 import { HOME_VIEW_MAX_WIDTH } from "../types";
+import { formatTokenCount } from "../utils/compaction-status";
 
 export function createContextBar(
 	used: number,
@@ -82,8 +83,19 @@ export function formatStatusBarUsageText(input: {
 	totalTokens: number;
 	totalCost: number;
 	providerId: string;
+	maxInputTokens?: number;
 }): string {
-	const tokens = `(${input.totalTokens.toLocaleString()})`;
+	// When the effective context limit is known, show usage as "used/total"
+	// (e.g. "60k/1M") so the remaining budget is visible at a glance. Otherwise
+	// fall back to the bare token count.
+	const hasMaxInputTokens =
+		typeof input.maxInputTokens === "number" &&
+		Number.isFinite(input.maxInputTokens) &&
+		input.maxInputTokens > 0;
+	const maxInputTokens = hasMaxInputTokens ? input.maxInputTokens : undefined;
+	const tokens = maxInputTokens
+		? `(${formatTokenCount(input.totalTokens)}/${formatTokenCount(maxInputTokens)})`
+		: `(${input.totalTokens.toLocaleString()})`;
 	const costText = formatCostText(input.providerId, input.totalCost);
 
 	if (!costText) {
@@ -215,6 +227,7 @@ export function StatusBar(props: StatusBarProps) {
 		totalTokens,
 		totalCost,
 		providerId: props.providerId,
+		maxInputTokens,
 	});
 	const contextText = bar
 		? ` ${bar.filled}${bar.empty} ${usageText}`

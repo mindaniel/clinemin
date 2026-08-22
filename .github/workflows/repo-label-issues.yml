@@ -28,18 +28,6 @@ jobs:
               }
             }
 
-            // Check if VSCode Extension is selected
-            if (body.match(/###\s*Cline Surface\s*\n+VSCode Extension/i)) {
-              if (!labels.includes('VS Code')) {
-                await github.rest.issues.addLabels({
-                  owner: context.repo.owner,
-                  repo: context.repo.repo,
-                  issue_number: context.issue.number,
-                  labels: ['VS Code']
-                });
-              }
-            }
-
             // Check if CLI is selected
             if (body.match(/###\s*Cline Surface\s*\n+CLI/i)) {
               if (!labels.includes('CLI')) {

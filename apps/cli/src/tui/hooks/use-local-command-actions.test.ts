@@ -16,6 +16,7 @@ function makeActions(
 		openModelSelector: vi.fn(),
 		openSkills: vi.fn(),
 		runCompact: vi.fn(),
+		runAutocompact: vi.fn(async () => false),
 		runFork: vi.fn(),
 		runUndo: vi.fn(async () => {}),
 		clearConversation: vi.fn(async () => {}),
@@ -83,6 +84,33 @@ describe("runLocalSlashCommandAction", () => {
 
 		expect(handled).toBe(true);
 		expect(runCompact).toHaveBeenCalledOnce();
+	});
+
+	it("parses the autocompact argument (with suffix) and runs it", async () => {
+		const runAutocompact = vi.fn(async () => true);
+		const actions = makeActions({ runAutocompact });
+
+		const handled = await runLocalSlashCommandAction({
+			name: "autocompact",
+			invocation: { text: "/autocompact 1M", cursorOffset: 13 },
+			...actions,
+		});
+
+		expect(handled).toBe(true);
+		expect(runAutocompact).toHaveBeenCalledWith(1_000_000);
+	});
+
+	it("passes undefined to autocompact when no argument is given", async () => {
+		const runAutocompact = vi.fn(async () => false);
+		const actions = makeActions({ runAutocompact });
+
+		const handled = await runLocalSlashCommandAction({
+			name: "autocompact",
+			...actions,
+		});
+
+		expect(handled).toBe(false);
+		expect(runAutocompact).toHaveBeenCalledWith(undefined);
 	});
 
 	it("waits for clear to reset the runtime session", async () => {

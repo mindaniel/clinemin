@@ -44,6 +44,18 @@ describe("getProviderConfigFields", () => {
 		);
 	});
 
+	it("returns api-key auth with apiKey + baseUrl for Omniroute", () => {
+		const result = getProviderConfigFields("omniroute");
+		expect(result.authMethod).toBe("api-key");
+		expect(result.fields.apiKey).toEqual({
+			label: "API Key",
+			placeholder: "Paste your Omniroute API key",
+		});
+		expect(result.fields.baseUrl?.defaultValue).toBe(
+			"http://localhost:20128/v1",
+		);
+	});
+
 	it("returns api-key auth with apiKey + baseUrl for user-added providers", () => {
 		registerCustomProvider("internal-router", {
 			provider: {

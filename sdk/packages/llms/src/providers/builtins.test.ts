@@ -76,6 +76,18 @@ describe("cline builtin models", () => {
 	});
 });
 
+describe("omniroute builtin spec", () => {
+	it("registers an OpenAI-compatible local gateway", async () => {
+		await expect(getProvider("omniroute")).resolves.toMatchObject({
+			id: "omniroute",
+			name: "Omniroute",
+			baseUrl: "http://localhost:20128/v1",
+			client: "openai-compatible",
+			env: ["OMNIROUTE_API_KEY"],
+		});
+	});
+});
+
 describe("cline-pass builtin spec", () => {
 	it("registers a distinct Cline-compatible provider with a custom model list", async () => {
 		const models = await getModelsForProvider("cline-pass");

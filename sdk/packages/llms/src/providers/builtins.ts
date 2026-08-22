@@ -530,6 +530,7 @@ function inferClient(spec: BuiltinSpec): ProviderClient {
 		case "dify":
 		case "ollama":
 		case "sap-ai-core":
+		case "deepseek-web":
 			return "ai-sdk-community";
 		default:
 			return "openai-compatible";
@@ -964,6 +965,20 @@ const OPENAI_COMPATIBLE_SPEC_OVERRIDES: BuiltinSpecOverride[] = [
 		modelsFactory: () => ({}),
 		defaults: { baseUrl: "https://api.asksage.ai/server" },
 	},
+	{
+		id: "omniroute",
+		name: "Omniroute",
+		description:
+			"Omniroute local AI gateway — Dashboard: http://localhost:20128",
+		family: "openai-compatible",
+		popular: 10,
+		capabilities: ["tools"],
+		defaultModelId: "",
+		apiKeyEnv: ["OMNIROUTE_API_KEY"],
+		modelsFactory: () => ({}),
+		defaults: { baseUrl: "http://localhost:20128/v1" },
+		modelsSourceUrl: "http://localhost:20128/v1/models",
+	},
 ];
 
 /**
@@ -1133,6 +1148,42 @@ const BUILTIN_SPEC_OVERRIDES: BuiltinSpecOverride[] = [
 		apiKeyEnv: ["AICORE_SERVICE_KEY", "VCAP_SERVICES"],
 		modelsProviderId: "sapaicore",
 		metadata: ANTHROPIC_ROUTING_METADATA,
+	},
+	{
+		id: "deepseek-web",
+		name: "DeepSeek (Web)",
+		description:
+			"DeepSeek via chat.deepseek.com using the userToken from your browser session (DevTools → Application → Local Storage → chat.deepseek.com → userToken)",
+		family: "deepseek-web",
+		popular: 25,
+		capabilities: ["tools", "reasoning"],
+		defaultModelId: "deepseek-chat",
+		modelsFactory: () => ({
+			"deepseek-chat": {
+				id: "deepseek-chat",
+				name: "DeepSeek Chat",
+				capabilities: ["streaming"],
+				contextWindow: 1_000_000,
+			},
+			"deepseek-reasoner": {
+				id: "deepseek-reasoner",
+				name: "DeepSeek Reasoner (R1 thinking)",
+				capabilities: ["streaming", "reasoning"],
+				contextWindow: 1_000_000,
+			},
+		}),
+		configFields: [
+			{
+				path: "apiKey",
+				label: "userToken",
+				type: "password",
+				placeholder: "Paste userToken from chat.deepseek.com localStorage",
+				description:
+					"Open chat.deepseek.com in a logged-in browser, then DevTools → Application → Local Storage → chat.deepseek.com → userToken, and paste the value.",
+				secret: true,
+			},
+		],
+		metadata: { usageCostDisplay: "hide" },
 	},
 	...OPENAI_COMPATIBLE_SPEC_OVERRIDES,
 ];

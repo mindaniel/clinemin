@@ -25,6 +25,7 @@ import {
 	createOpenCodeProvider,
 	createSapAiCoreProvider,
 	createVertexProvider,
+	createDeepSeekWebProvider,
 } from "./ai-sdk";
 import { BUILTIN_PROVIDER_REGISTRATIONS } from "./builtins-runtime";
 import { createGateway } from "./gateway";
@@ -167,6 +168,8 @@ function resolveFactory(
 			return createOllamaProvider;
 		case "sapaicore":
 			return createSapAiCoreProvider;
+		case "deepseek-web":
+			return createDeepSeekWebProvider;
 		default:
 			return createOpenAICompatibleProvider;
 	}

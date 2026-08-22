@@ -37,6 +37,13 @@ coverage-unit
 
 .worktrees
 
+## Runtime artifacts (telegram bridge) ##
+apps/examples/telegram-bridge/*.log
+apps/examples/telegram-bridge/*.pid
+
+## Graphify tool cache ##
+graphify-out/
+
 ## Generated files ##
 apps/vscode/src/generated/
 apps/vscode/src/shared/proto/

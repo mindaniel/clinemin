@@ -71,6 +71,10 @@ async function loadFamilyFactory(
 				const module = await import("./ai-sdk");
 				return module.createSapAiCoreProvider;
 			}
+			case "deepseek-web": {
+				const module = await import("./ai-sdk");
+				return module.createDeepSeekWebProvider;
+			}
 		}
 	})();
 

@@ -23,7 +23,8 @@ export type ProviderFamily =
 	| "opencode"
 	| "dify"
 	| "ollama"
-	| "sap-ai-core";
+	| "sap-ai-core"
+	| "deepseek-web";
 
 export type ProviderApiLine = "china" | "international";
 

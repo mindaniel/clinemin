@@ -10,6 +10,7 @@ import { withLoadingDialog } from "../components/dialogs/loading-dialog";
 import { useSession } from "../contexts/session-context";
 import type { AppView, TuiProps } from "../types";
 import { hydrateSessionMessages } from "../utils/hydrate-messages";
+import { formatTokenCount } from "../utils/compaction-status";
 import type { LocalSlashCommandInvocation } from "../utils/skill-command-input";
 import { HistoryDialogContent } from "../views/history-view";
 import { runLocalSlashCommandAction } from "./local-command-actions";
@@ -30,6 +31,7 @@ export function useLocalCommandActions(input: {
 	onExportHistorySession: TuiProps["onExportHistorySession"];
 	onDeleteHistorySession: TuiProps["onDeleteHistorySession"];
 	onCompact: TuiProps["onCompact"];
+	onAutocompact: (tokens: number) => Promise<void>;
 	onFork: TuiProps["onFork"];
 	onUndo: () => Promise<void>;
 	onExit: TuiProps["onExit"];
@@ -52,6 +54,7 @@ export function useLocalCommandActions(input: {
 		onExportHistorySession,
 		onDeleteHistorySession,
 		onCompact,
+		onAutocompact,
 		onFork,
 		onUndo,
 		onExit,
@@ -164,6 +167,54 @@ export function useLocalCommandActions(input: {
 		}
 	}, [onCompact, session]);
 
+	const runAutocompact = useCallback(
+		async (tokens: number | undefined): Promise<boolean> => {
+			if (tokens === undefined) {
+				session.appendEntry({
+					kind: "status",
+					text: "Usage: /autocompact <tokens> — e.g. /autocompact 1M sets the auto-compaction context limit to 1M tokens.",
+				});
+				return false;
+			}
+			if (session.isRunning) {
+				session.appendEntry({
+					kind: "status",
+					text: "The auto-compaction context limit cannot change while a turn is running. Wait for it to finish and try again.",
+				});
+				return false;
+			}
+			const label = formatTokenCount(tokens);
+			session.appendEntry({
+				kind: "status",
+				text: `Setting auto-compaction context limit to ${label} tokens...`,
+			});
+			try {
+				await onAutocompact(tokens);
+				session.updateLastEntry((entry) =>
+					entry.kind === "status"
+						? {
+								...entry,
+								text: `Auto-compaction context limit set to ${label} tokens. The session will restart to apply it.`,
+							}
+						: entry,
+				);
+				return true;
+			} catch (error) {
+				session.updateLastEntry((entry) =>
+					entry.kind === "status"
+						? {
+								...entry,
+								kind: "error",
+								text: `Failed to set auto-compaction context limit: ${error instanceof Error ? error.message : String(error)}`,
+							}
+						: entry,
+				);
+				return false;
+			}
+		},
+		[onAutocompact, session],
+	);
+
 	const runFork = useCallback(async () => {
 		if (!canForkSession) {
 			session.appendEntry({
@@ -228,6 +279,7 @@ export function useLocalCommandActions(input: {
 				openModelSelector,
 				openSkills,
 				runCompact,
+				runAutocompact,
 				runFork,
 				runUndo: onUndo,
 				clearConversation: onClearConversation,
@@ -248,6 +300,7 @@ export function useLocalCommandActions(input: {
 			openModelSelector,
 			openSkills,
 			runCompact,
+			runAutocompact,
 			runFork,
 			session.isRunning,
 			slashCommandRegistry,

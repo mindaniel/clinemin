@@ -18,6 +18,7 @@ export type LocalSlashCommandName =
 	| "account"
 	| "model"
 	| "compact"
+	| "autocompact"
 	| "skills"
 	| "fork"
 	| "undo"
@@ -79,6 +80,10 @@ const TUI_LOCAL_COMMANDS: Array<{
 		description: "Compact context",
 	},
 	{
+		name: "autocompact",
+		description: "Set auto-compaction context limit (e.g. /autocompact 1000000)",
+	},
+	{
 		name: "skills",
 		description: "Browse skills and workflows",
 		preserveInput: true,
@@ -116,6 +121,7 @@ const SYSTEM_COMMAND_ORDER = [
 	"mcp",
 	"plugins",
 	"compact",
+	"autocompact",
 	"skills",
 	"fork",
 	"undo",

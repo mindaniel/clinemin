@@ -80,6 +80,39 @@ describe("formatStatusBarUsageText", () => {
 			}),
 		).toBe("(12,345)");
 	});
+
+	it("shows used/total context when the effective limit is known", () => {
+		expect(
+			formatStatusBarUsageText({
+				totalTokens: 60_000,
+				totalCost: 0.123,
+				providerId: "cline-pass",
+				maxInputTokens: 1_000_000,
+			}),
+		).toBe("(60k/1M)");
+	});
+
+	it("formats fractional used totals compactly", () => {
+		expect(
+			formatStatusBarUsageText({
+				totalTokens: 6_300,
+				totalCost: 0.123,
+				providerId: "cline-pass",
+				maxInputTokens: 200_000,
+			}),
+		).toBe("(6.3k/200k)");
+	});
+
+	it("keeps the bare token count when no limit is known", () => {
+		expect(
+			formatStatusBarUsageText({
+				totalTokens: 12_345,
+				totalCost: 0.123,
+				providerId: "cline-pass",
+				maxInputTokens: 0,
+			}),
+		).toBe("(12,345)");
+	});
 });
 
 describe("resolveModelDisplayName", () => {

@@ -830,6 +830,26 @@ export async function runInteractive(
 			await sessionRuntime.ensureReady();
 			return await sessionRuntime.compactCurrentSession();
 		},
+		onAutocompact: async (tokens: number) => {
+			// Auto-compaction triggers at `resolveEffectiveMaxInputTokens(model.info)`
+			// (maxInputTokens ?? contextWindow, else the 128k SDK default). Override
+			// the model's maxInputTokens in knownModels so the effective context limit
+			// drives both the compaction trigger and the status bar's used/total readout.
+			await sessionRuntime.ensureReady();
+			const existing = config.knownModels?.[config.modelId];
+			if (existing) {
+				config.knownModels = {
+					...config.knownModels,
+					[config.modelId]: { ...existing, maxInputTokens: tokens },
+				};
+			} else {
+				config.knownModels = {
+					...(config.knownModels ?? {}),
+					[config.modelId]: { id: config.modelId, maxInputTokens: tokens },
+				};
+			}
+			await sessionRuntime.restartWithCurrentMessages();
+		},
 		onFork: async () => {
 			await sessionRuntime.ensureReady();
 			return await sessionRuntime.forkCurrentSession();

@@ -1151,6 +1151,12 @@ async function createProviderModule(
 			);
 			return createSapAiCoreProviderModule(config);
 		}
+		case "deepseek-web": {
+			const { createDeepSeekWebProviderModule } = await import(
+				"./vendors/deepseek-web"
+			);
+			return createDeepSeekWebProviderModule(config, context);
+		}
 	}
 }
 
@@ -1317,3 +1323,4 @@ export const createOpenCodeProvider = createAiSdkProvider("opencode");
 export const createDifyProvider = createAiSdkProvider("dify");
 export const createOllamaProvider = createAiSdkProvider("ollama");
 export const createSapAiCoreProvider = createAiSdkProvider("sapaicore");
+export const createDeepSeekWebProvider = createAiSdkProvider("deepseek-web");

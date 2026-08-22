@@ -120,6 +120,16 @@ const PROVIDER_CONFIG_FIELD_METADATA: Partial<
 			},
 		},
 	},
+	omniroute: {
+		description:
+			"Get your Omniroute API key from the dashboard at http://localhost:20128, then paste it below. The default endpoint is http://localhost:20128/v1.",
+		fields: {
+			apiKey: {
+				label: "API Key",
+				placeholder: "Paste your Omniroute API key",
+			},
+		},
+	},
 	sapaicore: {
 		mode: "replace",
 		description:
@@ -189,6 +199,7 @@ const EDITABLE_BASE_URL_PROVIDER_IDS = new Set([
 	"lmstudio",
 	"litellm",
 	"openai-compatible",
+	"omniroute",
 ]);
 
 function shouldExposeBaseUrlField(

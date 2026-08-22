@@ -153,6 +153,12 @@ const HELP_ROWS: HelpRow[] = [
 	},
 	{
 		kind: "entry",
+		id: "c-autocompact",
+		key: "/autocompact",
+		desc: "Set auto-compaction context limit (e.g. /autocompact 1M)",
+	},
+	{
+		kind: "entry",
 		id: "c-clear",
 		key: "/clear",
 		desc: "Start a new session",

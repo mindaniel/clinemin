@@ -11,12 +11,34 @@ export interface LocalSlashCommandActionInput {
 	openSkills: (invocation?: LocalSlashCommandInvocation) => void;
 	invocation?: LocalSlashCommandInvocation;
 	runCompact: () => void;
+	runAutocompact: (tokens: number | undefined) => Promise<boolean>;
 	runFork: () => void;
 	runUndo: () => Promise<void>;
 	clearConversation: () => Promise<void>;
 	openHelp: () => void;
 	openHistory: () => void;
 	exitCline: () => void;
+}
+
+/**
+ * Parses the argument of `/autocompact <tokens>`. Supports plain counts and
+ * `k`/`M` suffixes (e.g. "1000000", "1M", "1000k"). Returns undefined when no
+ * usable count is present.
+ */
+function parseAutoCompactTokens(text: string | undefined): number | undefined {
+	if (!text) return undefined;
+	// invocation.text is the full submitted input (e.g. "/autocompact 1M").
+	const parts = text.trim().split(/\s+/);
+	const raw = parts[1];
+	if (!raw) return undefined;
+	const match = /^(\d+(?:\.\d+)?)([kKmM])?$/.exec(raw.trim());
+	if (!match) return undefined;
+	const value = Number(match[1]);
+	if (!Number.isFinite(value) || value <= 0) return undefined;
+	const suffix = (match[2] ?? "").toLowerCase();
+	const multiplier = suffix === "k" ? 1_000 : suffix === "m" ? 1_000_000 : 1;
+	const tokens = Math.round(value * multiplier);
+	return tokens > 0 ? tokens : undefined;
 }
 
 export function runLocalSlashCommandAction(
@@ -54,6 +76,10 @@ export function runLocalSlashCommandAction(
 			input.runCompact();
 		}
 		return true;
+	}
+	if (normalized === "autocompact") {
+		const tokens = parseAutoCompactTokens(input.invocation?.text);
+		return input.runAutocompact(tokens);
 	}
 	if (normalized === "fork") {
 		input.runFork();
