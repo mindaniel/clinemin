@@ -7,10 +7,16 @@ import {
 	buildPrompt,
 	buildSendScript,
 	chatKeyFromPrompt,
+	computeSendDelay,
+	consumeThrottleRecoveryReload,
+	isRateLimitText,
+	isSameChatLocation,
 	lookupChatSession,
 	parseFallbackToolUses,
 	parseSessionIdFromUrl,
+	randomInRange,
 	recordChatSession,
+	requestThrottleRecoveryReload,
 	resolveDeepSeekWebV2Config,
 	resolveV2ModelOptions,
 } from "./deepseek-web-v2";
@@ -213,6 +219,161 @@ describe("deepseek-web-v2 resolveDeepSeekWebV2Config", () => {
 		const config = resolveDeepSeekWebV2Config();
 		expect(config.toolPromptMode).toBe("always");
 		expect(config.toolPromptThresholdChars).toBe(9999);
+	});
+
+	it("defaults to a sane randomized pacing range and allows override", () => {
+		const config = resolveDeepSeekWebV2Config();
+		expect(config.minSendDelayMs).toBeGreaterThanOrEqual(0);
+		expect(config.maxSendDelayMs).toBeGreaterThan(config.minSendDelayMs);
+		expect(config.toolTurnExtraMinMs).toBeGreaterThanOrEqual(0);
+		expect(config.toolTurnExtraMaxMs).toBeGreaterThan(
+			config.toolTurnExtraMinMs,
+		);
+
+		vi.stubEnv("DEEPSEEK_WEB_V2_MIN_SEND_DELAY_MS", "500");
+		vi.stubEnv("DEEPSEEK_WEB_V2_MAX_SEND_DELAY_MS", "1500");
+		const overridden = resolveDeepSeekWebV2Config();
+		expect(overridden.minSendDelayMs).toBe(500);
+		expect(overridden.maxSendDelayMs).toBe(1500);
+	});
+});
+
+describe("deepseek-web-v2 pacing (computeSendDelay / randomInRange)", () => {
+	const config = {
+		minSendDelayMs: 1000,
+		maxSendDelayMs: 2000,
+		toolTurnExtraMinMs: 2000,
+		toolTurnExtraMaxMs: 3000,
+	};
+
+	it("returns a deterministic value within range for a pinned rng", () => {
+		// rng -> 0 => min; rng -> 0.9999 => max.
+		expect(randomInRange(10, 20, () => 0)).toBe(10);
+		const maxValue = randomInRange(10, 20, () => 0.99999);
+		expect(maxValue).toBe(20);
+		expect(maxValue).toBeLessThanOrEqual(20);
+	});
+
+	it("adds the extra tool-turn delay only when isToolTurn", () => {
+		// rng=0 ⇒ base = 1000. Tool turn adds extra min 2000 ⇒ 3000.
+		expect(computeSendDelay(config, { isToolTurn: false }, () => 0)).toBe(1000);
+		expect(computeSendDelay(config, { isToolTurn: true }, () => 0)).toBe(
+			1000 + 2000,
+		);
+	});
+
+	it("always stays within the configured ranges across many random draws", () => {
+		for (let i = 0; i < 100; i++) {
+			const normal = computeSendDelay(config, { isToolTurn: false });
+			expect(normal).toBeGreaterThanOrEqual(config.minSendDelayMs);
+			expect(normal).toBeLessThanOrEqual(config.maxSendDelayMs);
+
+			const toolTurn = computeSendDelay(config, { isToolTurn: true });
+			expect(toolTurn).toBeGreaterThanOrEqual(
+				config.minSendDelayMs + config.toolTurnExtraMinMs,
+			);
+			expect(toolTurn).toBeLessThanOrEqual(
+				config.maxSendDelayMs + config.toolTurnExtraMaxMs,
+			);
+		}
+	});
+
+	it("degenerate/inverted ranges do not throw and stay sane", () => {
+		expect(randomInRange(5, 5, () => 0.5)).toBe(5);
+		expect(randomInRange(10, 2, () => 0.5)).toBeLessThanOrEqual(10);
+		expect(randomInRange(10, 2, () => 0.5)).toBeGreaterThanOrEqual(2);
+	});
+});
+
+describe("deepseek-web-v2 isRateLimitText", () => {
+	it("detects DeepSeek's anti-abuse phrasing", () => {
+		expect(isRateLimitText("Messages too frequent. Try again later.")).toBe(
+			true,
+		);
+		expect(isRateLimitText("Slow down: too many requests")).toBe(true);
+	});
+
+	it("ignores normal completions", () => {
+		expect(isRateLimitText("Here is the code you asked for.")).toBe(false);
+		expect(isRateLimitText("")).toBe(false);
+	});
+});
+
+describe("deepseek-web-v2 isSameChatLocation (no-reload guard)", () => {
+	it("is true when already on the exact same chat URL", () => {
+		expect(
+			isSameChatLocation(
+				"https://chat.deepseek.com/a/chat/s/abc123",
+				"https://chat.deepseek.com/a/chat/s/abc123",
+			),
+		).toBe(true);
+		expect(
+			isSameChatLocation(
+				"https://chat.deepseek.com/",
+				"https://chat.deepseek.com/",
+			),
+		).toBe(true);
+	});
+
+	it("ignores trailing slash and fragment differences (no reload)", () => {
+		expect(
+			isSameChatLocation(
+				"https://chat.deepseek.com/",
+				"https://chat.deepseek.com",
+			),
+		).toBe(true);
+		expect(
+			isSameChatLocation(
+				"https://chat.deepseek.com/a/chat/s/abc123",
+				"https://chat.deepseek.com/a/chat/s/abc123#foo",
+			),
+		).toBe(true);
+	});
+
+	it("is false when on a different chat (reload needed)", () => {
+		expect(
+			isSameChatLocation(
+				"https://chat.deepseek.com/a/chat/s/one",
+				"https://chat.deepseek.com/a/chat/s/two",
+			),
+		).toBe(false);
+		// A fresh composer when currently inside a chat is a real navigation.
+		expect(
+			isSameChatLocation(
+				"https://chat.deepseek.com/a/chat/s/one",
+				"https://chat.deepseek.com/",
+			),
+		).toBe(false);
+	});
+
+	it("is false for empty destination (never treat as already there)", () => {
+		expect(isSameChatLocation("", "")).toBe(false);
+		expect(isSameChatLocation("https://chat.deepseek.com/", "")).toBe(false);
+	});
+});
+
+describe("deepseek-web-v2 throttle recovery reload", () => {
+	afterEach(() => {
+		// Reset the module flag so tests don't leak into each other.
+		consumeThrottleRecoveryReload();
+	});
+
+	it("is empty by default (healthy turns do not reload)", () => {
+		expect(consumeThrottleRecoveryReload()).toBe(false);
+	});
+
+	it("returns true exactly once after a throttle is requested", () => {
+		requestThrottleRecoveryReload();
+		expect(consumeThrottleRecoveryReload()).toBe(true);
+		// One-shot: the second read is false again.
+		expect(consumeThrottleRecoveryReload()).toBe(false);
+	});
+
+	it("a fresh request re-arms the flag for the next turn", () => {
+		requestThrottleRecoveryReload();
+		expect(consumeThrottleRecoveryReload()).toBe(true);
+		requestThrottleRecoveryReload();
+		expect(consumeThrottleRecoveryReload()).toBe(true);
 	});
 });
 

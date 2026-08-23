@@ -24,6 +24,7 @@ import {
 	parseDeepSeekToolCalls,
 	resolveModelOptions,
 } from "./deepseek-web";
+import { validateToolCalls } from "./tool-pipeline/tool-dispatcher";
 import type { ProviderFactoryResult } from "./types";
 
 /**
@@ -62,6 +63,17 @@ import type { ProviderFactoryResult } from "./types";
  *   DEBUG / LAUNCH_TIMEOUT_MS / RESPONSE_TIMEOUT_MS / LOGIN_TIMEOUT_MS /
  *   TOOL_PROMPT_MODE / TOOL_PROMPT_THRESHOLD_CHARS / CHATS_FILE.
  *
+ * Message pacing (to avoid DeepSeek's "Messages too frequent" frequency
+ * throttle): the provider sleeps a randomized `[MIN,MAX]` amount before each
+ * send, plus an extra random delay on tool-request turns. Tune via
+ *   MIN_SEND_DELAY_MS / MAX_SEND_DELAY_MS /
+ *   TOOL_TURN_EXTRA_MIN_MS / TOOL_TURN_EXTRA_MAX_MS.
+ *
+ * When DeepSeek rate-limits, its reported `accumulated_token_usage` can drop
+ * (a server-side rollback). The provider tracks context strictly
+ * monotonically so that drop doesn't erase the system-prompt re-injection
+ * thresholds or under-report usage.
+ *
  * `headless` defaults to false — Chrome opens as a visible window so first-time
  * login and debugging are possible. Set `headless: true` (or
  * DEEPSEEK_WEB_V2_HEADLESS=true) once you trust the setup. `debug: true` logs
@@ -89,6 +101,34 @@ const DEFAULT_TOOL_PROMPT_THRESHOLD_CHARS = 20_000;
  * (mirrors the `chat_sessions.json` in the reference `start_continue_chat.py`).
  */
 const DEFAULT_CHATS_FILE = path.join(CONFIG_DIR, "chats.json");
+
+/**
+ * One-shot "recover from a throttle/block" signal. When DeepSeek rate-limited
+ * the last turn ("Messages too frequent"), the page can be left in a stale or
+ * temporarily-blocked state. On the next `runCompletion` we FORCE a page reload
+ * even if the URL already matches the target chat — this clears the blocked
+ * page and lets the composer work normally again. The flag is consumed (reset)
+ * after one forced reload so healthy turns still skip reloading.
+ */
+let recoverFromThrottle = false;
+
+/** Mark that the next turn must force a page reload to clear a throttle block. */
+export function requestThrottleRecoveryReload(): void {
+	recoverFromThrottle = true;
+}
+
+/** `true` exactly once, then reset — i.e. consume the pending recovery reload. */
+export function consumeThrottleRecoveryReload(): boolean {
+	const shouldReload = recoverFromThrottle;
+	recoverFromThrottle = false;
+	return shouldReload;
+}
+
+const DEFAULT_MIN_SEND_DELAY_MS = 800;
+const DEFAULT_MAX_SEND_DELAY_MS = 2_800;
+/** Extra randomized delay added when the turn is itself a tool-call turn. */
+const DEFAULT_TOOL_TURN_EXTRA_MIN_MS = 1_500;
+const DEFAULT_TOOL_TURN_EXTRA_MAX_MS = 4_500;
 
 /** Whether the full `<tool>` contract + tool list is sent on every turn. */
 export type ToolPromptMode = "lean" | "always";
@@ -118,6 +158,20 @@ export interface DeepSeekWebV2RuntimeConfig {
 	toolPromptMode: ToolPromptMode;
 	/** Legacy: accepted for backward compatibility; no longer used. */
 	toolPromptThresholdChars: number;
+	/**
+	 * Lower bound of the random sleep applied before each message send.
+	 * Randomized (with `maxSendDelayMs`) so sends don't look machine-gunned.
+	 */
+	minSendDelayMs: number;
+	/** Upper bound of the random sleep applied before each message send. */
+	maxSendDelayMs: number;
+	/**
+	 * Lower bound of the EXTRA random sleep added on turns that are themselves
+	 * tool-request turns (the fastest back-to-back pattern in an agent run).
+	 */
+	toolTurnExtraMinMs: number;
+	/** Upper bound of the EXTRA random sleep added on tool-request turns. */
+	toolTurnExtraMaxMs: number;
 }
 
 function readConfigFile(): Partial<DeepSeekWebV2RuntimeConfig> {
@@ -178,11 +232,90 @@ export function resolveDeepSeekWebV2Config(): DeepSeekWebV2RuntimeConfig {
 				process.env.DEEPSEEK_WEB_V2_TOOL_PROMPT_THRESHOLD_CHARS ??
 					fileConfig.toolPromptThresholdChars,
 			) || DEFAULT_TOOL_PROMPT_THRESHOLD_CHARS,
+		minSendDelayMs:
+			Number(
+				process.env.DEEPSEEK_WEB_V2_MIN_SEND_DELAY_MS ??
+					fileConfig.minSendDelayMs,
+			) || DEFAULT_MIN_SEND_DELAY_MS,
+		maxSendDelayMs:
+			Number(
+				process.env.DEEPSEEK_WEB_V2_MAX_SEND_DELAY_MS ??
+					fileConfig.maxSendDelayMs,
+			) || DEFAULT_MAX_SEND_DELAY_MS,
+		toolTurnExtraMinMs:
+			Number(
+				process.env.DEEPSEEK_WEB_V2_TOOL_TURN_EXTRA_MIN_MS ??
+					fileConfig.toolTurnExtraMinMs,
+			) || DEFAULT_TOOL_TURN_EXTRA_MIN_MS,
+		toolTurnExtraMaxMs:
+			Number(
+				process.env.DEEPSEEK_WEB_V2_TOOL_TURN_EXTRA_MAX_MS ??
+					fileConfig.toolTurnExtraMaxMs,
+			) || DEFAULT_TOOL_TURN_EXTRA_MAX_MS,
 		chatsFile:
 			process.env.DEEPSEEK_WEB_V2_CHATS_FILE ||
 			fileConfig.chatsFile ||
 			DEFAULT_CHATS_FILE,
 	};
+}
+
+/**
+ * Random integer in the inclusive `[min, max]` range. `rng` is injectable so
+ * tests can pin a deterministic value; defaults to `Math.random`.
+ */
+export function randomInRange(
+	min: number,
+	max: number,
+	rng: () => number = Math.random,
+): number {
+	// Guard against inverted / degenerate ranges so the delay is always sane.
+	const low = Math.min(min, max);
+	const high = Math.max(min, max);
+	if (high <= low) return low;
+	return Math.floor(low + rng() * (high - low + 1));
+}
+
+/**
+ * Compute the randomized sleep to apply before sending one message to the
+ * DeepSeek web UI. Every send waits a random `[min,max]` amount; tool-request
+ * turns (the most rapid-fire pattern in an agent run) get an extra random
+ * delay on top, making the pacing irregular enough to dodge the
+ * "Messages too frequent" throttle while still being clearly randomized.
+ *
+ * `rng` is injectable for deterministic tests (defaults to `Math.random`).
+ */
+export function computeSendDelay(
+	config: Pick<
+		DeepSeekWebV2RuntimeConfig,
+		| "minSendDelayMs"
+		| "maxSendDelayMs"
+		| "toolTurnExtraMinMs"
+		| "toolTurnExtraMaxMs"
+	>,
+	opts: { isToolTurn: boolean },
+	rng: () => number = Math.random,
+): number {
+	const base = randomInRange(config.minSendDelayMs, config.maxSendDelayMs, rng);
+	if (!opts.isToolTurn) return base;
+	const extra = randomInRange(
+		config.toolTurnExtraMinMs,
+		config.toolTurnExtraMaxMs,
+		rng,
+	);
+	return base + extra;
+}
+
+/**
+ * Human-ish markers DeepSeek uses to say "slow down". Used to detect a
+ * throttled reply so the provider can log/back off instead of misinterpreting
+ * it as a normal (possibly shorter-context) completion.
+ */
+const RATE_LIMIT_TEXT_RE =
+	/Messages too frequent|Try again later|too many requests|rate.limit|slow down/i;
+
+/** Return `true` when `text` looks like a DeepSeek anti-abuse / throttle reply. */
+export function isRateLimitText(text: string): boolean {
+	return RATE_LIMIT_TEXT_RE.test(text);
 }
 
 /** Locate an installed Chrome/Chromium binary (same candidate list as the reference browser.py). */
@@ -618,7 +751,7 @@ export class CdpClient {
 
 	on(method: string, cb: (params: any, sessionId?: string) => void): void {
 		if (!this.listeners.has(method)) this.listeners.set(method, new Set());
-		this.listeners.get(method)!.add(cb);
+		this.listeners.get(method)?.add(cb);
 	}
 
 	close(): void {
@@ -753,26 +886,103 @@ async function readPageUrl(
 }
 
 /**
+ * Decide whether navigating to `destination` would be a no-op because the tab
+ * is already there. Normalizes by stripping a trailing slash and any fragment,
+ * so harmless differences (e.g. `https://chat.deepseek.com/` vs
+ * `https://chat.deepseek.com#x`) don't force a needless full page reload.
+ */
+export function isSameChatLocation(
+	currentUrl: string,
+	destination: string,
+): boolean {
+	const normalize = (url: string): string =>
+		(url || "").replace(/\/+$/, "").split("#")[0] ?? "";
+	return (
+		normalize(currentUrl) === normalize(destination) &&
+		normalize(destination) !== ""
+	);
+}
+
+/**
  * Point the DeepSeek tab at a specific chat (load an old conversation) or at a
  * fresh composer (new chat). After navigating, the caller's
  * `waitForComposerReady` poll confirms the SPA reached a usable composer.
+ *
+ * IMPORTANT: if the tab is ALREADY on the target URL, we do NOT navigate. This
+ * is what avoids a needless full page reload on every follow-up turn of the
+ * same conversation — a reload that raced the CDP network-capture listener and
+ * could cause "message was not typed into the composer within 10s" (especially
+ * with slow internet). The SPA routes between chats client-side, so skipping a
+ * same-URL reload is safe and still reaches the right composer.
+ *
+ * EXCEPTION: pass `forceReload: true` to skip the "already there" shortcut and
+ * force a page refresh regardless. Used to recover from a DeepSeek
+ * "Messages too frequent" throttle — the blocked page needs a reload to clear
+ * before it can accept messages again, even though the URL is unchanged.
  */
 async function navigateDeepSeekChat(
 	cdp: CdpClient,
 	cdpSessionId: string,
 	target: { sessionId?: string; fresh: boolean },
 	logger?: BasicLogger,
+	forceReload = false,
 ): Promise<void> {
-	if (logger) {
-		logger.debug(
-			`[deepseek-web-v2] ${target.fresh ? "opening a new DeepSeek chat" : `loading DeepSeek chat ${target.sessionId}`}`,
-		);
-	}
 	const destination = target.fresh
 		? DEEPSEEK_WEB_URL
 		: target.sessionId
 			? `https://chat.deepseek.com/a/chat/s/${target.sessionId}`
 			: DEEPSEEK_WEB_URL;
+
+	// Read the current location first; if we're already on the destination, skip
+	// the navigation entirely (no page reload) — unless we are recovering from a
+	// throttle, which requires a real reload to clear the blocked page.
+	const currentUrl = (await readPageUrl(cdp, cdpSessionId)) || "";
+	const alreadyThere = isSameChatLocation(currentUrl, destination);
+	const reloadAnyway = forceReload;
+
+	if (alreadyThere && !reloadAnyway) {
+		if (logger) {
+			logger.debug(
+				`[deepseek-web-v2] already on ${destination} — skipping navigation (no reload)`,
+			);
+		}
+		// Still perform the defensive "new chat" click for a fresh composer so we
+		// don't accidentally type into a previously opened conversation, but only
+		// when the composer is empty (no navigation / no reload is triggered).
+		if (target.fresh) {
+			await cdp.send(
+				"Runtime.evaluate",
+				{
+					expression: `(() => {
+						const ta = document.querySelector('textarea[name="search"]');
+						if (ta && !ta.value) {
+							const clickTargets = [
+								'input[placeholder*="new chat" i]',
+								'button[aria-label*="New chat" i]',
+								'.ds-icon-button[aria-label*="chat" i]',
+								'[data-testid*="new-chat" i]',
+							];
+							for (const sel of clickTargets) {
+								const el = document.querySelector(sel);
+								if (el) { el.click(); return true; }
+							}
+						}
+						return false;
+					})()`,
+					returnByValue: true,
+				},
+				cdpSessionId,
+			);
+		}
+		await sleep(300);
+		return;
+	}
+
+	if (logger) {
+		logger.debug(
+			`[deepseek-web-v2] ${target.fresh ? "opening a new DeepSeek chat" : `loading DeepSeek chat ${target.sessionId}`}`,
+		);
+	}
 	await cdp.send(
 		"Runtime.evaluate",
 		{
@@ -946,6 +1156,12 @@ async function streamCompletionFromPage(input: {
 	modelType: string;
 	deepThinking: boolean | null;
 	thinkingEnabled: boolean;
+	/**
+	 * `true` when this turn is expected to request tool calls. Tool turns are
+	 * the most rapid-fire pattern in an agent run, so they get an extra
+	 * randomized delay before sending to dodge DeepSeek's frequency throttle.
+	 */
+	isToolTurn: boolean;
 	onText?: (text: string) => void;
 	onReasoning?: (text: string) => void;
 	signal?: AbortSignal;
@@ -954,6 +1170,7 @@ async function streamCompletionFromPage(input: {
 	text: string;
 	reasoning: string;
 	accumulatedTokenUsage?: number;
+	rateLimited?: boolean;
 }> {
 	const {
 		cdp,
@@ -963,6 +1180,7 @@ async function streamCompletionFromPage(input: {
 		modelType,
 		deepThinking,
 		thinkingEnabled,
+		isToolTurn,
 		onText,
 		onReasoning,
 		signal,
@@ -985,6 +1203,7 @@ async function streamCompletionFromPage(input: {
 		text: string;
 		reasoning: string;
 		accumulatedTokenUsage?: number;
+		rateLimited?: boolean;
 	} = { text: "", reasoning: "" };
 	// Request id of the chat/completion response, set when headers arrive.
 	let completionRequestId: string | undefined;
@@ -1026,6 +1245,16 @@ async function streamCompletionFromPage(input: {
 		if (signal?.aborted) {
 			throw new DOMException("Aborted", "AbortError");
 		}
+
+		// Randomized human-like pacing — the fix for DeepSeek's "Messages too
+		// frequent" throttle. Wait a random `[min,max]` before firing, plus an
+		// extra random amount on tool-request turns (the fastest back-to-back
+		// pattern). Simply sleeping a fixed amount still looks machine-gunned.
+		const sendDelay = computeSendDelay(config, { isToolTurn });
+		debugLog(
+			`pacing: waiting ${sendDelay}ms before send (toolTurn=${String(isToolTurn)})`,
+		);
+		await sleep(sendDelay);
 
 		debugLog(
 			`sending prompt (${prompt.length} chars, model=${modelType}, deepThinking=${String(deepThinking)})`,
@@ -1070,6 +1299,19 @@ async function streamCompletionFromPage(input: {
 		debugLog("prompt typed into the composer");
 
 		result = await withTimeout(sseDone, config.responseTimeoutMs, signal);
+		// Flag a throttled reply so the caller can back off / report it instead
+		// of treating a shorter-context completion as a real context reset. Also
+		// arm a one-shot recovery reload so the next turn forces a page refresh
+		// to clear the temporarily-blocked composer ("Messages too frequent").
+		if (isRateLimitText(result.text)) {
+			result.rateLimited = true;
+			requestThrottleRecoveryReload();
+			logger?.log?.(
+				'[deepseek-web-v2] DeepSeek throttled the request: "Messages too frequent" detected. ' +
+					"Next message will reload the page to recover, and sending is paced. " +
+					"Consider raising DEEPSEEK_WEB_V2_MIN/MAX_SEND_DELAY_MS.",
+			);
+		}
 		debugLog(
 			`completion done: ${result.text.length} chars text, ${result.reasoning.length} chars reasoning` +
 				(result.accumulatedTokenUsage !== undefined
@@ -1088,6 +1330,8 @@ async function runCompletion(input: {
 	modelId: string;
 	prompt: string;
 	chatKey: string;
+	/** `true` when this turn requests tool calls → extra pacing delay. */
+	isToolTurn: boolean;
 	onText?: (text: string) => void;
 	onReasoning?: (text: string) => void;
 	signal?: AbortSignal;
@@ -1096,9 +1340,18 @@ async function runCompletion(input: {
 	text: string;
 	reasoning: string;
 	accumulatedTokenUsage?: number;
+	rateLimited?: boolean;
 }> {
-	const { modelId, prompt, chatKey, onText, onReasoning, signal, logger } =
-		input;
+	const {
+		modelId,
+		prompt,
+		chatKey,
+		isToolTurn,
+		onText,
+		onReasoning,
+		signal,
+		logger,
+	} = input;
 	const config = resolveDeepSeekWebV2Config();
 	const { modelType, deepThinking } = resolveV2ModelOptions(modelId);
 
@@ -1112,7 +1365,13 @@ async function runCompletion(input: {
 	// Persist chat continuity (mirror start_continue_chat.py): a CLI conversation
 	// that already has a mapped DeepSeek web chat reopens that chat; a brand-new
 	// CLI conversation opens a fresh DeepSeek composer.
+	//
+	// If the previous turn was throttled ("Messages too frequent"), the page may
+	// be temporarily blocked — force a real reload this once (consume the
+	// flag) so the blocked page clears and the composer works normally again,
+	// even if the URL already matches the target chat.
 	const existingDeepSeekSession = lookupChatSession(config.chatsFile, chatKey);
+	const forceReload = consumeThrottleRecoveryReload();
 	if (existingDeepSeekSession) {
 		await navigateDeepSeekChat(
 			cdp,
@@ -1122,9 +1381,16 @@ async function runCompletion(input: {
 				fresh: false,
 			},
 			logger,
+			forceReload,
 		);
 	} else {
-		await navigateDeepSeekChat(cdp, sessionId, { fresh: true }, logger);
+		await navigateDeepSeekChat(
+			cdp,
+			sessionId,
+			{ fresh: true },
+			logger,
+			forceReload,
+		);
 	}
 
 	await waitForComposerReady(cdp, sessionId, config, logger);
@@ -1137,6 +1403,7 @@ async function runCompletion(input: {
 		modelType,
 		deepThinking,
 		thinkingEnabled: deepThinking === true,
+		isToolTurn,
 		onText,
 		onReasoning,
 		signal,
@@ -1282,9 +1549,10 @@ export function parseFallbackToolUses(
 	// markdown code fences → editor (create file)
 	if (hasEditor) {
 		const fencePattern = /```([\w+-]*)\s*\n([\s\S]*?)```/g;
-		let match: RegExpExecArray | null;
 		let index = 0;
-		while ((match = fencePattern.exec(text)) !== null) {
+		for (;;) {
+			const match = fencePattern.exec(text);
+			if (match === null) break;
 			const lang = (match[1] ?? "").toLowerCase();
 			const code = match[2].replace(/\s+$/, "");
 			if (!code.trim()) {
@@ -1527,17 +1795,37 @@ function createDeepSeekWebV2Model(
 			// state, so it must not be re-sent.
 			isNewChat,
 		);
-		const { text, reasoning, accumulatedTokenUsage } = await runCompletion({
-			modelId,
-			prompt,
-			chatKey,
-			onText,
-			onReasoning,
-			signal: options.abortSignal,
-			logger,
-		});
+		const { text, reasoning, accumulatedTokenUsage, rateLimited } =
+			await runCompletion({
+				modelId,
+				prompt,
+				chatKey,
+				// This turn requests tool calls when function tools are wired up —
+				// so it is exactly the rapid-fire pattern that needs extra pacing.
+				isToolTurn: functionTools.length > 0,
+				onText,
+				onReasoning,
+				signal: options.abortSignal,
+				logger,
+			});
+		// Track the context strictly monotonically. DeepSeek's reported
+		// `accumulated_token_usage` can DROP when it rejects/rolls back a
+		// rate-limited message (the user-visible "tokens reset to lower"). If we
+		// blindly record that lower value we'd lose the system-prompt
+		// re-injection thresholds and under-report context. Only ever move
+		// forward; a new chat (fresh key, no history) legitimately restarts.
 		if (accumulatedTokenUsage !== undefined) {
-			lastAccumulatedTokenUsage = accumulatedTokenUsage;
+			if (
+				lastAccumulatedTokenUsage === undefined ||
+				accumulatedTokenUsage > lastAccumulatedTokenUsage ||
+				isNewChat
+			) {
+				lastAccumulatedTokenUsage = accumulatedTokenUsage;
+			} else if (rateLimited) {
+				logger?.debug?.(
+					`[deepseek-web-v2] ignoring lower accumulated_token_usage ${accumulatedTokenUsage} (kept ${lastAccumulatedTokenUsage}) — likely a post-rate-limit rollback`,
+				);
+			}
 		}
 		if (toReinject !== undefined && toReinject > reinjectedThroughThreshold) {
 			reinjectedThroughThreshold = toReinject;
@@ -1580,7 +1868,15 @@ function createDeepSeekWebV2Model(
 					usage,
 				};
 			}
-			return { text: cleanedContent, reasoning, toolCalls, usage };
+
+			// Python-validation gate: drop any editor call with malformed
+			// `new_text` and route a precise retry prompt back to the model so it
+			// re-emits a corrected <tool> block instead of executing bad code.
+			const { tools: validated, retryPrompt } = validateToolCalls(toolCalls);
+			const routedText = retryPrompt
+				? `${cleanedContent}\n\n${retryPrompt}`.trim()
+				: cleanedContent;
+			return { text: routedText, reasoning, toolCalls: validated, usage };
 		}
 		return { text, reasoning, toolCalls: [], usage };
 	};
@@ -1649,6 +1945,16 @@ function createDeepSeekWebV2Model(
 						)
 					: { cleanedContent: rawText, toolCalls: [] };
 
+			// Python-validation gate (same as doCompletion's non-streaming path):
+			// drop editor calls with malformed `new_text` and surface the retry
+			// prompt as text so the correction feeds back to the model instead of
+			// executing bad code.
+			const { tools: validatedCalls, retryPrompt } =
+				validateToolCalls(toolCalls);
+			const displayText = retryPrompt
+				? `${cleanedContent}\n\n${retryPrompt}`.trim()
+				: cleanedContent;
+
 			const parts: LanguageModelV2StreamPart[] = [
 				{ type: "stream-start", warnings: [] },
 				{ type: "response-metadata", id },
@@ -1658,30 +1964,30 @@ function createDeepSeekWebV2Model(
 				parts.push({ type: "reasoning-delta", id, delta: reasoningText });
 				parts.push({ type: "reasoning-end", id });
 			}
-			if (cleanedContent) {
+			if (displayText) {
 				parts.push({ type: "text-start", id });
-				parts.push({ type: "text-delta", id, delta: cleanedContent });
+				parts.push({ type: "text-delta", id, delta: displayText });
 				parts.push({ type: "text-end", id });
 			}
-			for (let i = 0; i < toolCalls.length; i++) {
-				const input = JSON.stringify(toolCalls[i].arguments);
+			for (let i = 0; i < validatedCalls.length; i++) {
+				const input = JSON.stringify(validatedCalls[i].arguments);
 				parts.push({
 					type: "tool-input-start",
 					id,
-					toolName: toolCalls[i].name,
+					toolName: validatedCalls[i].name,
 				});
 				parts.push({ type: "tool-input-delta", id, delta: input });
 				parts.push({ type: "tool-input-end", id });
 				parts.push({
 					type: "tool-call",
 					toolCallId: `call-${Date.now()}-${i}`,
-					toolName: toolCalls[i].name,
+					toolName: validatedCalls[i].name,
 					input,
 				});
 			}
 			parts.push({
 				type: "finish",
-				finishReason: finishReasonFor(cleanedContent, toolCalls),
+				finishReason: finishReasonFor(displayText, validatedCalls),
 				usage: {
 					inputTokens: completion.usage.inputTokens,
 					outputTokens: completion.usage.outputTokens,
