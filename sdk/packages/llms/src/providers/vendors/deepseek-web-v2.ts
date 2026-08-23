@@ -22,7 +22,8 @@ import {
 	estimateDeepSeekWebUsage,
 	messagesToPrompt,
 	parseDeepSeekToolCalls,
-	resolveModelOptions,
+	parseLooseDeepSeekToolCalls,
+resolveModelOptions,
 } from "./deepseek-web";
 import { validateToolCalls } from "./tool-pipeline/tool-dispatcher";
 import type { ProviderFactoryResult } from "./types";
@@ -1782,9 +1783,9 @@ export function buildPrompt(
 		!alreadyHasSystem &&
 		conversation.length > 0
 	) {
-		return messagesToPrompt([systemMessage, ...conversation]);
+		return messagesToPrompt([systemMessage, ...conversation], 0);
 	}
-	return messagesToPrompt(conversation);
+	return messagesToPrompt(conversation, 0);
 }
 
 function finishReasonFor(
@@ -1903,32 +1904,30 @@ function createDeepSeekWebV2Model(
 				text,
 				toolNames,
 			);
+			// Recover "wrong" tool-call shapes the strict regex missed before
+			// falling back to plain-text heuristics.
+			const looseCalls =
+				toolCalls.length === 0
+					? parseLooseDeepSeekToolCalls(text, toolNames)
+					: toolCalls;
+			if (looseCalls.length > 0) {
+				const { tools: validatedLoose, retryPrompt: looseRetry } =
+					validateToolCalls(looseCalls);
+				const looseText = looseRetry
+					? `${cleanedContent}\n\n${looseRetry}`.trim()
+					: cleanedContent;
+				return { text: looseText, reasoning, toolCalls: validatedLoose, usage };
+			}
 			// The web model often ignores the <tool> contract and answers with
 			// plain text (a plan, code fences, install commands). If no
 			// structured call came back, convert the visible reply into real
 			// tool calls so the agent actually executes them.
-			if (toolCalls.length === 0) {
-				const fallback = parseFallbackToolUses(
-					cleanedContent,
-					lastUserText(options.prompt),
-					toolNames,
-				);
-				return {
-					text: fallback.cleanedText,
-					reasoning,
-					toolCalls: fallback.toolUses,
-					usage,
-				};
-			}
-
-			// Python-validation gate: drop any editor call with malformed
-			// `new_text` and route a precise retry prompt back to the model so it
-			// re-emits a corrected <tool> block instead of executing bad code.
-			const { tools: validated, retryPrompt } = validateToolCalls(toolCalls);
-			const routedText = retryPrompt
-				? `${cleanedContent}\n\n${retryPrompt}`.trim()
-				: cleanedContent;
-			return { text: routedText, reasoning, toolCalls: validated, usage };
+			const fallback = parseFallbackToolUses(
+				cleanedContent,
+				lastUserText(options.prompt),
+				toolNames,
+			);
+			return { text: fallback.cleanedText, reasoning, toolCalls: fallback.toolUses, usage };
 		}
 		return { text, reasoning, toolCalls: [], usage };
 	};
@@ -1997,12 +1996,21 @@ function createDeepSeekWebV2Model(
 						)
 					: { cleanedContent: rawText, toolCalls: [] };
 
+			// Recover "wrong" tool-call shapes the strict regex missed before
+			// emitting, mirroring doCompletion's recovery path.
+			const streamToolCalls =
+				toolCalls.length === 0 && functionTools.length > 0
+					? parseLooseDeepSeekToolCalls(
+							rawText,
+							functionTools.map((t) => t.name),
+						)
+					: toolCalls;
 			// Python-validation gate (same as doCompletion's non-streaming path):
 			// drop editor calls with malformed `new_text` and surface the retry
 			// prompt as text so the correction feeds back to the model instead of
 			// executing bad code.
 			const { tools: validatedCalls, retryPrompt } =
-				validateToolCalls(toolCalls);
+				validateToolCalls(streamToolCalls);
 			const displayText = retryPrompt
 				? `${cleanedContent}\n\n${retryPrompt}`.trim()
 				: cleanedContent;

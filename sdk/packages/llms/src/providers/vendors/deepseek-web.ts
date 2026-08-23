@@ -649,7 +649,10 @@ function promptPartText(part: PromptPart): string {
  * multi-turn conversations a bounded rolling window of recent turns is stitched
  * in so the agent keeps context across turns.
  */
-export function messagesToPrompt(messages: LanguageModelV2Message[]): string {
+export function messagesToPrompt(
+	messages: LanguageModelV2Message[],
+	historyWindow: number = DEFAULT_AUTO_HISTORY_WINDOW,
+): string {
 	const systemParts: string[] = [];
 	const conversation: Array<{ role: string; text: string }> = [];
 	let lastUserContent = "";
@@ -688,7 +691,7 @@ export function messagesToPrompt(messages: LanguageModelV2Message[]): string {
 	if (systemParts.length > 0) outputParts.push(systemParts.join("\n\n"));
 
 	const effectiveWindow =
-		conversation.length > 1 ? DEFAULT_AUTO_HISTORY_WINDOW : 0;
+		conversation.length > 1 ? historyWindow : 0;
 	if (effectiveWindow > 0 && conversation.length > 1) {
 		const recent = conversation.slice(-effectiveWindow);
 		outputParts.push(
@@ -959,7 +962,7 @@ const TOOL_NAME_ALIASES: Record<string, string> = {
 	question: "ask_question",
 };
 
-function normalizeToolName(name: string): string {
+export function normalizeToolName(name: string): string {
 	const key = name.trim().toLowerCase();
 	return TOOL_NAME_ALIASES[key] ?? key;
 }
@@ -1068,6 +1071,67 @@ export function parseDeepSeekToolCalls(
 }
 
 /**
+ * Catch tool calls the strict paired-tag regex in `parseDeepSeekToolCalls`
+ * misses because the model emitted a "wrong" (but still recognizable) shape:
+ * a bare `<tool name="...">`, an unbalanced `<tool>...</tool>`, or any
+ * `<tool...>`-prefixed block whose closing tag is absent/malformed.
+ *
+ * This is a best-effort recovery: it extracts a candidate name (from a
+ * `name`/`type` attribute or from a JSON body) and parses any trailing JSON
+ * object as the argument map. If the result doesn't normalize to a known tool,
+ * it returns an empty list so the caller falls through to its other handling.
+ */
+export function parseLooseDeepSeekToolCalls(
+content: string,
+toolNames: string[],
+): ParsedToolCall[] {
+const accepted = new Set(toolNames.map(normalizeToolName));
+const toolCalls: ParsedToolCall[] = [];
+
+const openTagRe = /<\s*tool[\w:-]*\b([^>]*)>/gi;
+let match: RegExpExecArray | null;
+while ((match = openTagRe.exec(content)) !== null) {
+const attrs = (match[1] ?? "").trim();
+const afterTag = content.slice(match.index + match[0].length);
+
+let name =
+/(?:id|name)\s*=\s*["']([^"']+)["']/i.exec(attrs)?.[1] ?? "";
+
+let args: Record<string, unknown> = {};
+const parsed = parseRepairedToolJson(afterTag);
+if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) {
+const record = parsed as Record<string, unknown>;
+if (!name) {
+name =
+typeof record.name === "string"
+? record.name
+: typeof record.type === "string"
+? record.type
+: "";
+}
+const candidate =
+record.arguments ?? record.params ?? record.arguments_json ?? record;
+if (
+candidate &&
+typeof candidate === "object" &&
+!Array.isArray(candidate)
+) {
+args = candidate as Record<string, unknown>;
+}
+}
+
+const normalizedName = normalizeToolName(name);
+if (!normalizedName || !accepted.has(normalizedName)) continue;
+
+if (toolCalls.some((c) => c.name === normalizedName)) continue;
+
+toolCalls.push({ name: normalizedName, arguments: args });
+}
+
+return toolCalls;
+}
+
+/**
  * Parse the JSON body of a `<tool>` block, repairing common malformed output
  * the web model emits. Returns the parsed object, or `undefined` if it cannot
  * be recovered (in which case the block is treated as plain visible text).
@@ -1077,7 +1141,7 @@ export function parseDeepSeekToolCalls(
  * quote-aware so it never rewrites single quotes that live inside an already
  * double-quoted JSON string (e.g. a PowerShell command containing `'name'`).
  */
-function parseRepairedToolJson(raw: string): unknown {
+export function parseRepairedToolJson(raw: string): unknown {
 	let text = raw.trim();
 	if (!text) return undefined;
 
