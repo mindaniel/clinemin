@@ -24,6 +24,7 @@ export type LocalSlashCommandName =
 	| "undo"
 	| "clear"
 	| "history"
+	| "findchat"
 	| "quit"
 	| "help";
 
@@ -106,6 +107,10 @@ const TUI_LOCAL_COMMANDS: Array<{
 		description: "View session history",
 	},
 	{
+		name: "findchat",
+		description: "Find and reopen a DeepSeek Web v2 chat (web provider)",
+	},
+	{
 		name: "help",
 		description: "Show help",
 	},
@@ -129,6 +134,7 @@ const SYSTEM_COMMAND_ORDER = [
 	"clear",
 	"team",
 	"history",
+	"findchat",
 	"help",
 	"quit",
 ] satisfies ReadonlyArray<LocalSlashCommandName | "team">;

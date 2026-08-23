@@ -1,9 +1,15 @@
+import {
+	type DeepSeekWebV2ChatEntry,
+	listDeepSeekWebV2Chats,
+	openDeepSeekWebV2Chat,
+} from "@cline/llms";
 import { useTerminalDimensions } from "@opentui/react";
 import type { ChoiceContext } from "@opentui-ui/dialog";
 import { useDialog } from "@opentui-ui/dialog/react";
 import { useCallback } from "react";
 import type { SlashCommandRegistry } from "../commands/slash-command-registry";
 import { resolveSlashCommand } from "../commands/slash-command-registry";
+import { FindChatDialogContent } from "../components/dialogs/find-chat-dialog";
 import { ForkConfirmContent } from "../components/dialogs/fork-confirm";
 import { HelpDialogContent } from "../components/dialogs/help-dialog";
 import { withLoadingDialog } from "../components/dialogs/loading-dialog";
@@ -264,6 +270,59 @@ export function useLocalCommandActions(input: {
 		}
 	}, [canForkSession, dialog, onFork, refocusTextarea, session]);
 
+	// `/findchat` — recall a DeepSeek Web v2 chat in the SAME Chrome the
+	// provider drives. Lists the provider's persisted chats; when you pick one,
+	// it navigates the live page to that chat so you can continue the history.
+	const findChat = useCallback(async (): Promise<boolean> => {
+		let chats: DeepSeekWebV2ChatEntry[];
+		try {
+			chats = listDeepSeekWebV2Chats();
+		} catch (error) {
+			session.appendEntry({
+				kind: "error",
+				text: `/findchat: could not read DeepSeek Web v2 chat history: ${error instanceof Error ? error.message : String(error)}`,
+			});
+			return true;
+		}
+		if (chats.length === 0) {
+			session.appendEntry({
+				kind: "status",
+				text: "/findchat: no persisted DeepSeek Web v2 chats yet (run a turn with the deepseek-web-v2 provider first).",
+			});
+			return true;
+		}
+
+		const dialogChoice = await dialog.choice<string>({
+			size: "large",
+			style: { maxHeight: termHeight - 2 },
+			content: (ctx: ChoiceContext<string>) => (
+				<FindChatDialogContent {...ctx} chats={chats} />
+			),
+		});
+		refocusTextarea();
+		if (!dialogChoice) return true;
+
+		session.appendEntry({
+			kind: "status",
+			text: `Opening DeepSeek Web v2 chat ${dialogChoice}...`,
+		});
+		try {
+			await withLoadingDialog(dialog, "Opening chat...", () =>
+				openDeepSeekWebV2Chat(dialogChoice),
+			);
+			session.updateLastEntry(() => ({
+				kind: "status",
+				text: `Opened DeepSeek Web v2 chat ${dialogChoice}.`,
+			}));
+		} catch (error) {
+			session.updateLastEntry(() => ({
+				kind: "error",
+				text: `/findchat: failed to open chat ${dialogChoice}: ${error instanceof Error ? error.message : String(error)}`,
+			}));
+		}
+		return true;
+	}, [dialog, refocusTextarea, session, termHeight]);
+
 	const handleSlashCommand = useCallback(
 		(command: string, invocation?: LocalSlashCommandInvocation) => {
 			const resolved = resolveSlashCommand(slashCommandRegistry, command);
@@ -287,6 +346,7 @@ export function useLocalCommandActions(input: {
 				openHelp,
 				openHistory,
 				exitCline: onExit,
+				findChat,
 			});
 		},
 		[
@@ -303,6 +363,7 @@ export function useLocalCommandActions(input: {
 			runCompact,
 			runAutocompact,
 			runFork,
+			findChat,
 			session.isRunning,
 			slashCommandRegistry,
 		],

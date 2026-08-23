@@ -177,6 +177,12 @@ const HELP_ROWS: HelpRow[] = [
 	},
 	{
 		kind: "entry",
+		id: "c-findchat",
+		key: "/findchat",
+		desc: "Find & reopen a DeepSeek Web v2 chat (web provider)",
+	},
+	{
+		kind: "entry",
 		id: "c-fork",
 		key: "/fork",
 		desc: "Fork this session and continue there",

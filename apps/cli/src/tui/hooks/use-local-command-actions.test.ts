@@ -23,6 +23,7 @@ function makeActions(
 		openHelp: vi.fn(),
 		openHistory: vi.fn(),
 		exitCline: vi.fn(),
+		findChat: vi.fn(async () => true),
 		...overrides,
 	};
 }
@@ -84,6 +85,19 @@ describe("runLocalSlashCommandAction", () => {
 
 		expect(handled).toBe(true);
 		expect(runCompact).toHaveBeenCalledOnce();
+	});
+
+	it("invokes findChat for the /findchat command", async () => {
+		const findChat = vi.fn(async () => true);
+		const actions = makeActions({ findChat });
+
+		const handled = runLocalSlashCommandAction({
+			name: "findchat",
+			...actions,
+		});
+
+		await expect(handled).resolves.toBe(true);
+		expect(findChat).toHaveBeenCalledOnce();
 	});
 
 	it("parses the autocompact argument (with suffix) and runs it", async () => {

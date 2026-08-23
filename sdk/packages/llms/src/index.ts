@@ -108,6 +108,12 @@ export {
 	type ResolveProviderRequestHeadersInput,
 	resolveProviderRequestHeaders,
 } from "./providers/request-headers";
+// DeepSeek Web v2 chat-session helpers (used by the CLI `/findchat` command).
+export {
+	type DeepSeekWebV2ChatEntry,
+	listDeepSeekWebV2Chats,
+	openDeepSeekWebV2Chat,
+} from "./providers/vendors/deepseek-web-v2";
 export {
 	defaultModelsDir as llamaCppDefaultModelsDir,
 	ensureLlamaCppRunning,

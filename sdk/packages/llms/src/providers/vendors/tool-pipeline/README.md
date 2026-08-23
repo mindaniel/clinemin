@@ -135,6 +135,23 @@ Two layers address it (see `deepseek-web-v2.ts`):
    you can message normally again. It fires only once, then reloads are skipped
    again until the next throttle.
 
+## Chat recall (`/findchat`)
+
+If a rebuild/restart makes the provider start a new web chat instead of
+continuing your history, `/findchat` (a CLI local command) lets you recall and
+reopen an existing DeepSeek Web v2 chat in the **same Chrome the provider
+drives**:
+
+- `listDeepSeekWebV2Chats()` reads the provider's persisted `chats.json`
+  (deepseek-v2-specific for now; generalizable to other web providers later).
+- The CLI shows a searchable picker; picking one calls
+  `openDeepSeekWebV2Chat(sessionId)`, which reuses the live CDP connection
+  (`connectBrowser` / `ensureDeepSeekPage` / `navigateDeepSeekChat`) to navigate
+  the existing tab to `/a/chat/s/<session_id>`, so your logged-in history is
+  shown and you can continue it.
+
+Both functions are exported from `@cline/llms` for reuse.
+
 
 ## Tests
 

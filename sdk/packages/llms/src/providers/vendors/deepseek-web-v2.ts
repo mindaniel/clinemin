@@ -441,6 +441,58 @@ export function recordChatSession(
 	writeChatRegistry(chatsFile, registry);
 }
 
+/** A single persisted DeepSeek web chat, as shown by `/findchat`. */
+export interface DeepSeekWebV2ChatEntry {
+	/** Stable key of the CLI conversation that owns this chat (if any). */
+	chatKey: string;
+	/** DeepSeek web `session_id` (the `/a/chat/s/<id>` slug). */
+	sessionId: string;
+	firstSeen: string;
+	lastActive: string;
+}
+
+/**
+ * List every DeepSeek web chat the deepseek-web-v2 provider has persisted, most
+ * recently active first. This is the data `/findchat` (a CLI local command)
+ * reads to show your chat history. Reads the provider's own `chats.json`, so it
+ * reflects exactly the chats this provider knows about.
+ */
+export function listDeepSeekWebV2Chats(): DeepSeekWebV2ChatEntry[] {
+	const config = resolveDeepSeekWebV2Config();
+	const registry = readChatRegistry(config.chatsFile);
+	return Object.entries(registry)
+		.map(([chatKey, record]) => ({
+			chatKey,
+			sessionId: record.session_id,
+			firstSeen: record.first_seen,
+			lastActive: record.last_active,
+		}))
+		.sort((a, b) => (a.lastActive < b.lastActive ? 1 : -1));
+}
+
+/**
+ * Open an existing DeepSeek web chat in the SAME Chrome browser the provider
+ * already drives (reusing the live CDP connection when it is still open), so
+ * your logged-in history is shown and you can continue it. If the browser
+ * isn't running it is (re)launched from the provider's own config/profile.
+ *
+ * This is what the CLI `/findchat` command calls after you pick a chat.
+ */
+export async function openDeepSeekWebV2Chat(
+	sessionId: string,
+): Promise<{ sessionId: string; url: string }> {
+	const config = resolveDeepSeekWebV2Config();
+	const cdp = await connectBrowser(config);
+	const { sessionId: cdpSessionId } = await ensureDeepSeekPage(cdp);
+	// Reuse the provider's own navigation helper (which already avoids a
+	// redundant reload — unless recovering from a throttle).
+	await navigateDeepSeekChat(cdp, cdpSessionId, { fresh: false, sessionId });
+	return {
+		sessionId,
+		url: `https://chat.deepseek.com/a/chat/s/${sessionId}`,
+	};
+}
+
 const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
 
 /** A ReadableStream we can push bytes into from the CDP IO.read loop. */

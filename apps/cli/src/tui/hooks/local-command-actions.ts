@@ -18,6 +18,11 @@ export interface LocalSlashCommandActionInput {
 	openHelp: () => void;
 	openHistory: () => void;
 	exitCline: () => void;
+	/**
+	 * Provider chat recall: list & reopen a web-provider chat (e.g. DeepSeek
+	 * Web v2). Provider-specific; no-ops / returns false for non-web providers.
+	 */
+	findChat: () => Promise<boolean>;
 }
 
 /**
@@ -98,6 +103,9 @@ export function runLocalSlashCommandAction(
 	if (normalized === "history") {
 		input.openHistory();
 		return true;
+	}
+	if (normalized === "findchat") {
+		return input.findChat();
 	}
 	if (normalized === "quit") {
 		setTimeout(input.exitCline, 0);

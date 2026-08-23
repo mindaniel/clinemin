@@ -11,6 +11,7 @@ import {
 	consumeThrottleRecoveryReload,
 	isRateLimitText,
 	isSameChatLocation,
+	listDeepSeekWebV2Chats,
 	lookupChatSession,
 	parseFallbackToolUses,
 	parseSessionIdFromUrl,
@@ -724,6 +725,34 @@ describe("deepseek-web-v2 chat continuity (start_continue_chat.py parity)", () =
 			expect(lookupChatSession(chatsFile, keyA)).toBe("sess_a");
 			expect(lookupChatSession(chatsFile, keyB)).toBe("sess_b");
 		} finally {
+			rmSync(dir, { recursive: true, force: true });
+		}
+	});
+
+	it("listDeepSeekWebV2Chats lists recorded chats, most recent first", () => {
+		const dir = mkdtempSync(join(tmpdir(), "dsweb-v2-"));
+		try {
+			const chatsFile = join(dir, "chats.json");
+			vi.stubEnv("DEEPSEEK_WEB_V2_CHATS_FILE", chatsFile);
+
+			const keyA = chatKeyFromPrompt([userMsg("Task A")] as never);
+			const keyB = chatKeyFromPrompt([userMsg("Task B")] as never);
+			recordChatSession(chatsFile, keyA, "sess_a");
+			recordChatSession(chatsFile, keyB, "sess_b");
+
+			const chats = listDeepSeekWebV2Chats();
+			expect(chats.map((c) => c.sessionId).sort()).toEqual([
+				"sess_a",
+				"sess_b",
+			]);
+			// The entries expose the CLI chat key + timestamps we recorded.
+			const byKey = new Map(chats.map((c) => [c.chatKey, c]));
+			expect(byKey.get(keyA)?.sessionId).toBe("sess_a");
+			expect(byKey.get(keyB)?.sessionId).toBe("sess_b");
+			expect(byKey.get(keyB)?.lastActive).toBeTruthy();
+			expect(byKey.get(keyB)?.firstSeen).toBeTruthy();
+		} finally {
+			vi.unstubAllEnvs();
 			rmSync(dir, { recursive: true, force: true });
 		}
 	});
