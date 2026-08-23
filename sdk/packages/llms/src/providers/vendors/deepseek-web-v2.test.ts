@@ -583,6 +583,23 @@ describe("deepseek-web-v2 buildPrompt (lean conversation on follow-up turns)", (
 		expect(built).not.toContain("mid");
 	});
 
+	it("labels the prior user message as 'Previous user message' on a follow-up turn", () => {
+		const prompt = [
+			msg("system", "sys"),
+			msg("user", "do the thing"),
+			msg("tool", "the latest result"),
+		] as never;
+		const built = buildPrompt(prompt, undefined);
+		// The prior user prompt is folded as context (so the model doesn't re-answer
+		// it), and the trailing tool result is preserved under its own label.
+		expect(built).toContain("Previous user message: do the thing");
+		expect(built).toContain("Tool result:");
+		expect(built).toContain("the latest result");
+		// No bare "User:" or "Assistant:" prefixes should be used for v2.
+		expect(built).not.toMatch(/\nUser:/);
+		expect(built).not.toMatch(/\nAssistant:/);
+	});
+
 	it("preserves the compaction summary on the first turn that opens the new chat", () => {
 		const prompt = [
 			msg("system", "sys"),

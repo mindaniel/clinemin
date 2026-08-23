@@ -1783,9 +1783,17 @@ export function buildPrompt(
 		!alreadyHasSystem &&
 		conversation.length > 0
 	) {
-		return messagesToPrompt([systemMessage, ...conversation], 0);
+		return messagesToPrompt([systemMessage, ...conversation], {
+			historyWindow: 10,
+			userLabel: "Previous user message",
+			toolResultLabel: "Tool result",
+		});
 	}
-	return messagesToPrompt(conversation, 0);
+	return messagesToPrompt(conversation, {
+		historyWindow: 10,
+		userLabel: "Previous user message",
+		toolResultLabel: "Tool result",
+	});
 }
 
 function finishReasonFor(
@@ -1804,6 +1812,11 @@ function createDeepSeekWebV2Model(
 	let lastAccumulatedTokenUsage: number | undefined;
 	// Highest threshold already re-injected, so each threshold fires once.
 	let reinjectedThroughThreshold = 0;
+	// The text of the last user message we placed in a prompt, for dedup: when
+	// the agent iterates after a tool call and the user hasn't typed a NEW
+	// message, the same `Previous user message:` block would otherwise be
+	// re-sent every turn and confuse the model. We drop it once it's unchanged.
+	let lastSentUserMessage = "";
 
 	const doCompletion = async (
 		options: LanguageModelV2CallOptions,
@@ -1848,10 +1861,27 @@ function createDeepSeekWebV2Model(
 			// state, so it must not be re-sent.
 			isNewChat,
 		);
+		// Dedup: if the last user-authored message is identical to the one we
+		// already sent (the agent is iterating after a tool call and the user
+		// hasn't typed anything new), drop the stale `Previous user message:`
+		// block so it isn't re-sent over and over. Fresh tool results from this
+		// turn are still included because they change each iteration.
+		const currentUserText = lastUserText(options.prompt);
+		let dedupedPrompt = prompt;
+		if (currentUserText && currentUserText === lastSentUserMessage) {
+			// Remove the leading `Previous user message:` block, whether it is
+			// the whole prompt (no tool results yet) or followed by fresh
+			// tool-result/assistant context.
+			dedupedPrompt = prompt.replace(
+				/^Previous user message:[\s\S]*?(?=\n\nTool result:|\n\nAssistant:|$)/,
+				"",
+			);
+		}
+		lastSentUserMessage = currentUserText;
 		const { text, reasoning, accumulatedTokenUsage, rateLimited } =
 			await runCompletion({
 				modelId,
-				prompt,
+				prompt: dedupedPrompt,
 				chatKey,
 				// This turn requests tool calls when function tools are wired up —
 				// so it is exactly the rapid-fire pattern that needs extra pacing.

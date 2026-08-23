@@ -79,14 +79,14 @@ flagged. Two things the pipeline handles especially:
    breaks inside a string value (invalid strict JSON). The `jsonrepair` fallback
    in `tool-parser` rewrites them to `\n` escapes, so the `editor` call is
    accepted instead of rejected.
-2. **Lone surrogates (corrupted CJK).** If a response mangles an international
+2. **Lone surrogates (corrupted CJK).** If transport splits an international
    character into an orphaned surrogate (`\ud800`–`\udfff`), Node cannot
    UTF-8-encode it, which used to surface as a cryptic internal
    `UnicodeEncodeError: 'surrogates not allowed'` mislabeled as a Python syntax
-   error. `validatePythonCode` now pre-checks with `findInvalidUnicode` and
-   rejects with an **actionable** message — "the embedded text contains an
-   invalid Unicode surrogate (orphaned low surrogate) ... re-emit as proper
-   UTF-8" — so the retry prompt tells the model exactly what went wrong.
+   error. `validatePythonCode` now **sanitizes** lone surrogates to U+FFFD via
+   `sanitizeSurrogates` before parsing — the validator stays non-aggressive and
+   only rejects genuinely malformed Python, never correct code carrying a
+   transport-split CJK character.
 
 ## DeepSeek frequency throttle ("Messages too frequent")
 

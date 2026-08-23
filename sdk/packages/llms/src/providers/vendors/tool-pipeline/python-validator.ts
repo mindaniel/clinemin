@@ -14,6 +14,7 @@
  */
 
 import { type SpawnSyncReturns, spawnSync } from "node:child_process";
+import { sanitizeSurrogates } from "@cline/shared";
 
 /**
  * The Python one-liner piped `code` via stdin. It parses the whole stdin
@@ -104,12 +105,13 @@ export function findInvalidUnicode(text: string): UnsupportedUnicodeError | unde
  * interpreter driven over stdin. Prefers `python3`; falls back to `python` /
  * `py` (covers the Windows Store-alias trap where `python3` is a dead stub).
  *
- * Handles malformed Unicode up front: if the AI's response embeds a lone
- * surrogate (`\ud800`-`\udfff` — typically a mangled CJK character that Node's
- * UTF-8 encoder cannot write), we reject with a precise, actionable message
- * instead of surfacing a cryptic internal `UnicodeEncodeError`. The offending
- * tool call is dropped and the retry prompt tells the model to re-emit the
- * text as proper UTF-8, exactly what it can learn from.
+ * Handles malformed Unicode by sanitizing, not rejecting: if the AI's response
+ * embeds a lone surrogate (`\ud800`-`\udfff` — typically a CJK character split
+ * during transport) Node's UTF-8 encoder cannot write it, which used to crash
+ * with a cryptic `UnicodeEncodeError`. We replace lone surrogates with the
+ * replacement char (U+FFFD) via `sanitizeSurrogates` before parsing, so an
+ * otherwise-valid payload still passes. Only genuinely malformed Python is
+ * rejected (with a line-precise message).
  *
  * @param code The Python source to validate.
  * @returns `{ valid: true }` on success (including when no real interpreter is
@@ -122,25 +124,19 @@ export function validatePythonCode(code: string): ValidationResult {
 		return { valid: true };
 	}
 
-	// Reject lone surrogates before attempting to spawn a subprocess, so we
-	// never hit Node's "surrogates not allowed" UTF-8 encode crash and instead
-	// report exactly what the AI got wrong (embeddable, actionable text).
-	const unicodeIssue = findInvalidUnicode(code);
-	if (unicodeIssue) {
-		return {
-			valid: false,
-			error:
-				`Unicode error at offset ${unicodeIssue.offset}: the embedded text contains an invalid ` +
-				`Unicode surrogate${unicodeIssue.description ? ` (${unicodeIssue.description})` : ""}. ` +
-				"Re-emit the `new_text` with proper UTF-8 encoding — an international (e.g. CJK) character " +
-				"was split or corrupted. Never output raw surrogate escape sequences.",
-		};
-	}
+	// Lone surrogates are NOT the model's fault — a valid CJK character can get
+	// split during text capture (e.g. CDP) and arrive here as an orphaned
+	// \ud800-\udfff code unit. Node can't UTF-8-encode those, which used to
+	// crash the subprocess with a cryptic "surrogates not allowed". Instead of
+	// rejecting otherwise-correct Python, we sanitize lone surrogates to the
+	// Unicode replacement char (U+FFFD) before parsing. This keeps the validator
+	// non-aggressive: it only rejects genuinely malformed Python.
+	const sanitized = sanitizeSurrogates(code);
 
 	let lastUnavailable: string | undefined;
 
 	for (const candidate of PYTHON_CANDIDATES) {
-		const run = runAstCheck(candidate, code);
+		const run = runAstCheck(candidate, sanitized);
 
 		// The interpreter binary could not be launched at all (ENOENT).
 		if (run.kind === "unavailable") {
@@ -218,9 +214,10 @@ function runAstCheck(command: string, code: string): InterpretedResult {
 		// ENOENT: executable not on PATH. Fall through to the next candidate.
 		const codeValue = (error as NodeJS.ErrnoException).code;
 		if (codeValue === "ENOENT") return { kind: "unavailable", status: null };
-		// Node's UTF-8 encoder rejected the input (lone surrogate). We already
-		// pre-check `findInvalidUnicode`, so this is a belt-and-suspenders path
-		// that surfaces a clear message instead of a cryptic one.
+		// Node's UTF-8 encoder rejected the input (lone surrogate). We sanitize
+		// surrogates up front in `validatePythonCode`, so this is a
+		// belt-and-suspenders path that surfaces a clear message instead of a
+		// cryptic one.
 		if (error instanceof TypeError && /surrogates? not allowed/i.test(String(error))) {
 			return {
 				kind: "encodeError",

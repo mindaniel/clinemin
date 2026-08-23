@@ -8,6 +8,7 @@ import {
 	estimateDeepSeekWebUsage,
 	messagesToPrompt,
 	parseDeepSeekToolCalls,
+	parseLooseDeepSeekToolCalls,
 	serializeDeepSeekToolPrompt,
 	sha3_256Hex,
 	solveDeepSeekPow,
@@ -422,5 +423,79 @@ describe("deepseek-web estimateDeepSeekWebUsage", () => {
 
 		expect(large.inputTokens).toBeGreaterThan(small.inputTokens * 10);
 		expect(large.outputTokens).toBeGreaterThan(small.outputTokens * 10);
+	});
+});
+
+describe("deepseek-web parseLooseDeepSeekToolCalls", () => {
+	it("recovers a bare <tool name=...> with a JSON body", () => {
+		const reply =
+			'<tool name="search_codebase">{"queries":["loop"]}</tool>';
+		const toolCalls = parseLooseDeepSeekToolCalls(reply, [
+			"search_codebase",
+		]);
+		expect(toolCalls).toHaveLength(1);
+		expect(toolCalls[0]).toEqual({
+			name: "search_codebase",
+			arguments: { queries: ["loop"] },
+		});
+	});
+
+	it("recovers an unbalanced <tool> block with no closing tag", () => {
+		// The strict parser requires a paired </tool>; a truncated block slips
+		// through it but the loose parser still picks up the call.
+		const reply =
+			'<tool>{"name":"run_commands","arguments":{"commands":["ls"]}}';
+		const strict = parseDeepSeekToolCalls(reply, ["run_commands"]);
+		expect(strict.toolCalls).toHaveLength(0);
+
+		const loose = parseLooseDeepSeekToolCalls(reply, ["run_commands"]);
+		expect(loose).toHaveLength(1);
+		expect(loose[0]).toEqual({
+			name: "run_commands",
+			arguments: { commands: ["ls"] },
+		});
+	});
+
+	it("recovers a <tool_call> variant", () => {
+		const reply =
+			'<tool_call>{"name":"read_files","arguments":{"path":"/tmp/a.txt"}}</tool_call>';
+		const loose = parseLooseDeepSeekToolCalls(reply, ["read_files"]);
+		expect(loose).toHaveLength(1);
+		expect(loose[0]).toEqual({
+			name: "read_files",
+			arguments: { path: "/tmp/a.txt" },
+		});
+	});
+
+	it("normalizes common aliases (bash -> run_commands)", () => {
+		const reply =
+			'<tool>{"name":"bash","arguments":{"commands":["echo hi"]}}';
+		const loose = parseLooseDeepSeekToolCalls(reply, ["run_commands"]);
+		expect(loose).toHaveLength(1);
+		expect(loose[0].name).toBe("run_commands");
+	});
+
+	it("ignores prose that merely contains <tool and no real name", () => {
+		const reply =
+			"Please use the <tool> tag when you need to call a function.";
+		const loose = parseLooseDeepSeekToolCalls(reply, ["search_codebase"]);
+		expect(loose).toHaveLength(0);
+	});
+
+	it("ignores tool names not in the accepted list", () => {
+		const reply = '<tool>{"name":"rm_rf","arguments":{}}</tool>';
+		const loose = parseLooseDeepSeekToolCalls(reply, ["read_files"]);
+		expect(loose).toHaveLength(0);
+	});
+
+	it("repairs broken single-quoted JSON inside a malformed block", () => {
+		const reply =
+			"<tool>{'name': 'search_codebase', 'arguments': {'queries': ['a','b',],},}";
+		const loose = parseLooseDeepSeekToolCalls(reply, ["search_codebase"]);
+		expect(loose).toHaveLength(1);
+		expect(loose[0]).toEqual({
+			name: "search_codebase",
+			arguments: { queries: ["a", "b"] },
+		});
 	});
 });

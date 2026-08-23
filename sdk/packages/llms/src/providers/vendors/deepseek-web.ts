@@ -649,10 +649,30 @@ function promptPartText(part: PromptPart): string {
  * multi-turn conversations a bounded rolling window of recent turns is stitched
  * in so the agent keeps context across turns.
  */
+export interface MessagesToPromptOptions {
+	/** Number of most-recent turns to fold into the flat prompt (default: global). */
+	historyWindow?: number;
+	/**
+	 * Label prefix for prior user messages. Defaults to "User". v2 uses
+	 * "Previous user message" so the model reads it as context, not a fresh
+	 * instruction, and doesn't re-answer it.
+	 */
+	userLabel?: string;
+	/** Label prefix for trailing tool results. Defaults to "Tool result". */
+	toolResultLabel?: string;
+}
+
 export function messagesToPrompt(
 	messages: LanguageModelV2Message[],
-	historyWindow: number = DEFAULT_AUTO_HISTORY_WINDOW,
+	historyWindowOrOptions: number | MessagesToPromptOptions = DEFAULT_AUTO_HISTORY_WINDOW,
 ): string {
+	const options: MessagesToPromptOptions =
+		typeof historyWindowOrOptions === "number"
+			? { historyWindow: historyWindowOrOptions }
+			: historyWindowOrOptions;
+	const historyWindow = options.historyWindow ?? DEFAULT_AUTO_HISTORY_WINDOW;
+	const userLabel = options.userLabel ?? "User";
+	const toolResultLabel = options.toolResultLabel ?? "Tool result";
 	const systemParts: string[] = [];
 	const conversation: Array<{ role: string; text: string }> = [];
 	let lastUserContent = "";
@@ -700,8 +720,8 @@ export function messagesToPrompt(
 					turn.role === "assistant"
 						? `Assistant: ${turn.text}`
 						: turn.role === "tool"
-							? `Tool result ${turn.text}`
-							: `User: ${turn.text}`,
+							? `${toolResultLabel}: ${turn.text}`
+							: `${userLabel}: ${turn.text}`,
 				)
 				.join("\n\n"),
 		);
@@ -1098,7 +1118,8 @@ let name =
 /(?:id|name)\s*=\s*["']([^"']+)["']/i.exec(attrs)?.[1] ?? "";
 
 let args: Record<string, unknown> = {};
-const parsed = parseRepairedToolJson(afterTag);
+const bodyText = extractBalancedJsonValue(afterTag) ?? afterTag;
+const parsed = parseRepairedToolJson(bodyText);
 if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) {
 const record = parsed as Record<string, unknown>;
 if (!name) {
@@ -1129,6 +1150,38 @@ toolCalls.push({ name: normalizedName, arguments: args });
 }
 
 return toolCalls;
+}
+
+/**
+ * Extract the first balanced top-level JSON value (`{...}` or `[...]`) from a
+ * string, tracking braces/brackets and strings so nested objects are handled.
+ * Returns `null` if no balanced value is found. Used to strip trailing junk
+ * (e.g. a stray `</tool>`) that would otherwise break the JSON repair parser.
+ */
+function extractBalancedJsonValue(text: string): string | null {
+	const start = text.search(/[\[{]/);
+	if (start === -1) return null;
+	const openChar = text[start];
+	const closeChar = openChar === "{" ? "}" : "]";
+	let depth = 0;
+	let inString = false;
+	let escaped = false;
+	for (let i = start; i < text.length; i++) {
+		const ch = text[i];
+		if (inString) {
+			if (escaped) escaped = false;
+			else if (ch === "\\") escaped = true;
+			else if (ch === '"') inString = false;
+			continue;
+		}
+		if (ch === '"') inString = true;
+		else if (ch === openChar) depth++;
+		else if (ch === closeChar) {
+			depth--;
+			if (depth === 0) return text.slice(start, i + 1);
+		}
+	}
+	return null;
 }
 
 /**

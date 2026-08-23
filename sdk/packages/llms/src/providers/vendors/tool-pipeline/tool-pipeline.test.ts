@@ -101,9 +101,12 @@ describe("tool-pipeline validatePythonCode", () => {
 		expect(validatePythonCode(code).valid).toBe(true);
 	});
 
-	it("rejects a lone low surrogate with an actionable Unicode message (not a cryptic encode crash)", () => {
+	it("sanitizes a lone low surrogate instead of rejecting (non-aggressive)", () => {
 		// A mangled CJK char (orphaned low surrogate) — the exact cause of the
-		// old "UnicodeEncodeError: 'surrogates not allowed'" crash the AI saw.
+		// old "UnicodeEncodeError: 'surrogates not allowed'" crash. The code is
+		// otherwise valid, so the validator replaces the lone surrogate with
+		// U+FFFD and still passes — it must NOT reject correct Python just
+		// because transport split a CJK character.
 		const lone = String.fromCharCode(0xdc90);
 		const code = `x = 1\n# \u4e07\u6cfd${lone}\u80a1\n`;
 		const issue = findInvalidUnicode(code);
@@ -111,12 +114,8 @@ describe("tool-pipeline validatePythonCode", () => {
 		expect(issue?.description).toContain("surrogate");
 
 		const result = validatePythonCode(code);
-		expect(result.valid).toBe(false);
-		expect(result.error).toMatch(/Unicode error at offset \d+/);
-		expect(result.error).toMatch(/proper UTF-8/);
-		// Must NOT surface Node's internal encode error as a misleading
-		// "Python syntax error".
-		expect(result.error).not.toMatch(/Python syntax error/);
+		expect(result.valid).toBe(true);
+		expect(result.error).toBeUndefined();
 	});
 
 	it("accepts a well-formed surrogate pair (e.g. an emoji) — not flagged", () => {
