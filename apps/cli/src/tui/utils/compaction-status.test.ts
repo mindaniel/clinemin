@@ -27,6 +27,38 @@ describe("parseCompactionNoticeMetadata", () => {
 		});
 	});
 
+	it("carries the compaction summary when the notice includes one", () => {
+		expect(
+			parseCompactionNoticeMetadata({
+				kind: "auto_compaction",
+				reason: "auto_compaction",
+				phase: "completed",
+				summary: "## Goal\nFix the sidebar alignment.",
+			}),
+		).toEqual({
+			compactionMode: "auto",
+			status: "completed",
+			summary: "## Goal\nFix the sidebar alignment.",
+		});
+	});
+
+	it("omits the summary when it is missing or blank", () => {
+		expect(
+			parseCompactionNoticeMetadata({
+				kind: "manual_compaction",
+				phase: "completed",
+				summary: "",
+			})?.summary,
+		).toBeUndefined();
+		expect(
+			parseCompactionNoticeMetadata({
+				kind: "manual_compaction",
+				phase: "completed",
+				summary: "   ",
+			})?.summary,
+		).toBeUndefined();
+	});
+
 	it("extracts a streaming divider entry from a started notice", () => {
 		expect(
 			parseCompactionNoticeMetadata({

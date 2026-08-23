@@ -40,9 +40,14 @@ export function parseCompactionNoticeMetadata(
 	if (metadata.phase === "skipped") {
 		return { compactionMode, status: "skipped" };
 	}
+	const summary =
+		typeof metadata.summary === "string" && metadata.summary.trim()
+			? metadata.summary
+			: undefined;
 	return {
 		compactionMode,
 		status: "completed",
+		...(summary ? { summary } : {}),
 		tokensBefore: asFiniteNumber(metadata.tokensBefore),
 		tokensAfter: asFiniteNumber(metadata.tokensAfter),
 		messagesBefore: asFiniteNumber(metadata.messagesBefore),

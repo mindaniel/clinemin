@@ -91,7 +91,7 @@ On the main branch, create a commit that updates:
 
 3. No changelog-entry file cleanup is needed. Contributors do not create changelog-entry files in this repo.
 
-**No dependency install is needed.** A CHANGELOG + `version` bump does not change any dependency, and `bun.lock` does not pin workspace-package versions, so the lockfile stays consistent. The publish workflow runs `bun install --frozen-lockfile`, which would *fail* on an out-of-sync lock — so only run `bun install` here if you actually change dependencies (then commit the updated `bun.lock`).
+**No dependency install is needed.** A CHANGELOG + `version` bump does not change any dependency, and `bun.lock` does not pin workspace-package versions, so the lockfile stays consistent. The release flow installs with a frozen lockfile, which would *fail* on an out-of-sync lock — so only run `bun install` here if you actually change dependencies (then commit the updated `bun.lock`).
 
 Commit with message format: `v{VERSION} Release Notes (hotfix)`
 
@@ -163,10 +163,10 @@ git checkout main
 **Copy a Slack announcement message to clipboard** with the version and PR links for each included fix:
 
 ```
-VS Code Hotfix v{VERSION} Published
+Cline CLI Hotfix v{VERSION} Published
 
-- Description of fix 1 https://github.com/cline/cline/pull/{PR_NUMBER}
-- Description of fix 2 https://github.com/cline/cline/pull/{PR_NUMBER}
+- Description of fix 1 https://github.com/mindaniel/clinemin/pull/{PR_NUMBER}
+- Description of fix 2 https://github.com/mindaniel/clinemin/pull/{PR_NUMBER}
 ```
 
 Present a final summary:
@@ -176,7 +176,7 @@ Present a final summary:
 - Slack message copied to clipboard: yes
 
 Remind the user to:
-1. Manually trigger the publish release GitHub Action at: https://github.com/cline/cline/actions/workflows/ext-vscode-publish-stable.yml (paste `v{VERSION}` as the tag)
+1. Publish the release: `bun run release` (and `bun -F @cline/cli publish:npm` if publishing the CLI package)
 2. Post the Slack message to announce the hotfix
 
 ## Important Notes

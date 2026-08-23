@@ -21,6 +21,7 @@ import {
 	findCutIndex,
 	findLatestSummaryIndex,
 	getCompactionSummaryMetadata,
+	isLeanSummaryProvider,
 	resolveEffectiveMaxInputTokens,
 	resolveSummarizerConfig,
 	serializeConversation,
@@ -67,7 +68,7 @@ async function generateSummary(options: {
 	const handler = await createHandlerAsync(options.providerConfig);
 	let text = "";
 	for await (const chunk of handler.createMessage(
-		"Summarize the provided coding session into a concise continuation note with detailed next steps.",
+		"Summarize and provide a detailed prompt to continue in next message with current task progress. Tell what to do and not to do so the next message can catch up precisely.",
 		[{ role: "user", content: options.request }],
 	)) {
 		if (chunk.type === "text") {
@@ -166,6 +167,9 @@ export async function runAgenticCompaction(options: {
 			previousSummary,
 			conversationText: "",
 			fileOps: preProjectionFileOps,
+			style: isLeanSummaryProvider(summarizerProviderConfig.providerId)
+				? "lean"
+				: "full",
 		}).length,
 	);
 	const availableSummaryInputTokens =
@@ -209,6 +213,9 @@ export async function runAgenticCompaction(options: {
 		previousSummary,
 		conversationText,
 		fileOps,
+		style: isLeanSummaryProvider(summarizerProviderConfig.providerId)
+			? "lean"
+			: "full",
 	});
 	options.logger?.debug("Agentic compaction summarizer diagnostics", {
 		messagesToSummarize: messagesToSummarize.length,

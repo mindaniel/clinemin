@@ -84,8 +84,10 @@ function installDirOf(config: LlamaCppRuntimeConfig): string {
 function pickAssetName(): string {
 	const plat = process.platform;
 	const arch = process.arch;
-	if (plat === "win32") return arch === "arm64" ? "bin-win-cpu-arm64.zip" : "bin-win-cpu-x64.zip";
-	if (plat === "darwin") return arch === "arm64" ? "bin-macos-arm64.zip" : "bin-macos-x64.zip";
+	if (plat === "win32")
+		return arch === "arm64" ? "bin-win-cpu-arm64.zip" : "bin-win-cpu-x64.zip";
+	if (plat === "darwin")
+		return arch === "arm64" ? "bin-macos-arm64.zip" : "bin-macos-x64.zip";
 	return "bin-ubuntu-x64.zip"; // linux fallback
 }
 
@@ -95,15 +97,22 @@ async function fetchJson<T>(url: string): Promise<T> {
 	return res.json() as Promise<T>;
 }
 
-async function downloadToFile(url: string, dest: string, onProgress?: ProgressCallback): Promise<void> {
+async function downloadToFile(
+	url: string,
+	dest: string,
+	onProgress?: ProgressCallback,
+): Promise<void> {
 	const res = await fetch(url, { redirect: "follow" });
-	if (!res.ok || !res.body) throw new Error(`Download failed ${res.status}: ${url}`);
+	if (!res.ok || !res.body)
+		throw new Error(`Download failed ${res.status}: ${url}`);
 
 	const total = Number(res.headers.get("content-length") || 0);
 	let received = 0;
 	const fileStream = fs.createWriteStream(dest);
 
-	const reader = (res.body as unknown as ReadableStream<Uint8Array>).getReader();
+	const reader = (
+		res.body as unknown as ReadableStream<Uint8Array>
+	).getReader();
 	await pipeline(
 		(async function* () {
 			while (true) {
@@ -121,25 +130,34 @@ async function downloadToFile(url: string, dest: string, onProgress?: ProgressCa
 }
 
 /** Ensures a llama-server binary exists locally, downloading the latest release if needed. */
-async function ensureLlamaServerBinary(installDir: string, onProgress?: ProgressCallback): Promise<string> {
+async function ensureLlamaServerBinary(
+	installDir: string,
+	onProgress?: ProgressCallback,
+): Promise<string> {
 	const binDir = path.join(installDir, "bin");
-	const exeName = process.platform === "win32" ? "llama-server.exe" : "llama-server";
+	const exeName =
+		process.platform === "win32" ? "llama-server.exe" : "llama-server";
 	const exePath = path.join(binDir, exeName);
 	if (fs.existsSync(exePath)) return exePath;
 
 	fs.mkdirSync(binDir, { recursive: true });
 	onProgress?.("Looking up latest llama.cpp release…");
 
-	const release = await fetchJson<{ assets: { name: string; browser_download_url: string }[] }>(
-		GITHUB_LATEST_RELEASE_API,
-	);
+	const release = await fetchJson<{
+		assets: { name: string; browser_download_url: string }[];
+	}>(GITHUB_LATEST_RELEASE_API);
 	const suffix = pickAssetName();
 	const asset = release.assets.find((a) => a.name.endsWith(suffix));
-	if (!asset) throw new Error(`No llama.cpp release asset found for this platform (${suffix})`);
+	if (!asset)
+		throw new Error(
+			`No llama.cpp release asset found for this platform (${suffix})`,
+		);
 
 	const zipPath = path.join(installDir, asset.name);
 	onProgress?.(`Downloading ${asset.name}…`);
-	await downloadToFile(asset.browser_download_url, zipPath, (pct) => onProgress?.(`Downloading llama.cpp… ${pct}`));
+	await downloadToFile(asset.browser_download_url, zipPath, (pct) =>
+		onProgress?.(`Downloading llama.cpp… ${pct}`),
+	);
 
 	onProgress?.("Extracting llama.cpp…");
 	const AdmZip = (await import("adm-zip")).default;
@@ -163,7 +181,19 @@ export function defaultModelsDir(): string {
 }
 
 // GGUF metadata value type tags (see ggml-org/ggml gguf spec).
-const GGUF_TYPE_SIZES: Record<number, number> = { 0: 1, 1: 1, 2: 2, 3: 2, 4: 4, 5: 4, 6: 4, 7: 1, 10: 8, 11: 8, 12: 8 };
+const GGUF_TYPE_SIZES: Record<number, number> = {
+	0: 1,
+	1: 1,
+	2: 2,
+	3: 2,
+	4: 4,
+	5: 4,
+	6: 4,
+	7: 1,
+	10: 8,
+	11: 8,
+	12: 8,
+};
 const GGUF_TYPE_STRING = 8;
 const GGUF_TYPE_ARRAY = 9;
 
@@ -215,7 +245,8 @@ export function readGgufContextLength(modelPath: string): number | null {
 				return;
 			}
 			const size = GGUF_TYPE_SIZES[valueType];
-			if (size === undefined) throw new Error(`unknown GGUF value type ${valueType}`);
+			if (size === undefined)
+				throw new Error(`unknown GGUF value type ${valueType}`);
 			offset += size;
 		};
 
@@ -224,7 +255,10 @@ export function readGgufContextLength(modelPath: string): number | null {
 			const key = readString();
 			const valueType = buf.readUInt32LE(offset);
 			offset += 4;
-			if (key.endsWith(".context_length") && GGUF_TYPE_SIZES[valueType] !== undefined) {
+			if (
+				key.endsWith(".context_length") &&
+				GGUF_TYPE_SIZES[valueType] !== undefined
+			) {
 				const size = GGUF_TYPE_SIZES[valueType];
 				const raw =
 					size === 8
@@ -291,13 +325,18 @@ export function scanLocalModels(modelsDir: string): string[] {
 }
 
 /** Ensures a default small model is present locally, downloading it if needed. */
-async function ensureDefaultModel(installDir: string, onProgress?: ProgressCallback): Promise<string> {
+async function ensureDefaultModel(
+	installDir: string,
+	onProgress?: ProgressCallback,
+): Promise<string> {
 	const modelPath = defaultModelPath(installDir);
 	if (fs.existsSync(modelPath)) return modelPath;
 
 	fs.mkdirSync(path.dirname(modelPath), { recursive: true });
 	onProgress?.(`Downloading default model (${DEFAULT_MODEL_NAME})…`);
-	await downloadToFile(DEFAULT_MODEL_URL, modelPath, (pct) => onProgress?.(`Downloading model… ${pct}`));
+	await downloadToFile(DEFAULT_MODEL_URL, modelPath, (pct) =>
+		onProgress?.(`Downloading model… ${pct}`),
+	);
 	return modelPath;
 }
 
@@ -329,7 +368,11 @@ function writeState(state: ServerState): void {
  *  env/file config when it's actually a real file — for other providers (or before the
  *  llamacpp setup wizard has ever run) this field holds a non-path catalog id, so a
  *  non-existent override is treated as "no override" rather than an error. */
-function resolveModelPath(config: LlamaCppRuntimeConfig, installDir: string, modelOverride?: string): string {
+function resolveModelPath(
+	config: LlamaCppRuntimeConfig,
+	installDir: string,
+	modelOverride?: string,
+): string {
 	if (modelOverride && fs.existsSync(modelOverride)) {
 		return modelOverride;
 	}
@@ -345,7 +388,9 @@ function resolveModelPath(config: LlamaCppRuntimeConfig, installDir: string, mod
 function resolveBinaryPath(config: LlamaCppRuntimeConfig): string | undefined {
 	if (config.binaryPath) {
 		if (!fs.existsSync(config.binaryPath)) {
-			throw new Error(`Configured llama-server binary not found: ${config.binaryPath}`);
+			throw new Error(
+				`Configured llama-server binary not found: ${config.binaryPath}`,
+			);
 		}
 		return config.binaryPath;
 	}
@@ -354,7 +399,9 @@ function resolveBinaryPath(config: LlamaCppRuntimeConfig): string | undefined {
 
 async function checkHealth(baseURL: string): Promise<boolean> {
 	try {
-		const res = await fetch(`${baseURL.replace(/\/$/, "")}/models`, { signal: AbortSignal.timeout(3000) });
+		const res = await fetch(`${baseURL.replace(/\/$/, "")}/models`, {
+			signal: AbortSignal.timeout(3000),
+		});
 		return res.ok;
 	} catch {
 		return false;
@@ -373,7 +420,9 @@ async function waitForHealth(
 		if ((await checkHealth(baseURL)) === expectHealthy) return true;
 		if (expectHealthy && onProgress && Date.now() - lastHeartbeat > 15000) {
 			lastHeartbeat = Date.now();
-			onProgress(`Still loading model… (${Math.round((Date.now() - start) / 1000)}s) — large models can take a while`);
+			onProgress(
+				`Still loading model… (${Math.round((Date.now() - start) / 1000)}s) — large models can take a while`,
+			);
 		}
 		await new Promise((r) => setTimeout(r, 400));
 	}
@@ -389,7 +438,9 @@ function killPid(pid: number): void {
 /** Asks the live server what model it actually has loaded (from /v1/models), independent of our own bookkeeping. */
 async function getLiveModelId(baseURL: string): Promise<string | null> {
 	try {
-		const res = await fetch(`${baseURL.replace(/\/$/, "")}/models`, { signal: AbortSignal.timeout(3000) });
+		const res = await fetch(`${baseURL.replace(/\/$/, "")}/models`, {
+			signal: AbortSignal.timeout(3000),
+		});
 		if (!res.ok) return null;
 		const json = (await res.json()) as { data?: Array<{ id: string }> };
 		return json.data?.[0]?.id ?? null;
@@ -417,7 +468,10 @@ async function findListeningPid(port: string): Promise<number | null> {
 /** Confirms a PID is actually llama-server before we touch it — never kill an unidentified process. */
 async function isLlamaServerPid(pid: number): Promise<boolean> {
 	try {
-		const cmd = process.platform === "win32" ? `tasklist /FI "PID eq ${pid}" /FO CSV /NH` : `ps -p ${pid} -o comm=`;
+		const cmd =
+			process.platform === "win32"
+				? `tasklist /FI "PID eq ${pid}" /FO CSV /NH`
+				: `ps -p ${pid} -o comm=`;
 		const { stdout } = await execAsync(cmd);
 		return /llama-server/i.test(stdout);
 	} catch {
@@ -433,7 +487,10 @@ export interface EnsureRunningOverrides {
 }
 
 /** `-c <contextWindow>` (if set) plus whatever's in LLAMACPP_EXTRA_ARGS/config file, as a single string for state comparison. */
-function buildExtraArgs(config: LlamaCppRuntimeConfig, overrides: EnsureRunningOverrides | undefined): string {
+function buildExtraArgs(
+	config: LlamaCppRuntimeConfig,
+	overrides: EnsureRunningOverrides | undefined,
+): string {
 	const parts: string[] = [];
 	if (overrides?.contextWindow && overrides.contextWindow > 0) {
 		parts.push("-c", String(Math.round(overrides.contextWindow)));
@@ -461,7 +518,11 @@ export async function ensureLlamaCppRunning(
 	const installDir = installDirOf(config);
 
 	try {
-		const desiredModelPath = resolveModelPath(config, installDir, overrides?.modelPath);
+		const desiredModelPath = resolveModelPath(
+			config,
+			installDir,
+			overrides?.modelPath,
+		);
 		resolveBinaryPath(config); // throws early if configured but missing
 		// The port a given provider profile actually talks to is whatever's in its
 		// baseUrl (e.g. a second llama.cpp profile on :8081) — config.port is only
@@ -487,13 +548,22 @@ export async function ensureLlamaCppRunning(
 				state.extraArgs === desiredExtraArgs;
 
 			const liveModelId = await getLiveModelId(baseURL);
-			const liveMatches = liveModelId === null || path.basename(liveModelId) === path.basename(desiredModelPath);
+			const liveMatches =
+				liveModelId === null ||
+				path.basename(liveModelId) === path.basename(desiredModelPath);
 
 			if (liveMatches && (!state || stateMatches)) {
-				return { ok: true, alreadyRunning: true, baseURL, modelPath: liveModelId ?? desiredModelPath };
+				return {
+					ok: true,
+					alreadyRunning: true,
+					baseURL,
+					modelPath: liveModelId ?? desiredModelPath,
+				};
 			}
 
-			onProgress?.(`Config changed → restarting llama-server with ${path.basename(desiredModelPath)}…`);
+			onProgress?.(
+				`Config changed → restarting llama-server with ${path.basename(desiredModelPath)}…`,
+			);
 			let killedSomething = false;
 			if (state) {
 				killPid(state.pid);
@@ -522,12 +592,23 @@ export async function ensureLlamaCppRunning(
 		}
 
 		if (config.autoStart === false) {
-			return { ok: false, alreadyRunning: false, baseURL, error: "No llama.cpp server reachable and autoStart is disabled." };
+			return {
+				ok: false,
+				alreadyRunning: false,
+				baseURL,
+				error: "No llama.cpp server reachable and autoStart is disabled.",
+			};
 		}
 
-		const binaryPath = resolveBinaryPath(config) ?? (await ensureLlamaServerBinary(installDir, onProgress));
-		const hasExplicitModel = (overrides?.modelPath && fs.existsSync(overrides.modelPath)) || !!config.modelPath;
-		const modelPath = hasExplicitModel ? desiredModelPath : await ensureDefaultModel(installDir, onProgress);
+		const binaryPath =
+			resolveBinaryPath(config) ??
+			(await ensureLlamaServerBinary(installDir, onProgress));
+		const hasExplicitModel =
+			(overrides?.modelPath && fs.existsSync(overrides.modelPath)) ||
+			!!config.modelPath;
+		const modelPath = hasExplicitModel
+			? desiredModelPath
+			: await ensureDefaultModel(installDir, onProgress);
 
 		const args = [
 			"-m",
@@ -536,21 +617,45 @@ export async function ensureLlamaCppRunning(
 			desiredPort,
 			"--host",
 			"127.0.0.1",
-			...(desiredExtraArgs ? desiredExtraArgs.split(/\s+/).filter(Boolean) : []),
+			...(desiredExtraArgs
+				? desiredExtraArgs.split(/\s+/).filter(Boolean)
+				: []),
 		];
 
 		onProgress?.("Starting llama-server…");
 		// detached on both platforms so the server outlives this process (survives Ctrl+C / exit),
 		// and isn't torn down as part of the parent's job object / process group on Windows.
-		const child = spawn(binaryPath, args, { stdio: "ignore", detached: true, windowsHide: true });
+		const child = spawn(binaryPath, args, {
+			stdio: "ignore",
+			detached: true,
+			windowsHide: true,
+		});
 		child.unref();
 
-		const healthy = await waitForHealth(baseURL, 10 * 60 * 1000, true, onProgress);
+		const healthy = await waitForHealth(
+			baseURL,
+			10 * 60 * 1000,
+			true,
+			onProgress,
+		);
 		if (!healthy) {
-			return { ok: false, alreadyRunning: false, baseURL, binaryPath, modelPath, error: "llama-server did not become reachable within 10 minutes" };
+			return {
+				ok: false,
+				alreadyRunning: false,
+				baseURL,
+				binaryPath,
+				modelPath,
+				error: "llama-server did not become reachable within 10 minutes",
+			};
 		}
 
-		if (child.pid) writeState({ pid: child.pid, modelPath, port: desiredPort, extraArgs: desiredExtraArgs });
+		if (child.pid)
+			writeState({
+				pid: child.pid,
+				modelPath,
+				port: desiredPort,
+				extraArgs: desiredExtraArgs,
+			});
 
 		return { ok: true, alreadyRunning: false, baseURL, binaryPath, modelPath };
 	} catch (e) {

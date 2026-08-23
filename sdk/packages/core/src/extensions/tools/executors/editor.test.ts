@@ -53,6 +53,55 @@ describe("createEditorExecutor", () => {
 		}
 	});
 
+	it("creates a file inside an already-existing directory (EEXIST tolerated)", async () => {
+		const dir = await fs.mkdtemp(path.join(os.tmpdir(), "agents-editor-"));
+		// Pre-create a sibling file so the parent dir clearly already exists.
+		const sibling = path.join(dir, "existing.txt");
+		await fs.writeFile(sibling, "already here", "utf-8");
+
+		const filePath = path.join(dir, "new-file.txt");
+		try {
+			const editor = createEditorExecutor();
+			const result = await editor(
+				{ path: filePath, new_text: "freshly created" },
+				dir,
+				{
+					agentId: "agent-1",
+					conversationId: "conv-1",
+					iteration: 1,
+				},
+			);
+
+			expect(result).toBe(`File created successfully at: ${filePath}`);
+			await expect(fs.readFile(filePath, "utf-8")).resolves.toBe(
+				"freshly created",
+			);
+			await expect(fs.readFile(sibling, "utf-8")).resolves.toBe("already here");
+		} finally {
+			await fs.rm(dir, { recursive: true, force: true });
+		}
+	});
+
+	it("creates a file in a fresh nested directory tree", async () => {
+		const dir = await fs.mkdtemp(path.join(os.tmpdir(), "agents-editor-"));
+		const filePath = path.join(dir, "a", "b", "deep.txt");
+		try {
+			const editor = createEditorExecutor();
+			const result = await editor(
+				{ path: filePath, new_text: "nested content" },
+				dir,
+				{ agentId: "agent-1", conversationId: "conv-1", iteration: 1 },
+			);
+
+			expect(result).toBe(`File created successfully at: ${filePath}`);
+			await expect(fs.readFile(filePath, "utf-8")).resolves.toBe(
+				"nested content",
+			);
+		} finally {
+			await fs.rm(dir, { recursive: true, force: true });
+		}
+	});
+
 	it("inserts before a one-based line and appends at the EOF boundary", async () => {
 		const dir = await fs.mkdtemp(path.join(os.tmpdir(), "agents-editor-"));
 		const filePath = path.join(dir, "example.txt");

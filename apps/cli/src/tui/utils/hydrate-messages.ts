@@ -51,6 +51,39 @@ export function hydrateSessionMessages(messages: Message[]): ChatEntry[] {
 
 	for (const msg of messages as PersistedMessage[]) {
 		const displayRole = getDisplayRole(msg);
+		const metadata = msg.metadata;
+		const messageKind =
+			typeof metadata?.kind === "string" ? metadata.kind : undefined;
+
+		// Persisted compaction markers become collapsible divider entries
+		// (instead of being skipped with the other system/status messages) so
+		// resumed transcripts show what was compacted and can expand it.
+		if (messageKind === "compaction_summary") {
+			const storedSummary =
+				typeof metadata?.summary === "string" ? metadata.summary : undefined;
+			const summary =
+				storedSummary?.trim() ||
+				compactionSummaryFromContent(msg.content) ||
+				undefined;
+			entries.push({
+				kind: "compaction",
+				compactionMode: "auto",
+				status: "completed",
+				...(summary ? { summary } : {}),
+				mode,
+			});
+			continue;
+		}
+		if (messageKind === "compaction") {
+			entries.push({
+				kind: "compaction",
+				compactionMode: "auto",
+				status: "completed",
+				mode,
+			});
+			continue;
+		}
+
 		if (displayRole === "system" || displayRole === "status") {
 			continue;
 		}
@@ -153,4 +186,27 @@ export function hydrateSessionMessages(messages: Message[]): ChatEntry[] {
 	}
 
 	return entries;
+}
+
+/**
+ * Fall back to the message text itself for compaction summaries that predate
+ * the structured `metadata.summary` field. Strips the "Context summary:"
+ * prefix the pipeline adds to the message content.
+ */
+function compactionSummaryFromContent(
+	content: PersistedMessage["content"],
+): string | undefined {
+	let text = "";
+	if (typeof content === "string") {
+		text = content;
+	} else if (Array.isArray(content)) {
+		text = content
+			.filter(
+				(block) => block.type === "text" && typeof block.text === "string",
+			)
+			.map((block) => (block as { text?: string }).text ?? "")
+			.join("\n");
+	}
+	const trimmed = text.replace(/^Context summary:\s*/i, "").trim();
+	return trimmed || undefined;
 }

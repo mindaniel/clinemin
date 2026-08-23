@@ -1,4 +1,7 @@
-import { estimateRequestInputTokens } from "@cline/shared";
+import {
+	estimateTokens,
+	serializeRequestInputForEstimate,
+} from "@cline/shared";
 import {
 	captureCompactionBudgetEmergency,
 	captureCompactionExecuted,
@@ -27,8 +30,10 @@ import {
 	DEFAULT_MAX_INPUT_TOKENS,
 	DEFAULT_PRESERVE_RECENT_TOKENS,
 	DEFAULT_TARGET_RATIO,
+	getCompactionSummaryMetadata,
 	resolveEffectiveMaxInputTokens,
 } from "./compaction-shared";
+import { countTokensViaLlamaCppTokenize } from "./llamacpp-tokenize";
 
 export interface ContextPipelinePrepareTurnInput {
 	agentId: string;
@@ -286,11 +291,21 @@ export function createContextCompactionPrepareTurn(
 			(total: number, message) => total + estimateMessageTokens(message),
 			0,
 		);
-		const requestInputTokens = estimateRequestInputTokens({
+		const requestSerialized = serializeRequestInputForEstimate({
 			systemPrompt: context.systemPrompt,
 			messages: context.apiMessages,
 			tools: context.tools,
 		});
+		// Prefer the exact token count from the local llama.cpp server's
+		// `/tokenize` endpoint (tokenized with the loaded model's tokenizer)
+		// when the provider base URL is a loopback server; fall back to the
+		// conservative heuristic otherwise.
+		const exactRequestTokens = await countTokensViaLlamaCppTokenize({
+			serializedPayload: requestSerialized,
+			baseUrl: providerConfig.baseUrl,
+		});
+		const requestInputTokens =
+			exactRequestTokens ?? estimateTokens(requestSerialized.length);
 		const messageInputTokens = context.messages.reduce(
 			(total: number, message) => total + estimateMessageTokens(message),
 			0,
@@ -455,6 +470,11 @@ export function createContextCompactionPrepareTurn(
 				0,
 			);
 			const afterRequestTokens = requestOverheadTokens + afterMessageTokens;
+			// Carry the generated summary so hosts can render an expandable
+			// "what was compacted" view next to the divider.
+			const compactedSummary = result.messages
+				.map(getCompactionSummaryMetadata)
+				.find(Boolean)?.summary;
 			config.logger?.log("Context compaction completed", {
 				severity: "info",
 				strategy: executedStrategy,
@@ -485,6 +505,7 @@ export function createContextCompactionPrepareTurn(
 					messagesBefore: beforeMessageCount,
 					messagesAfter: result.messages.length,
 					maxInputTokens,
+					...(compactedSummary ? { summary: compactedSummary } : {}),
 				},
 			);
 			captureCompactionExecuted(config.telemetry, {

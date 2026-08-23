@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import {
+	createDeepSeekWebV2Provider,
 	createOpenAICompatibleProvider,
 	createOpenAIProvider,
 	createSapAiCoreProvider,
@@ -231,6 +232,36 @@ describe("provider-ids", () => {
 		);
 		await expect(registration?.loadProvider?.()).resolves.toMatchObject({
 			createProvider: createSapAiCoreProvider,
+		});
+	});
+
+	it("registers DeepSeek Web v2 as a local-auth browser provider", async () => {
+		const provider = await getProvider("deepseek-web-v2");
+		expect(provider).toMatchObject({
+			id: "deepseek-web-v2",
+			name: "DeepSeek (Web v2 — Browser)",
+			client: "ai-sdk-community",
+			defaultModelId: "deepseek-chat",
+		});
+		// "popular" is appended automatically because the spec sets `popular`,
+		// so assert the meaningful capabilities with arrayContaining.
+		expect(provider.capabilities).toEqual(
+			expect.arrayContaining(["local-auth", "tools", "reasoning", "streaming"]),
+		);
+
+		const models = await getModelsForProvider("deepseek-web-v2");
+		expect(Object.hasOwn(models, "deepseek-chat")).toBe(true);
+		expect(Object.hasOwn(models, "deepseek-reasoner")).toBe(true);
+		expect(Object.hasOwn(models, "deepseek-expert")).toBe(true);
+		expect(Object.hasOwn(models, "deepseek-expert-reasoner")).toBe(true);
+		expect(Object.hasOwn(models, "deepseek-vision")).toBe(true);
+
+		const registration = BUILTIN_PROVIDER_REGISTRATIONS.find(
+			(item) => item.manifest.id === "deepseek-web-v2",
+		);
+		expect(registration).toBeDefined();
+		await expect(registration?.loadProvider?.()).resolves.toMatchObject({
+			createProvider: createDeepSeekWebV2Provider,
 		});
 	});
 });

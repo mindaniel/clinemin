@@ -16,8 +16,10 @@ import {
 	createContextCompactionPrepareTurn,
 } from "./compaction";
 import {
+	buildSummaryRequest,
 	createTokenEstimator,
 	estimateTokens,
+	isLeanSummaryProvider,
 	resolveEffectiveMaxInputTokens,
 	resolveSummarizerConfig,
 	serializeMessage,
@@ -1259,6 +1261,15 @@ describe("createContextCompactionPrepareTurn", () => {
 				iteration: 1,
 			}),
 		);
+		expect(emitStatusNotice).toHaveBeenCalledWith(
+			"auto-compacted",
+			expect.objectContaining({
+				kind: "auto_compaction",
+				reason: "auto_compaction",
+				phase: "completed",
+				summary: expect.stringContaining("## Goal\nShip the feature"),
+			}),
+		);
 		expect(result?.messages).toHaveLength(5);
 		expect(result?.messages[0]).toMatchObject({
 			role: "user",
@@ -2228,6 +2239,61 @@ describe("createContextCompactionPrepareTurn", () => {
 		expect(result?.messages).toEqual([
 			{ role: "user", content: "Compacted at 90%" },
 		]);
+	});
+
+	it("uses the exact llama.cpp /tokenize count for a local base URL", async () => {
+		const compact = vi.fn((_context: CoreCompactionContext) => ({
+			messages: [{ role: "user" as const, content: "Compacted (exact)" }],
+		}));
+		const prepareTurn = createContextCompactionPrepareTurn({
+			providerId: "llamacpp",
+			modelId: "mock-model",
+			providerConfig: {
+				providerId: "llamacpp",
+				modelId: "mock-model",
+				baseUrl: "http://127.0.0.1:8080/v1",
+			} as LlmsProviders.ProviderConfig,
+			compaction: { enabled: true, compact },
+			logger: undefined,
+		});
+		const messages: MessageWithMetadata[] = [
+			{ role: "user", content: "Latest turn" },
+		];
+		// The heuristic (chars/3) on this payload is ~6700 tokens — far above a
+		// 1000-token window — but the exact /tokenize count is 1, so the turn
+		// must NOT be compacted.
+		const fetchMock = vi.fn(
+			async (_url: string, _init: RequestInit) =>
+				new Response(JSON.stringify({ tokens: [1] }), { status: 200 }),
+		);
+		vi.stubGlobal("fetch", fetchMock);
+
+		try {
+			const result = await prepareTurn?.({
+				agentId: "agent-1",
+				conversationId: "conv-1",
+				parentAgentId: null,
+				iteration: 1,
+				abortSignal: new AbortController().signal,
+				systemPrompt: "s".repeat(20_000),
+				tools: [],
+				messages,
+				apiMessages: messages,
+				model: {
+					id: "mock-model",
+					provider: "llamacpp",
+					info: { id: "mock-model", maxInputTokens: 1_000 },
+				},
+			});
+			expect(compact).not.toHaveBeenCalled();
+			// In auto mode, a turn below the trigger returns undefined.
+			expect(result).toBeUndefined();
+			expect(fetchMock).toHaveBeenCalledTimes(1);
+			const [url] = fetchMock.mock.calls[0];
+			expect(url).toBe("http://127.0.0.1:8080/tokenize");
+		} finally {
+			vi.unstubAllGlobals();
+		}
 	});
 
 	it("triggers at 81 percent when only contextWindow is available", async () => {
@@ -3829,5 +3895,59 @@ describe("createContextCompactionPrepareTurn", () => {
 		expect(
 			projectSessionCompactionState(savedState, currentMessages),
 		).toBeDefined();
+	});
+});
+
+describe("compaction-shared isLeanSummaryProvider", () => {
+	it("returns true for deepseek web providers", () => {
+		expect(isLeanSummaryProvider("deepseek-web")).toBe(true);
+		expect(isLeanSummaryProvider("deepseek-web-v2")).toBe(true);
+	});
+
+	it("returns true for llama.cpp and other local providers", () => {
+		expect(isLeanSummaryProvider("llamacpp")).toBe(true);
+		expect(isLeanSummaryProvider("llamacpp-model-b")).toBe(true);
+		expect(isLeanSummaryProvider("ollama")).toBe(true);
+		expect(isLeanSummaryProvider("lmstudio")).toBe(true);
+	});
+
+	it("returns false for API/cloud providers", () => {
+		expect(isLeanSummaryProvider("anthropic")).toBe(false);
+		expect(isLeanSummaryProvider("openai-native")).toBe(false);
+		expect(isLeanSummaryProvider("openai-compatible")).toBe(false);
+		expect(isLeanSummaryProvider("openrouter")).toBe(false);
+	});
+});
+
+describe("compaction-shared buildSummaryRequest lean style", () => {
+	const fileOps = { readFiles: ["a.ts"], modifiedFiles: ["b.ts"] };
+
+	it("omits the output-template header and previous summary for the lean style", () => {
+		const lean = buildSummaryRequest({
+			previousSummary: "older",
+			conversationText: "the conversation",
+			fileOps,
+			style: "lean",
+		});
+		expect(lean).toContain("the conversation");
+		expect(lean).not.toContain("#Goal");
+		expect(lean).not.toContain("## State");
+		expect(lean).not.toContain("Previous summary:");
+		expect(lean).not.toContain("## Files");
+		expect(lean).not.toContain("a.ts");
+	});
+
+	it("keeps the full template by default (API providers)", () => {
+		const full = buildSummaryRequest({
+			previousSummary: "older",
+			conversationText: "the conversation",
+			fileOps,
+		});
+		expect(full).toContain("#Goal");
+		expect(full).toContain("## State");
+		expect(full).toContain("Previous summary:\nolder");
+		expect(full).toContain("Conversation:\nthe conversation");
+		expect(full).toContain("a.ts");
+		expect(full).toContain("b.ts");
 	});
 });

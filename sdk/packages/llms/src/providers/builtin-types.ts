@@ -24,7 +24,8 @@ export type ProviderFamily =
 	| "dify"
 	| "ollama"
 	| "sap-ai-core"
-	| "deepseek-web";
+	| "deepseek-web"
+	| "deepseek-web-v2";
 
 export type ProviderApiLine = "china" | "international";
 

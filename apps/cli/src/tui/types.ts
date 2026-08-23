@@ -53,6 +53,8 @@ export type ChatEntry = (
 			tokensAfter?: number;
 			messagesBefore?: number;
 			messagesAfter?: number;
+			/** Summary text of what was compacted, shown as an expandable view. */
+			summary?: string;
 	  }
 	| { kind: "team"; text: string }
 	| { kind: "user_submitted"; text: string; delivery?: "queue" | "steer" }
@@ -102,6 +104,8 @@ export interface InteractiveCompactionResult {
 	messagesAfter: number;
 	workingContextMessagesAfter?: number;
 	compacted: boolean;
+	/** Summary text of what was compacted, when the compaction produced one. */
+	summary?: string;
 }
 
 export interface UserInputAttachments {

@@ -10,10 +10,9 @@ Hooks run automatically when enabled.
 
 ## Enabling Hooks
 
-1. Open Cline settings in VSCode
-2. Navigate to the Feature Settings section
-3. Check the "Enable Hooks" checkbox
-4. Hooks must be executable files (on Unix/Linux/macOS use `chmod +x hookname`)
+1. Workspace hooks live in `.clinerules/hooks/`; global hooks live in `~/Documents/Cline/Hooks/`
+2. Enable hooks in your Cline configuration/settings
+3. Hooks must be executable files (on Unix/Linux/macOS use `chmod +x hookname`)
 
 ## Available Hooks
 
@@ -392,7 +391,7 @@ If you have multiple workspace roots, you can place hooks in each root's `.cline
 - Ensure the "Enable Hooks" setting is checked
 - Verify the hook file is executable (`chmod +x hookname`)
 - Check the hook file has no syntax errors
-- Look for errors in VSCode's Output panel (Cline channel)
+- Look for errors in the CLI's log output (run with verbose logging)
 
 ### Hook Timing Out
 - Reduce complexity of the hook script
@@ -406,7 +405,7 @@ If you have multiple workspace roots, you can place hooks in each root's `.cline
 
 ## Security Considerations
 
-- Hooks run with the same permissions as VSCode
+- Hooks run with the same permissions as the CLI process
 - Be cautious with hooks from untrusted sources
 - Review hook scripts before enabling them
 - Consider using `.gitignore` to avoid committing sensitive hook logic

@@ -41,27 +41,35 @@ function safeStringify(value: unknown): string {
 }
 
 /**
+ * Serialize the complete provider request payload (system prompt + messages +
+ * tools) to the exact string an estimation should be based on. Exported so the
+ * exact llama.cpp `/tokenize` counter and the heuristic estimator share one
+ * serialization definition.
+ */
+export function serializeRequestInputForEstimate(
+	request: TokenEstimatedRequest,
+): string {
+	try {
+		return JSON.stringify({
+			systemPrompt: request.systemPrompt,
+			messages: request.messages,
+			tools: request.tools,
+		});
+	} catch {
+		return [
+			safeStringify(request.systemPrompt),
+			safeStringify(request.messages),
+			safeStringify(request.tools),
+		].join("\n");
+	}
+}
+
+/**
  * Estimate the complete provider request payload so request execution and
  * pre-request policies use the same definition of input utilization.
  */
 export function estimateRequestInputTokens(
 	request: TokenEstimatedRequest,
 ): number {
-	let serialized: string;
-	try {
-		serialized = JSON.stringify({
-			systemPrompt: request.systemPrompt,
-			messages: request.messages,
-			tools: request.tools,
-		});
-	} catch {
-		serialized = [
-			safeStringify(request.systemPrompt),
-			safeStringify(request.messages),
-			safeStringify(request.tools),
-		].join("\n");
-	}
-	// Deliberately over-estimate slightly to leave room for provider formatting,
-	// tool schema overhead, and tokenizer drift.
-	return estimateTokens(serialized.length);
+	return estimateTokens(serializeRequestInputForEstimate(request).length);
 }

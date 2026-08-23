@@ -223,6 +223,7 @@ export {
 	CHARS_PER_TOKEN,
 	estimateRequestInputTokens,
 	estimateTokens,
+	serializeRequestInputForEstimate,
 	type TokenEstimatedRequest,
 } from "./llms/tokens";
 export type {

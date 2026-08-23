@@ -531,6 +531,7 @@ function inferClient(spec: BuiltinSpec): ProviderClient {
 		case "ollama":
 		case "sap-ai-core":
 		case "deepseek-web":
+		case "deepseek-web-v2":
 			return "ai-sdk-community";
 		default:
 			return "openai-compatible";
@@ -1185,6 +1186,49 @@ const BUILTIN_SPEC_OVERRIDES: BuiltinSpecOverride[] = [
 		],
 		metadata: { usageCostDisplay: "hide" },
 	},
+	{
+		id: "deepseek-web-v2",
+		name: "DeepSeek (Web v2 — Browser)",
+		description:
+			"DeepSeek via your real Chrome browser session (CDP) — no API key needed. Log in to chat.deepseek.com once in the browser profile. Options (headless, debug, chromePath, profileDir, debugPort) in ~/.cline/deepseek-web-v2/config.json or DEEPSEEK_WEB_V2_* env vars",
+		family: "deepseek-web-v2",
+		popular: 24,
+		capabilities: ["local-auth", "tools", "reasoning", "streaming"],
+		defaultModelId: "deepseek-chat",
+		modelsFactory: () => ({
+			"deepseek-chat": {
+				id: "deepseek-chat",
+				name: "DeepSeek Chat (Instant)",
+				capabilities: ["streaming"],
+				contextWindow: 1_000_000,
+			},
+			"deepseek-reasoner": {
+				id: "deepseek-reasoner",
+				name: "DeepSeek Reasoner (Deep Thinking)",
+				capabilities: ["streaming", "reasoning"],
+				contextWindow: 1_000_000,
+			},
+			"deepseek-expert": {
+				id: "deepseek-expert",
+				name: "DeepSeek Expert",
+				capabilities: ["streaming"],
+				contextWindow: 1_000_000,
+			},
+			"deepseek-expert-reasoner": {
+				id: "deepseek-expert-reasoner",
+				name: "DeepSeek Expert (Deep Thinking)",
+				capabilities: ["streaming", "reasoning"],
+				contextWindow: 1_000_000,
+			},
+			"deepseek-vision": {
+				id: "deepseek-vision",
+				name: "DeepSeek Vision",
+				capabilities: ["streaming"],
+				contextWindow: 1_000_000,
+			},
+		}),
+		metadata: { usageCostDisplay: "hide" },
+	},
 	...OPENAI_COMPATIBLE_SPEC_OVERRIDES,
 ];
 
@@ -1220,8 +1264,9 @@ export function resolveProviderApiLineBaseUrl(
 	if (!isProviderApiLine(apiLine)) {
 		return undefined;
 	}
-	return API_LINE_BASE_URLS_BY_PROVIDER_ID.get(normalizeProviderId(providerId))
-		?.[apiLine];
+	return API_LINE_BASE_URLS_BY_PROVIDER_ID.get(
+		normalizeProviderId(providerId),
+	)?.[apiLine];
 }
 
 function getModels(spec: BuiltinSpec): Record<string, ModelInfo> {

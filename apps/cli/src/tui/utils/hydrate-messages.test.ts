@@ -151,4 +151,81 @@ describe("hydrateSessionMessages", () => {
 			},
 		]);
 	});
+
+	it("turns a compaction_summary message into an expandable divider with the summary", () => {
+		const messages = [
+			{
+				role: "user",
+				content: [
+					{
+						type: "text",
+						text: "Context summary:\n\n## Goal\nFix the sidebar.",
+					},
+				],
+				metadata: {
+					kind: "compaction_summary",
+					displayRole: "system",
+					summary: "## Goal\nFix the sidebar.",
+				},
+			},
+			{ role: "user", content: "keep going" },
+		] as unknown as Message[];
+
+		expect(hydrateSessionMessages(messages)).toEqual([
+			{
+				kind: "compaction",
+				compactionMode: "auto",
+				status: "completed",
+				summary: "## Goal\nFix the sidebar.",
+				mode: undefined,
+			},
+			{ kind: "user_submitted", text: "keep going", mode: undefined },
+		]);
+	});
+
+	it("falls back to message content for legacy summaries without metadata.summary", () => {
+		const messages = [
+			{
+				role: "user",
+				content: "Context summary:\n\nearlier work was done",
+				metadata: { kind: "compaction_summary", displayRole: "system" },
+			},
+		] as unknown as Message[];
+
+		expect(hydrateSessionMessages(messages)).toEqual([
+			{
+				kind: "compaction",
+				compactionMode: "auto",
+				status: "completed",
+				summary: "earlier work was done",
+				mode: undefined,
+			},
+		]);
+	});
+
+	it("renders legacy basic-compaction markers as dividers without a summary", () => {
+		const messages = [
+			{
+				role: "user",
+				content: "Compacted context",
+				metadata: { kind: "compaction", displayRole: "system" },
+			},
+			{ role: "assistant", content: "continuing" },
+		] as unknown as Message[];
+
+		expect(hydrateSessionMessages(messages)).toEqual([
+			{
+				kind: "compaction",
+				compactionMode: "auto",
+				status: "completed",
+				mode: undefined,
+			},
+			{
+				kind: "assistant_text",
+				text: "continuing",
+				streaming: false,
+				mode: undefined,
+			},
+		]);
+	});
 });

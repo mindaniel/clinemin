@@ -649,16 +649,45 @@ export function ensureFilesSection(
 	return `${summary.trim()}\n\n${renderFilesSection(fileOps)}`.trim();
 }
 
+/**
+ * Provider ids whose summarizer should get a *lean* summary request (just the
+ * conversation text) instead of the full output-template prompt. These are the
+ * deepseek web providers (the browser/web chat keeps its own server-side state,
+ * so the heavy instruction template is redundant and bloats tokens) and local
+ * providers like llama.cpp / ollama / lmstudio where the combined prompt grows
+ * too long for their small context windows.
+ */
+export function isLeanSummaryProvider(providerId: string): boolean {
+	if (
+		providerId === "deepseek-web" ||
+		providerId === "deepseek-web-v2" ||
+		providerId.startsWith("llamacpp") ||
+		providerId === "ollama" ||
+		providerId === "lmstudio"
+	) {
+		return true;
+	}
+	return false;
+}
+
+/**
+ * Build the summarizer request. API providers get the full structured prompt
+ * (output template + previous summary + conversation + files). Web/local
+ * providers get a minimal "summarize this conversation" prompt carrying only
+ * the conversation text, because their context is managed server-side (web) or
+ * the combined prompt would exceed their smaller context window (local).
+ */
 export function buildSummaryRequest(options: {
 	previousSummary?: string;
 	conversationText: string;
 	fileOps: FileOperationSummary;
+	style?: "full" | "lean";
 }): string {
+	if (options.style === "lean") {
+		return `Summarize the conversation below and provide a detailed prompt to continue.\n\n${options.conversationText || "(empty)"}`;
+	}
 	const parts: string[] = [
-		`Summarize this session for continuation. Be concise and factual.
-
-## Goal
-One sentence: what is being built or fixed.
+		`#Goal
 
 ## State
 - Done: completed steps
@@ -666,7 +695,6 @@ One sentence: what is being built or fixed.
 - Blocked: blockers or open questions
 
 ## Highlights
-Key technical choices or notable findings (omit if none).
 
 ## Next
 Immediate next steps.

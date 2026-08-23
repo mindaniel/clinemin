@@ -53,6 +53,42 @@ interface GatewayNormalizedUsage {
 }
 type ProviderModuleKind = AiSdkProviderOptionsTarget;
 
+/** llama.cpp is local (free) and its tool-calling is often weak, so lean mode is
+ * the default: the tools[] param is only sent when the model actually needs it,
+ * keeping a small local context window from being burned on repeated tool defs. */
+const DEFAULT_LLAMACPP_TOOL_PROMPT_THRESHOLD_CHARS = 20_000;
+
+/**
+ * Whether the native `tools[]` param should be sent for this request.
+ *
+ * - API providers (deepseek API, openai-compatible, …): the tools[] param is
+ *   required every call and cannot be recalled from message history, so it is
+ *   always sent ("safe lean" — the AI SDK + provider caching keep it cheap).
+ * - llama.cpp: "full lean" by default — skip tools[] on ordinary turns and only
+ *   send them when the model actually needs them: the first message / right
+ *   after a compaction (both look like a tiny conversation) or when the context
+ *   has grown so long the earlier tool definitions may have fallen out.
+ *   Override with `LLAMACPP_TOOL_PROMPT_MODE=always` (threshold: chars).
+ */
+export function shouldSendNativeTools(request: GatewayStreamRequest): boolean {
+	const providerId = request.providerId;
+	const isLlamacpp = providerId.startsWith("llamacpp");
+	if (!isLlamacpp) return true;
+
+	if (process.env.LLAMACPP_TOOL_PROMPT_MODE === "always") return true;
+	const threshold =
+		Number(process.env.LLAMACPP_TOOL_PROMPT_THRESHOLD_CHARS) ||
+		DEFAULT_LLAMACPP_TOOL_PROMPT_THRESHOLD_CHARS;
+
+	const messages = request.messages;
+	// First message / right after compaction — the model has not seen the tools.
+	if (messages.length <= 3) return true;
+	// Long conversation — re-arm the tool definitions before the model acts.
+	if (JSON.stringify(messages).length > threshold) return true;
+	// Ordinary turn — the tools are still visible in the conversation history.
+	return false;
+}
+
 export function buildAiSdkStreamConfig(
 	request: GatewayStreamRequest,
 	_context: GatewayProviderContext,
@@ -1157,6 +1193,12 @@ async function createProviderModule(
 			);
 			return createDeepSeekWebProviderModule(config, context);
 		}
+		case "deepseek-web-v2": {
+			const { createDeepSeekWebV2ProviderModule } = await import(
+				"./vendors/deepseek-web-v2"
+			);
+			return createDeepSeekWebV2ProviderModule(config, context);
+		}
 	}
 }
 
@@ -1186,7 +1228,9 @@ function createAiSdkProvider(kind: ProviderModuleKind): GatewayProviderFactory {
 				);
 				const tools = providerDisablesExternalToolExecution(context)
 					? undefined
-					: toAiSdkTools(request);
+					: shouldSendNativeTools(request)
+						? toAiSdkTools(request)
+						: undefined;
 				const systemPrompt = resolveAiSdkSystemPrompt(request);
 				const useSystemOption =
 					typeof systemPrompt === "string" && systemPrompt.trim().length > 0;
@@ -1324,3 +1368,5 @@ export const createDifyProvider = createAiSdkProvider("dify");
 export const createOllamaProvider = createAiSdkProvider("ollama");
 export const createSapAiCoreProvider = createAiSdkProvider("sapaicore");
 export const createDeepSeekWebProvider = createAiSdkProvider("deepseek-web");
+export const createDeepSeekWebV2Provider =
+	createAiSdkProvider("deepseek-web-v2");

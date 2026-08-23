@@ -1,6 +1,10 @@
-import { describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import fixtures from "../../fixtures/usage.json";
-import { normalizeUsage } from "./ai-sdk";
+import { normalizeUsage, shouldSendNativeTools } from "./ai-sdk";
+
+afterEach(() => {
+	vi.unstubAllEnvs();
+});
 
 /**
  * These tests validate usage normalization across different AI SDK stream result shapes.
@@ -384,6 +388,89 @@ describe("ai-sdk usage normalization", () => {
 					cacheWriteTokens: 10106,
 				}),
 			);
+		});
+
+		describe("ai-sdk shouldSendNativeTools (lean tool prompt)", () => {
+			const req = (
+				overrides: Partial<Parameters<typeof shouldSendNativeTools>[0]>,
+			) =>
+				({
+					providerId: "llamacpp",
+					messages: [{ role: "user", content: "hi" }],
+					...overrides,
+				}) as never;
+
+			it("always sends tools for non-llamacpp providers (deepseek API, openai-compatible)", () => {
+				expect(
+					shouldSendNativeTools(
+						req({
+							providerId: "deepseek",
+							messages: Array.from({ length: 8 }, (_, i) => ({
+								role: i % 2 ? "user" : "assistant",
+								content: `msg ${i}`,
+							})),
+						}),
+					),
+				).toBe(true);
+			});
+
+			it("sends tools for llamacpp on a tiny conversation (first message / post-compaction)", () => {
+				expect(
+					shouldSendNativeTools(
+						req({ messages: [{ role: "user", content: "hi" }] }),
+					),
+				).toBe(true);
+				expect(
+					shouldSendNativeTools(
+						req({
+							messages: [
+								{ role: "system", content: "summary" },
+								{ role: "user", content: "continue" },
+							],
+						}),
+					),
+				).toBe(true);
+			});
+
+			it("omits tools for llamacpp on an ordinary mid-length conversation", () => {
+				const messages = [
+					{ role: "system", content: "agent" },
+					{ role: "user", content: "first" },
+					{ role: "assistant", content: "ok" },
+					{ role: "user", content: "second" },
+					{ role: "assistant", content: "done" },
+					{ role: "user", content: "third" },
+				];
+				expect(shouldSendNativeTools(req({ messages }))).toBe(false);
+			});
+
+			it("re-sends tools for llamacpp when the conversation is very long", () => {
+				const messages = [
+					{ role: "user", content: "a".repeat(25_000) },
+					{ role: "user", content: "continue" },
+				];
+				expect(shouldSendNativeTools(req({ messages }))).toBe(true);
+			});
+
+			it("respects LLAMACPP_TOOL_PROMPT_MODE=always", () => {
+				vi.stubEnv("LLAMACPP_TOOL_PROMPT_MODE", "always");
+				const messages = [
+					{ role: "system", content: "agent" },
+					{ role: "user", content: "first" },
+					{ role: "assistant", content: "ok" },
+					{ role: "user", content: "second" },
+				];
+				expect(shouldSendNativeTools(req({ messages }))).toBe(true);
+			});
+
+			it("respects the threshold env override", () => {
+				vi.stubEnv("LLAMACPP_TOOL_PROMPT_THRESHOLD_CHARS", "100");
+				const messages = [
+					{ role: "user", content: "short" },
+					{ role: "user", content: "continue" },
+				];
+				expect(shouldSendNativeTools(req({ messages }))).toBe(true);
+			});
 		});
 
 		it("handles Anthropic's cache_creation metadata", () => {

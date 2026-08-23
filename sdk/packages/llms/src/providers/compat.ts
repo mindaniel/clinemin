@@ -15,6 +15,8 @@ import {
 	createAnthropicProvider,
 	createBedrockProvider,
 	createClaudeCodeProvider,
+	createDeepSeekWebProvider,
+	createDeepSeekWebV2Provider,
 	createDifyProvider,
 	createGoogleProvider,
 	createMistralProvider,
@@ -25,7 +27,6 @@ import {
 	createOpenCodeProvider,
 	createSapAiCoreProvider,
 	createVertexProvider,
-	createDeepSeekWebProvider,
 } from "./ai-sdk";
 import { BUILTIN_PROVIDER_REGISTRATIONS } from "./builtins-runtime";
 import { createGateway } from "./gateway";
@@ -170,6 +171,8 @@ function resolveFactory(
 			return createSapAiCoreProvider;
 		case "deepseek-web":
 			return createDeepSeekWebProvider;
+		case "deepseek-web-v2":
+			return createDeepSeekWebV2Provider;
 		default:
 			return createOpenAICompatibleProvider;
 	}

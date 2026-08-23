@@ -21,6 +21,19 @@ import {
 	type PatchWarning,
 } from "./apply-patch-parser";
 
+/**
+ * Create a directory (and any missing parents), tolerating the case where it
+ * already exists. Bun's `node:fs/promises` `mkdir` throws `EEXIST` on Windows
+ * even with `recursive: true` when the target directory already exists.
+ */
+async function ensureDir(dirPath: string): Promise<void> {
+	try {
+		await fs.mkdir(dirPath, { recursive: true });
+	} catch (error) {
+		if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error;
+	}
+}
+
 export interface PatchFileChange {
 	type: PatchActionType;
 	oldContent?: string;
@@ -291,7 +304,7 @@ async function applyChanges(
 				if (change.newContent === undefined) {
 					throw new DiffError(`Cannot create ${filePath} with no content`);
 				}
-				await fs.mkdir(path.dirname(sourceAbsPath), { recursive: true });
+				await ensureDir(path.dirname(sourceAbsPath));
 				await fs.writeFile(sourceAbsPath, change.newContent, { encoding });
 				touched.push(filePath);
 				break;
@@ -308,7 +321,7 @@ async function applyChanges(
 						change.movePath,
 						restrictToCwd,
 					);
-					await fs.mkdir(path.dirname(moveAbsPath), { recursive: true });
+					await ensureDir(path.dirname(moveAbsPath));
 					await fs.writeFile(moveAbsPath, change.newContent, { encoding });
 					await fs.rm(sourceAbsPath, { force: true });
 					touched.push(`${filePath} -> ${change.movePath}`);

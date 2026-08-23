@@ -679,6 +679,8 @@ export function createInteractiveSessionRuntime(input: {
 		messagesAfter: number;
 		workingContextMessagesAfter?: number;
 		compacted: boolean;
+		/** Summary text of what was compacted, when the compaction produced one. */
+		summary?: string;
 	}> => {
 		if (input.config.compaction?.enabled === false) {
 			throw new Error(
@@ -707,6 +709,11 @@ export function createInteractiveSessionRuntime(input: {
 				"Cannot compact while the current turn is running. Wait for it to finish or abort it first.",
 			);
 		}
+		// Build the compaction via the standalone summarizer path. It compact
+		// summarizes the full canonical transcript (which carries the conversation
+		// context) using the same provider, and stores the resulting compaction
+		// state. On the next turn the projected messages (summary first) drive a
+		// fresh DeepSeek web chat seeded with the system prompt + summary.
 		let result: Awaited<ReturnType<typeof compactInteractiveMessages>>;
 		const abortController = new AbortController();
 		manualCompactionAbortController = abortController;
@@ -744,11 +751,22 @@ export function createInteractiveSessionRuntime(input: {
 		if (!updated.updated) {
 			throw new Error("Compaction could not be saved. Try again.");
 		}
+		// Restart the same session so the compaction state projects the summary
+		// as the new first user message on the next turn (for deepseek-web-v2 this
+		// opens a fresh web chat seeded with system prompt + summary).
+		await restartWithMessages([], undefined, result.compactionState, {
+			preserveSessionId: true,
+		});
 		return {
 			messagesBefore,
 			messagesAfter: result.canonicalMessages.length,
 			workingContextMessagesAfter: result.compactionState?.messages.length,
 			compacted: true,
+			...(result.summary
+				? { summary: result.summary }
+				: extractCompactionSummary(result.canonicalMessages)
+					? { summary: extractCompactionSummary(result.canonicalMessages) }
+					: {}),
 		};
 	};
 
@@ -900,4 +918,20 @@ export function createInteractiveSessionRuntime(input: {
 		getActiveSessionId: () => activeSessionId,
 		isShutdownRequested: () => shutdownRequested,
 	};
+}
+
+/**
+ * Pull the compaction summary text out of a compacted message list. The
+ * compaction pipeline stores it as the `summary` field of the first
+ * `compaction_summary` message, so hosts can show "what was compacted".
+ */
+function extractCompactionSummary(messages: Message[]): string | undefined {
+	for (const message of messages) {
+		const metadata = (message as { metadata?: Record<string, unknown> })
+			.metadata;
+		if (metadata?.kind !== "compaction_summary") continue;
+		const summary = metadata.summary;
+		if (typeof summary === "string" && summary.trim()) return summary;
+	}
+	return undefined;
 }

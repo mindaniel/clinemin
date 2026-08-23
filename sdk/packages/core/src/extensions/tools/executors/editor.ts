@@ -148,12 +148,26 @@ function createLineDiff(
 	return out.join("\n");
 }
 
+/**
+ * Create a directory (and any missing parents), tolerating the case where it
+ * already exists. Bun's `node:fs/promises` `mkdir` throws `EEXIST` on Windows
+ * even with `recursive: true` when the target directory already exists, which
+ * would otherwise make creating a file inside an existing directory fail.
+ */
+async function ensureDir(dirPath: string): Promise<void> {
+	try {
+		await fs.mkdir(dirPath, { recursive: true });
+	} catch (error) {
+		if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error;
+	}
+}
+
 async function createFile(
 	filePath: string,
 	fileText: string,
 	encoding: BufferEncoding,
 ): Promise<string> {
-	await fs.mkdir(path.dirname(filePath), { recursive: true });
+	await ensureDir(path.dirname(filePath));
 	await fs.writeFile(filePath, fileText, { encoding });
 	return `File created successfully at: ${filePath}`;
 }

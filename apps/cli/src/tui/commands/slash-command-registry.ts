@@ -81,7 +81,8 @@ const TUI_LOCAL_COMMANDS: Array<{
 	},
 	{
 		name: "autocompact",
-		description: "Set auto-compaction context limit (e.g. /autocompact 1000000)",
+		description:
+			"Set auto-compaction context limit (e.g. /autocompact 1000000)",
 	},
 	{
 		name: "skills",

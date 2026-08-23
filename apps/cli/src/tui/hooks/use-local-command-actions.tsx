@@ -9,8 +9,8 @@ import { HelpDialogContent } from "../components/dialogs/help-dialog";
 import { withLoadingDialog } from "../components/dialogs/loading-dialog";
 import { useSession } from "../contexts/session-context";
 import type { AppView, TuiProps } from "../types";
-import { hydrateSessionMessages } from "../utils/hydrate-messages";
 import { formatTokenCount } from "../utils/compaction-status";
+import { hydrateSessionMessages } from "../utils/hydrate-messages";
 import type { LocalSlashCommandInvocation } from "../utils/skill-command-input";
 import { HistoryDialogContent } from "../views/history-view";
 import { runLocalSlashCommandAction } from "./local-command-actions";
@@ -144,6 +144,7 @@ export function useLocalCommandActions(input: {
 							messagesBefore: result.messagesBefore,
 							messagesAfter:
 								result.workingContextMessagesAfter ?? result.messagesAfter,
+							...(result.summary ? { summary: result.summary } : {}),
 						}
 					: entry,
 			);

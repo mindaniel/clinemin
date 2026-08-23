@@ -33,19 +33,20 @@ Confirm the release version with the maintainer (patch/minor/major).
 ### 3) Commit and tag
 
 ```bash
-git add CHANGELOG.md package.json package-lock.json
+git add CHANGELOG.md package.json bun.lock
 git commit -m "v<version> Release Notes"
 git push origin main
 git tag v<version>
 git push origin v<version>
 ```
 
-### 4) Trigger publish workflow
+### 4) Publish
 
-Tell the maintainer to run:
-https://github.com/cline/cline/actions/workflows/ext-vscode-publish-stable.yml
+Run the repo's release flow — `bun run release` (see `sdk/scripts/release.ts`), which
+versions the SDK packages and drives publishing. The CLI package also has
+`bun -F @cline/cli publish:npm` (dry run: `bun -F @cline/cli publish:npm:dry`).
 
-Use `v<version>` as the release tag.
+Tag the release as `v<version>`.
 
 ### 5) Update GitHub release notes
 

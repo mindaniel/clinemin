@@ -29,6 +29,8 @@ export enum BUILT_IN_PROVIDER {
 	LMSTUDIO = "lmstudio",
 	LLAMACPP = "llamacpp",
 	OMNIROUTE = "omniroute",
+	DEEPSEEK_WEB = "deepseek-web",
+	DEEPSEEK_WEB_V2 = "deepseek-web-v2",
 	// OpenAI-compatible
 	DEEPSEEK = "deepseek",
 	XAI = "xai",

@@ -59,6 +59,7 @@ export async function compactInteractiveMessages(input: {
 	compacted: boolean;
 	canonicalMessages: Message[];
 	compactionState?: SessionCompactionState;
+	summary?: string;
 }> {
 	const modelInfo = input.config.knownModels?.[input.config.modelId];
 	const compactionModelInfo = modelInfo
@@ -116,6 +117,16 @@ export async function compactInteractiveMessages(input: {
 	if (!result?.messages) {
 		return { compacted: false, canonicalMessages: input.messages };
 	}
+
+	// Extract compaction summary from the result messages
+	let summary: string | undefined;
+	for (const msg of result.messages) {
+		if (msg.metadata?.kind === "compaction_summary") {
+			summary = msg.metadata?.summary as string | undefined;
+			break;
+		}
+	}
+
 	return {
 		compacted: true,
 		canonicalMessages: input.messages,
@@ -125,5 +136,6 @@ export async function compactInteractiveMessages(input: {
 			conversationId: input.sessionId,
 			systemPrompt: result.systemPrompt,
 		}),
+		summary,
 	};
 }

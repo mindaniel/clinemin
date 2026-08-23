@@ -434,6 +434,7 @@ function CompactionDividerRow(props: {
 }) {
 	const { entry } = props;
 	const { width: terminalWidth } = useTerminalDimensions();
+	const [expanded, setExpanded] = useState(false);
 	const inProgress = entry.status === "started";
 	const labelColor = inProgress
 		? "cyan"
@@ -443,20 +444,51 @@ function CompactionDividerRow(props: {
 				? "gray"
 				: "cyan";
 	const label = `✻ ${formatCompactionDividerLabel(entry)} ✻`;
+	// A completed divider that carries a summary is clickable: expand to read
+	// what was compacted (the generated summary text).
+	const summary = entry.status === "completed" ? entry.summary?.trim() : "";
+	const hasSummary = Boolean(summary);
+	const hint = hasSummary
+		? expanded
+			? " [hide summary]"
+			: " [view summary]"
+		: "";
 	// Fill the remaining line with a plain rule instead of a flexGrow bordered
 	// box: a single fixed-content text row keeps the renderer's diffing stable.
-	const ruleWidth = Math.max(2, Math.min(40, terminalWidth - label.length - 8));
+	const ruleWidth = Math.max(
+		2,
+		Math.min(40, terminalWidth - label.length - hint.length - 8),
+	);
+	const summaryLines = expanded && summary ? summary.split("\n") : [];
 	return (
-		<box flexDirection="row">
-			{inProgress ? (
-				<box width={2}>
-					<spinner name="dots" color={labelColor} />
+		<box flexDirection="column">
+			<box
+				flexDirection="row"
+				onMouseDown={
+					hasSummary ? () => setExpanded((value) => !value) : undefined
+				}
+			>
+				{inProgress ? (
+					<box width={2}>
+						<spinner name="dots" color={labelColor} />
+					</box>
+				) : (
+					<text fg="gray" content="── " />
+				)}
+				<text fg={labelColor} selectable content={label} />
+				{hasSummary ? <text fg="gray" content={hint} /> : null}
+				<text fg="gray" content={` ${"─".repeat(ruleWidth)}`} />
+			</box>
+			{summaryLines.length > 0 ? (
+				<box flexDirection="column" paddingLeft={2}>
+					<text fg={labelColor}>▼ Compacted context summary:</text>
+					{summaryLines.map((line, index) => (
+						<text key={`${index}-${line}`} selectable>
+							{line || " "}
+						</text>
+					))}
 				</box>
-			) : (
-				<text fg="gray" content="── " />
-			)}
-			<text fg={labelColor} selectable content={label} />
-			<text fg="gray" content={` ${"─".repeat(ruleWidth)}`} />
+			) : null}
 		</box>
 	);
 }

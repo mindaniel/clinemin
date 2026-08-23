@@ -1,8 +1,4 @@
 import type {
-	GatewayProviderContext,
-	GatewayResolvedProviderConfig,
-} from "@cline/shared";
-import type {
 	LanguageModelV2,
 	LanguageModelV2CallOptions,
 	LanguageModelV2FinishReason,
@@ -11,6 +7,11 @@ import type {
 	LanguageModelV2Prompt,
 	LanguageModelV2StreamPart,
 } from "@ai-sdk/provider";
+import type {
+	GatewayProviderContext,
+	GatewayResolvedProviderConfig,
+} from "@cline/shared";
+import { estimateTokens } from "@cline/shared";
 import { ensureFetch } from "../http";
 import type { ProviderFactoryResult } from "./types";
 
@@ -121,10 +122,10 @@ function chi(state: Uint32Array, tmp: Uint32Array): void {
 const ROUND_CONSTANTS: readonly number[] = [
 	0, 1, 0, 32898, 0x80000000, 32906, 0x80000000, 0x80008000, 0, 32907, 0,
 	0x80000001, 0x80000000, 0x80008081, 0x80000000, 32777, 0, 138, 0, 136, 0,
-	0x80008009, 0, 0x8000000a, 0, 0x8000808b, 0x80000000, 139, 0x80000000,
-	32905, 0x80000000, 32771, 0x80000000, 32770, 0x80000000, 128, 0, 32778,
-	0x80000000, 0x8000000a, 0x80000000, 0x80008081, 0x80000000, 32896, 0,
-	0x80000001, 0x80000000, 0x80008008,
+	0x80008009, 0, 0x8000000a, 0, 0x8000808b, 0x80000000, 139, 0x80000000, 32905,
+	0x80000000, 32771, 0x80000000, 32770, 0x80000000, 128, 0, 32778, 0x80000000,
+	0x8000000a, 0x80000000, 0x80008081, 0x80000000, 32896, 0, 0x80000001,
+	0x80000000, 0x80008008,
 ];
 
 /**
@@ -251,8 +252,16 @@ function iota(state: Uint32Array, round: number): void {
 function absorbBlockBytes(block: Uint8Array, state: Uint32Array): void {
 	for (let r = 0; r < block.length; r += 8) {
 		const n = r / 4;
-		state[n] ^= (block[r + 7] << 24) | (block[r + 6] << 16) | (block[r + 5] << 8) | block[r + 4];
-		state[n + 1] ^= (block[r + 3] << 24) | (block[r + 2] << 16) | (block[r + 1] << 8) | block[r];
+		state[n] ^=
+			(block[r + 7] << 24) |
+			(block[r + 6] << 16) |
+			(block[r + 5] << 8) |
+			block[r + 4];
+		state[n + 1] ^=
+			(block[r + 3] << 24) |
+			(block[r + 2] << 16) |
+			(block[r + 1] << 8) |
+			block[r];
 	}
 }
 
@@ -390,7 +399,9 @@ export function solveDeepSeekPow(challenge: PowChallenge): string {
 function generateFakeCookie(): string {
 	const ts = Date.now();
 	const hex = (n: number): string =>
-		Array.from({ length: n }, () => Math.floor(Math.random() * 16).toString(16)).join("");
+		Array.from({ length: n }, () =>
+			Math.floor(Math.random() * 16).toString(16),
+		).join("");
 	const uid = (): string =>
 		"xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx".replace(/[xy]/g, (c) => {
 			const r = (Math.random() * 16) | 0;
@@ -440,7 +451,9 @@ async function acquireAccessToken(
 		biz_data?: { token?: string };
 	};
 	if (json.code && json.code !== 0) {
-		throw new Error(`DeepSeek rejected userToken: ${json.msg ?? `code ${json.code}`}`);
+		throw new Error(
+			`DeepSeek rejected userToken: ${json.msg ?? `code ${json.code}`}`,
+		);
 	}
 	const bizData = json?.data?.biz_data ?? json?.biz_data;
 	if (!bizData?.token) {
@@ -505,16 +518,19 @@ async function getPowChallenge(
 	fetchImpl: typeof fetch,
 	signal?: AbortSignal,
 ): Promise<PowChallenge> {
-	const resp = await fetchImpl(`${DEEPSEEK_API_BASE}/v0/chat/create_pow_challenge`, {
-		method: "POST",
-		headers: {
-			...FAKE_HEADERS,
-			"Content-Type": "application/json",
-			Authorization: `Bearer ${accessToken}`,
+	const resp = await fetchImpl(
+		`${DEEPSEEK_API_BASE}/v0/chat/create_pow_challenge`,
+		{
+			method: "POST",
+			headers: {
+				...FAKE_HEADERS,
+				"Content-Type": "application/json",
+				Authorization: `Bearer ${accessToken}`,
+			},
+			body: JSON.stringify({ target_path: "/api/v0/chat/completion" }),
+			signal,
 		},
-		body: JSON.stringify({ target_path: "/api/v0/chat/completion" }),
-		signal,
-	});
+	);
 	if (!resp.ok) {
 		throw new Error(`DeepSeek create_pow_challenge HTTP ${resp.status}`);
 	}
@@ -530,7 +546,6 @@ async function getPowChallenge(
 	return challenge;
 }
 
-
 // ── Prompt building (the web endpoint only accepts a flat `prompt` string) ──
 
 const DEFAULT_AUTO_HISTORY_WINDOW = 20;
@@ -541,7 +556,10 @@ type PromptPart = {
 	text?: unknown;
 	toolName?: unknown;
 	toolCallId?: unknown;
+	// Legacy (AI SDK v1) tool-result shape.
 	result?: unknown;
+	// AI SDK v2 tool-result shape: { type, value } | { type: "content", value: ... }.
+	output?: unknown;
 };
 
 function toPromptParts(message: LanguageModelV2Message): PromptPart[] {
@@ -551,12 +569,77 @@ function toPromptParts(message: LanguageModelV2Message): PromptPart[] {
 	return [{ type: "text", text: String(message.content ?? "") }];
 }
 
+/**
+ * Convert an AI SDK v2 tool-result `output` into a plain string so the model
+ * can see the tool's result. v2 uses `output` (not v1's `result`) with one of
+ * several shapes:
+ *   - { type: "text",        value: string }
+ *   - { type: "json",        value: JSONValue }
+ *   - { type: "error-text",  value: string }
+ *   - { type: "error-json",  value: JSONValue }
+ *   - { type: "content",     value: Array<{ type: "text", text } | { type: "media", ... }> }
+ * Without this, the web provider silently swallowed every tool result (the
+ * model kept asking "did you actually create it?" because it never saw the
+ * command output).
+ */
+function toolResultOutputText(output: unknown): string {
+	if (output == null) return "";
+	if (typeof output === "string") return output;
+
+	const out = output as {
+		type?: string;
+		value?: unknown;
+	};
+
+	if (out.type === "text" || out.type === "error-text") {
+		return typeof out.value === "string" ? out.value : String(out.value ?? "");
+	}
+
+	if (out.type === "json" || out.type === "error-json") {
+		return typeof out.value === "string"
+			? out.value
+			: JSON.stringify(out.value);
+	}
+
+	if (out.type === "content") {
+		const items = out.value as Array<{
+			type?: string;
+			text?: string;
+			data?: string;
+			mediaType?: string;
+		}>;
+		if (Array.isArray(items)) {
+			return items
+				.map((item) => {
+					if (item.type === "text" && typeof item.text === "string") {
+						return item.text;
+					}
+					if (item.type === "media") {
+						const mime =
+							typeof item.mediaType === "string" ? ` [${item.mediaType}]` : "";
+						const body = typeof item.data === "string" ? item.data : "";
+						return `[media${mime}]${body ? ` ${body}` : ""}`;
+					}
+					return "";
+				})
+				.filter((t) => t.length > 0)
+				.join("\n");
+		}
+	}
+
+	return JSON.stringify(output);
+}
+
 function promptPartText(part: PromptPart): string {
 	if (typeof part.text === "string" && part.text.length > 0) return part.text;
-	if (part.type === "tool-result" && part.result !== undefined) {
-		return typeof part.result === "string"
-			? part.result
-			: JSON.stringify(part.result);
+	if (part.type === "tool-result") {
+		// v2 shape takes precedence; fall back to the legacy `result` field.
+		if (part.output !== undefined) return toolResultOutputText(part.output);
+		if (part.result !== undefined) {
+			return typeof part.result === "string"
+				? part.result
+				: JSON.stringify(part.result);
+		}
 	}
 	return "";
 }
@@ -658,7 +741,6 @@ export function serializeDeepSeekToolPrompt(
 	].join("\n");
 }
 
-
 // ── DeepSeek SSE parsing ───────────────────────────────────────────────────
 
 interface SseFragment {
@@ -673,25 +755,41 @@ interface DeepSeekCompletionEvent {
 
 /**
  * Read the DeepSeek completion SSE stream, invoking `onText` / `onReasoning`
- * with content fragments as they arrive. Returns the fully buffered text and
- * reasoning so tool calls can be parsed from the complete reply.
+ * with content fragments as they arrive. Returns the fully buffered text,
+ * reasoning, and the latest `accumulated_token_usage` the server reported
+ * (the model's own cumulative context-token count for this conversation).
  *
  * `initialThinking` mirrors the reference client's behavior: reasoning models
  * treat un-tagged content as thinking until the first ANSWER/RESPONSE fragment
  * flips the path.
  */
-async function consumeDeepSeekSse(
+export async function consumeDeepSeekSse(
 	body: ReadableStream<Uint8Array>,
 	onText?: (text: string) => void,
 	onReasoning?: (text: string) => void,
 	initialThinking = false,
-): Promise<{ text: string; reasoning: string }> {
+): Promise<{
+	text: string;
+	reasoning: string;
+	accumulatedTokenUsage?: number;
+}> {
 	const reader = body.getReader();
 	const decoder = new TextDecoder();
 	let buffer = "";
 	let text = "";
 	let reasoning = "";
 	let thinking = initialThinking;
+	let accumulatedTokenUsage: number | undefined;
+
+	// DeepSeek reports the cumulative context-token count in several shapes:
+	//   - inside the `response` envelope: { response: { accumulated_token_usage: N } }
+	//   - a path update:                 { p: "accumulated_token_usage", v: N }
+	//   - a batched update:              { p: "response", o: "BATCH", v: [{ p: "accumulated_token_usage", v: N }] }
+	// Capture whichever appears last.
+	const captureAccumulatedTokens = (candidate: unknown): void => {
+		if (typeof candidate !== "number" || !Number.isFinite(candidate)) return;
+		if (candidate >= 0) accumulatedTokenUsage = candidate;
+	};
 
 	const cleanFragment = (raw: string): string =>
 		raw
@@ -702,7 +800,10 @@ async function consumeDeepSeekSse(
 		const type = String(fragment?.type ?? "").toUpperCase();
 		if (type === "THINK") thinking = true;
 		else if (type === "ANSWER" || type === "RESPONSE") thinking = false;
-		if (typeof fragment?.content !== "string" || fragment.content.length === 0) {
+		if (
+			typeof fragment?.content !== "string" ||
+			fragment.content.length === 0
+		) {
 			return;
 		}
 		const cleaned = cleanFragment(fragment.content);
@@ -723,9 +824,11 @@ async function consumeDeepSeekSse(
 			const response = (v as { response?: unknown }).response as {
 				thinking_enabled?: boolean;
 				fragments?: SseFragment[];
+				accumulated_token_usage?: number;
 			};
 			if (response.thinking_enabled === true) thinking = true;
 			else if (response.thinking_enabled === false) thinking = false;
+			captureAccumulatedTokens(response.accumulated_token_usage);
 			if (Array.isArray(response.fragments)) {
 				for (const fragment of response.fragments) handleFragment(fragment);
 			}
@@ -735,6 +838,19 @@ async function consumeDeepSeekSse(
 				for (const fragment of v as SseFragment[]) handleFragment(fragment);
 			} else if (v && typeof v === "object") {
 				handleFragment(v as SseFragment);
+			}
+		}
+		// Path updates: { p: "<path>", v: <value> } and BATCH updates:
+		// { p: ..., o: "BATCH", v: [{ p: <path>, v: <value> }, ...] }.
+		if (p === "accumulated_token_usage") {
+			captureAccumulatedTokens(v);
+		}
+		if (Array.isArray(v)) {
+			for (const entry of v as unknown[]) {
+				const rec = entry as { p?: string; v?: unknown };
+				if (rec?.p === "accumulated_token_usage") {
+					captureAccumulatedTokens(rec.v);
+				}
 			}
 		}
 		if (typeof v === "string" && v.length > 0) {
@@ -773,7 +889,7 @@ async function consumeDeepSeekSse(
 		reader.releaseLock();
 	}
 
-	return { text, reasoning };
+	return { text, reasoning, accumulatedTokenUsage };
 }
 
 // ── Tool-call parsing ──────────────────────────────────────────────────────
@@ -784,75 +900,162 @@ interface ParsedToolCall {
 }
 
 /**
+ * Normalize common tool-name mistakes the DeepSeek web model makes into their
+ * real names. `_codebase` (for `search_codebase`) and similar are frequent
+ * enough that recovering them recovers the actual search instead of silently
+ * dropping the call. Keys are matched case-insensitively (after trim).
+ */
+const TOOL_NAME_ALIASES: Record<string, string> = {
+	_codebase: "search_codebase",
+	codebase: "search_codebase",
+	search: "search_codebase",
+	searchcodebase: "search_codebase",
+	search_code: "search_codebase",
+	bash: "run_commands",
+	shell: "run_commands",
+	command: "run_commands",
+	cmd: "run_commands",
+	execute: "run_commands",
+	execute_command: "run_commands",
+	exec_command: "run_commands",
+	run: "run_commands",
+	runcommand: "run_commands",
+	run_command: "run_commands",
+	commands: "run_commands",
+	terminal: "run_commands",
+	read: "read_files",
+	readfile: "read_files",
+	read_files: "read_files", // identity, harmless
+	"file-read": "read_files",
+	file_read: "read_files",
+	view: "read_files",
+	fetch: "fetch_web_content",
+	fetch_web: "fetch_web_content",
+	"web-fetch": "fetch_web_content",
+	web_fetch: "fetch_web_content",
+	"http-get": "fetch_web_content",
+	http_get: "fetch_web_content",
+	write: "editor",
+	write_file: "editor",
+	edit: "editor",
+	edit_file: "editor",
+	"edit-file": "editor",
+	edits: "editor",
+	write_file_from_contents: "editor",
+	update: "editor",
+	patch: "editor",
+	apply_patch: "editor",
+	create_file: "editor",
+	replace: "editor",
+	grep: "search_codebase",
+	glob: "search_codebase",
+	file_search: "search_codebase",
+	search_files: "search_codebase",
+	list_code_definition_names: "search_codebase",
+	spawn: "spawn_agent",
+	spawn_agent_tool: "spawn_agent",
+	skill: "skills",
+	ask_user: "ask_question",
+	question: "ask_question",
+};
+
+function normalizeToolName(name: string): string {
+	const key = name.trim().toLowerCase();
+	return TOOL_NAME_ALIASES[key] ?? key;
+}
+
+/**
  * Parse `<tool>{json}</tool>` blocks from the model's reply into tool calls,
  * and strip them from the visible text. Handles the canonical shape
  * `{"name": "x", "arguments": {...}}` plus common DeepSeek variants
  * (`<tool:name>`, `{"type": "x", "params": {...}}`, XML children).
+ *
+ * Tolerant of noisy model output: allows a space in the tags (`< tool>`,
+ * `</tool >`), ignores markdown bullets/asterisks immediately around a block,
+ * repairs common broken JSON (trailing commas, single quotes, stray leading
+ * text), and normalizes common tool-name mistakes (`_codebase` →
+ * `search_codebase`, `bash` → `run_commands`, etc.).
  */
 export function parseDeepSeekToolCalls(
 	content: string,
 	toolNames: string[],
 ): { cleanedContent: string; toolCalls: ParsedToolCall[] } {
+	// Alias-aware accepted names so near-miss model output still executes.
+	const accepted = new Set(toolNames.map(normalizeToolName));
 	const toolCalls: ParsedToolCall[] = [];
 	const cleanedParts: string[] = [];
 	let cursor = 0;
-	const tagPattern = /<tool(?::([\w-]+))?([^>]*)>([\s\S]*?)<\/tool(?::[\w-]+)?>/gi;
+	// `\s*` around `tool` tolerates `< tool>` / `</tool >`; marker handling lets
+	// only ACTUAL blocks match (not stray `<tool` inside prose).
+	const tagPattern =
+		/(?:\*|-)??\s*<\s*tool(?::([\w-]+))?([^>]*)>\s*([\s\S]*?)\s*<\s*\/\s*tool(?::[\w-]+)?\s*>/gi;
 	let match: RegExpExecArray | null;
 
 	while ((match = tagPattern.exec(content)) !== null) {
 		const full = match[0];
 		const tagName = match[1] ?? "";
-		const attrs = match[2] ?? "";
-		const inner = match[3] ?? "";
-		cleanedParts.push(content.slice(cursor, match.index));
-		cursor = match.index + full.length;
+		const attrs = (match[2] ?? "").trim();
+		let inner = (match[3] ?? "").trim();
+		const matchIndex = match.index;
+		// The leading `\*`/`-` bullet (if any) was consumed by the match; the tag
+		// itself is stripped while surrounding prose stays as visible text.
+		cleanedParts.push(content.slice(cursor, matchIndex));
+		cursor = matchIndex + full.length;
 
-		// Extract the tool name from tag suffix, id/name attributes, or the JSON.
+		// Extract the tool name from tag suffix, id/name attributes, XML, or the
+		// JSON body.
 		const nameMatch = /(?:id|name)\s*=\s*["']([^"']+)["']/i.exec(attrs);
 		let name = tagName || nameMatch?.[1] || "";
 
-		let jsonText = inner.trim();
 		// <tool><name>x</name><arguments>{...}</arguments></tool>
 		const xmlName = /<name>([^<]+)<\/name>/i.exec(inner);
 		const xmlArgs = /<arguments>([\s\S]*?)<\/arguments>/i.exec(inner);
 		if (xmlName) name = xmlName[1].trim();
-		if (xmlArgs) jsonText = xmlArgs[1].trim();
+		if (xmlArgs) inner = xmlArgs[1].trim();
 
-		let parsed: unknown;
+		const jsonText = inner;
+		let args: unknown;
+
 		try {
-			parsed = JSON.parse(jsonText);
+			const parsed = parseRepairedToolJson(jsonText) as
+				| Record<string, unknown>
+				| undefined;
+			if (parsed) {
+				const record = parsed as Record<string, unknown>;
+				args = record.arguments ?? record.params;
+				if (!name) name = typeof record.name === "string" ? record.name : "";
+				if (!name) name = typeof record.type === "string" ? record.type : "";
+				if (args === undefined && typeof record.arguments_json === "string") {
+					try {
+						args = JSON.parse(record.arguments_json);
+					} catch {
+						args = undefined;
+					}
+				}
+				// <tool:name>{...args...}</tool:name> — bare JSON body is args.
+				if (
+					args === undefined &&
+					name &&
+					record.name === undefined &&
+					record.type === undefined &&
+					record.arguments_json === undefined
+				) {
+					args = record;
+				}
+			}
 		} catch {
-			cleanedParts.push(full);
-			continue;
+			args = undefined;
 		}
 
-		const record = (parsed ?? {}) as Record<string, unknown>;
-		let args: unknown = record.arguments ?? record.params;
-		if (!name) name = typeof record.name === "string" ? record.name : "";
-		if (!name) name = typeof record.type === "string" ? record.type : "";
-		if (args === undefined && typeof record.arguments_json === "string") {
-			try {
-				args = JSON.parse(record.arguments_json);
-			} catch {
-				args = undefined;
-			}
-		}
-		// <tool:name>{...args...}</tool:name> — the bare JSON body is the arguments.
-		if (
-			args === undefined &&
-			name &&
-			record.name === undefined &&
-			record.type === undefined &&
-			record.arguments_json === undefined
-		) {
-			args = record;
-		}
-		if (!name || !toolNames.includes(name)) {
+		const normalizedName = normalizeToolName(name);
+		if (!name || !accepted.has(normalizedName)) {
+			// Unknown tool name — keep the raw block as visible text so the
+			// user sees what was said instead of it disappearing silently.
 			cleanedParts.push(full);
 			continue;
 		}
 		toolCalls.push({
-			name,
+			name: normalizedName,
 			arguments:
 				args && typeof args === "object" && !Array.isArray(args)
 					? (args as Record<string, unknown>)
@@ -864,15 +1067,161 @@ export function parseDeepSeekToolCalls(
 	return { cleanedContent: cleanedParts.join("").trim(), toolCalls };
 }
 
+/**
+ * Parse the JSON body of a `<tool>` block, repairing common malformed output
+ * the web model emits. Returns the parsed object, or `undefined` if it cannot
+ * be recovered (in which case the block is treated as plain visible text).
+ *
+ * Safety: a block that is ALREADY valid JSON is returned verbatim — repair is
+ * only attempted on genuinely-broken input, and the single-quote converter is
+ * quote-aware so it never rewrites single quotes that live inside an already
+ * double-quoted JSON string (e.g. a PowerShell command containing `'name'`).
+ */
+function parseRepairedToolJson(raw: string): unknown {
+	let text = raw.trim();
+	if (!text) return undefined;
+
+	// Pull the first balanced top-level JSON object if the block has prose.
+	if (!/^[\s]*[{[]/.test(text)) {
+		const objStart = text.indexOf("{");
+		if (objStart === -1) return undefined;
+		let depth = 0;
+		let inString = false;
+		let escaped = false;
+		for (let i = objStart; i < text.length; i++) {
+			const ch = text[i];
+			if (inString) {
+				if (escaped) escaped = false;
+				else if (ch === "\\") escaped = true;
+				else if (ch === '"') inString = false;
+				continue;
+			}
+			if (ch === '"') inString = true;
+			else if (ch === "{") depth++;
+			else if (ch === "}") {
+				depth--;
+				if (depth === 0) {
+					text = text.slice(objStart, i + 1);
+					break;
+				}
+			}
+		}
+	}
+
+	// Fast path: already-valid JSON must pass through untouched.
+	try {
+		return JSON.parse(text);
+	} catch {
+		// fall through to repair
+	}
+
+	// Repair pass (only reached when plain JSON.parse failed above):
+	//  - strip surrounding code-fence markers,
+	//  - drop trailing commas,
+	//  - fix invalid single-backslash escapes (the model often emits Windows
+	//    paths like `C:\Users` inside a JSON string, where `\U` is an illegal
+	//    escape and must become `\\U`),
+	//  - convert single-quoted strings — skipping any quotes inside double-quoted
+	//    JSON strings — so genuinely-broken input recovers without mangling
+	//    values that legitimately contain single quotes (e.g. `'path'`).
+	const repairedFinal = repairQuotesAndEscapes(
+		text
+			.replace(/^\s*```(?:json)?\s*/i, "")
+			.replace(/\s*```\s*$/i, "")
+			.replace(/,\s*([}\]])/g, "$1"),
+	);
+	try {
+		return JSON.parse(repairedFinal);
+	} catch {
+		return undefined;
+	}
+}
+
+/**
+ * Convert single-quoted strings to JSON double-quoted strings, skipping any
+ * single quotes that appear inside an already double-quoted JSON string value
+ * (which are literal characters and must be preserved), AND repair invalid
+ * single-backslash escapes inside double-quoted strings (e.g. `\U` from a
+ * Windows path `C:\Users` → `\\U`) so the JSON parses.
+ */
+function repairQuotesAndEscapes(text: string): string {
+	let out = "";
+	let inDouble = false;
+	let inSingle = false;
+	let i = 0;
+	while (i < text.length) {
+		const ch = text[i];
+		if (inDouble) {
+			if (ch === "\\") {
+				const next = text[i + 1];
+				// Valid JSON escapes stay as-is; a backslash followed by anything
+				// else is an illegal escape (common in Windows paths) — double it.
+				if (
+					next === '"' ||
+					next === "\\" ||
+					next === "/" ||
+					next === "b" ||
+					next === "f" ||
+					next === "n" ||
+					next === "r" ||
+					next === "t" ||
+					next === "u"
+				) {
+					out += `\\${next ?? ""}`;
+					i += 2;
+				} else if (next === undefined) {
+					out += "\\\\";
+					i += 1;
+				} else {
+					out += "\\\\" + next;
+					i += 2;
+				}
+				continue;
+			}
+			out += ch;
+			if (ch === '"') inDouble = false;
+			i++;
+			continue;
+		}
+		if (inSingle) {
+			if (ch === "\\") {
+				const next = text[i + 1];
+				out += `\\${next ?? "\\\\"}`;
+				i += 2;
+				continue;
+			}
+			if (ch === "'") {
+				out += '"';
+				inSingle = false;
+			} else {
+				out += ch;
+			}
+			i++;
+			continue;
+		}
+		if (ch === '"') {
+			inDouble = true;
+			out += ch;
+		} else if (ch === "'") {
+			inSingle = true;
+			out += '"';
+		} else {
+			out += ch;
+		}
+		i++;
+	}
+	return out;
+}
 
 // ── Completion request ─────────────────────────────────────────────────────
 
-function resolveModelOptions(modelId: string): {
+export function resolveModelOptions(modelId: string): {
 	modelType: string;
 	thinkingEnabled: boolean;
 } {
 	const m = modelId.toLowerCase();
-	const modelType = m.includes("pro") || m.includes("expert") ? "expert" : "default";
+	const modelType =
+		m.includes("pro") || m.includes("expert") ? "expert" : "default";
 	const thinkingEnabled =
 		m.includes("r1") ||
 		m.includes("think") ||
@@ -889,11 +1238,27 @@ async function runCompletion(input: {
 	signal?: AbortSignal;
 	onText?: (text: string) => void;
 	onReasoning?: (text: string) => void;
-}): Promise<{ text: string; reasoning: string }> {
+}): Promise<{
+	text: string;
+	reasoning: string;
+	accumulatedTokenUsage?: number;
+}> {
 	const { modelType, thinkingEnabled } = resolveModelOptions(input.modelId);
-	const accessToken = await acquireAccessToken(input.userToken, input.fetchImpl, input.signal);
-	const sessionId = await createSession(accessToken, input.fetchImpl, input.signal);
-	const powChallenge = await getPowChallenge(accessToken, input.fetchImpl, input.signal);
+	const accessToken = await acquireAccessToken(
+		input.userToken,
+		input.fetchImpl,
+		input.signal,
+	);
+	const sessionId = await createSession(
+		accessToken,
+		input.fetchImpl,
+		input.signal,
+	);
+	const powChallenge = await getPowChallenge(
+		accessToken,
+		input.fetchImpl,
+		input.signal,
+	);
 	const powAnswer = solveDeepSeekPow(powChallenge);
 
 	try {
@@ -904,7 +1269,9 @@ async function runCompletion(input: {
 				"Content-Type": "application/json",
 				Authorization: `Bearer ${accessToken}`,
 				"X-Ds-Pow-Response": powAnswer,
-				"X-Client-Timezone-Offset": String(new Date().getTimezoneOffset() * -60),
+				"X-Client-Timezone-Offset": String(
+					new Date().getTimezoneOffset() * -60,
+				),
 				Cookie: generateFakeCookie(),
 			},
 			body: JSON.stringify({
@@ -938,19 +1305,21 @@ async function runCompletion(input: {
 			thinkingEnabled,
 		);
 	} finally {
-		await deleteSession(accessToken, sessionId, input.fetchImpl).catch(() => {});
+		await deleteSession(accessToken, sessionId, input.fetchImpl).catch(
+			() => {},
+		);
 	}
 }
 
 function buildPrompt(
 	prompt: LanguageModelV2Prompt,
-	tools: LanguageModelV2FunctionTool[] | undefined,
+	_tools: LanguageModelV2FunctionTool[] | undefined,
 ): string {
-	const toolSystemPrompt =
-		tools && tools.length > 0 ? serializeDeepSeekToolPrompt(tools) : "";
-	if (!toolSystemPrompt) return messagesToPrompt(prompt);
-	// Prepend the tool contract as a system block ahead of the conversation.
-	return `${toolSystemPrompt}\n\n${messagesToPrompt(prompt)}`;
+	// The runtime-composed system prompt (sdk/packages/shared/src/prompt/system.ts)
+	// already carries the `<tool>` calling protocol and the available tool list,
+	// so no extra tool-contract block is prepended — the chat shows exactly the
+	// system prompt + conversation.
+	return messagesToPrompt(prompt);
 }
 
 function finishReasonFor(
@@ -960,6 +1329,32 @@ function finishReasonFor(
 	return toolCalls.length > 0 ? "tool-calls" : text ? "stop" : "unknown";
 }
 
+export interface DeepSeekWebUsageEstimate {
+	inputTokens: number;
+	outputTokens: number;
+	totalTokens: number;
+}
+
+/**
+ * Estimate token usage from the exact flat `prompt` string sent to
+ * chat.deepseek.com and the buffered reply (`text` + `reasoning`).
+ *
+ * The web endpoint does not report token counts, so this uses the repo-wide
+ * heuristic (`estimateTokens` = chars / 3, conservative) so the context bar,
+ * per-turn metrics and session totals show real numbers instead of zeros.
+ */
+export function estimateDeepSeekWebUsage(
+	prompt: string,
+	output: string,
+): DeepSeekWebUsageEstimate {
+	const inputTokens = estimateTokens(prompt.length);
+	const outputTokens = estimateTokens(output.length);
+	return {
+		inputTokens,
+		outputTokens,
+		totalTokens: inputTokens + outputTokens,
+	};
+}
 
 // ── LanguageModelV2 adapter ────────────────────────────────────────────────
 
@@ -974,7 +1369,12 @@ function createDeepSeekWebModel(
 		options: LanguageModelV2CallOptions,
 		onText?: (text: string) => void,
 		onReasoning?: (text: string) => void,
-	): Promise<{ text: string; reasoning: string; toolCalls: ParsedToolCall[] }> => {
+	): Promise<{
+		text: string;
+		reasoning: string;
+		toolCalls: ParsedToolCall[];
+		usage: DeepSeekWebUsageEstimate;
+	}> => {
 		if (!userToken) {
 			throw new Error(
 				"Missing userToken — paste the value from DevTools → Application → Local Storage → chat.deepseek.com → userToken",
@@ -984,7 +1384,7 @@ function createDeepSeekWebModel(
 			(tool): tool is LanguageModelV2FunctionTool => tool.type === "function",
 		);
 		const prompt = buildPrompt(options.prompt, functionTools);
-		const { text, reasoning } = await runCompletion({
+		const { text, reasoning, accumulatedTokenUsage } = await runCompletion({
 			userToken,
 			modelId,
 			prompt,
@@ -993,15 +1393,26 @@ function createDeepSeekWebModel(
 			onText,
 			onReasoning,
 		});
+		// Prefer DeepSeek's cumulative context-token count when reported;
+		// otherwise fall back to the chars/3 estimate.
+		const estimated = estimateDeepSeekWebUsage(prompt, `${text}${reasoning}`);
+		const usage: DeepSeekWebUsageEstimate =
+			accumulatedTokenUsage !== undefined
+				? {
+						inputTokens: accumulatedTokenUsage,
+						outputTokens: estimated.outputTokens,
+						totalTokens: accumulatedTokenUsage + estimated.outputTokens,
+					}
+				: estimated;
 
 		if (functionTools.length > 0) {
 			const { cleanedContent, toolCalls } = parseDeepSeekToolCalls(
 				text,
 				functionTools.map((t) => t.name),
 			);
-			return { text: cleanedContent, reasoning, toolCalls };
+			return { text: cleanedContent, reasoning, toolCalls, usage };
 		}
-		return { text, reasoning, toolCalls: [] };
+		return { text, reasoning, toolCalls: [], usage };
 	};
 
 	return {
@@ -1010,7 +1421,7 @@ function createDeepSeekWebModel(
 		modelId,
 		supportedUrls: {},
 		doGenerate: async (options) => {
-			const { text, reasoning, toolCalls } = await doCompletion(options);
+			const { text, reasoning, toolCalls, usage } = await doCompletion(options);
 			const content: Array<
 				| { type: "text"; text: string }
 				| { type: "reasoning"; text: string }
@@ -1035,9 +1446,9 @@ function createDeepSeekWebModel(
 				content,
 				finishReason: finishReasonFor(text, toolCalls),
 				usage: {
-					inputTokens: undefined,
-					outputTokens: undefined,
-					totalTokens: undefined,
+					inputTokens: usage.inputTokens,
+					outputTokens: usage.outputTokens,
+					totalTokens: usage.totalTokens,
 				},
 				warnings: [],
 			};
@@ -1052,7 +1463,7 @@ function createDeepSeekWebModel(
 
 			// The web endpoint has no per-token tool streaming; buffer the reply
 			// so `<tool>` blocks can be parsed and stripped before emitting.
-			await doCompletion(
+			const completion = await doCompletion(
 				options,
 				(t) => textChunks.push(t),
 				(r) => reasoningChunks.push(r),
@@ -1062,7 +1473,10 @@ function createDeepSeekWebModel(
 			const rawText = textChunks.join("");
 			const { cleanedContent, toolCalls } =
 				functionTools.length > 0
-					? parseDeepSeekToolCalls(rawText, functionTools.map((t) => t.name))
+					? parseDeepSeekToolCalls(
+							rawText,
+							functionTools.map((t) => t.name),
+						)
 					: { cleanedContent: rawText, toolCalls: [] };
 
 			const parts: LanguageModelV2StreamPart[] = [
@@ -1081,7 +1495,11 @@ function createDeepSeekWebModel(
 			}
 			for (let i = 0; i < toolCalls.length; i++) {
 				const input = JSON.stringify(toolCalls[i].arguments);
-				parts.push({ type: "tool-input-start", id, toolName: toolCalls[i].name });
+				parts.push({
+					type: "tool-input-start",
+					id,
+					toolName: toolCalls[i].name,
+				});
 				parts.push({ type: "tool-input-delta", id, delta: input });
 				parts.push({ type: "tool-input-end", id });
 				parts.push({
@@ -1095,9 +1513,9 @@ function createDeepSeekWebModel(
 				type: "finish",
 				finishReason: finishReasonFor(cleanedContent, toolCalls),
 				usage: {
-					inputTokens: undefined,
-					outputTokens: undefined,
-					totalTokens: undefined,
+					inputTokens: completion.usage.inputTokens,
+					outputTokens: completion.usage.outputTokens,
+					totalTokens: completion.usage.totalTokens,
 				},
 			});
 
@@ -1129,4 +1547,3 @@ export function createDeepSeekWebProviderModule(
 		model: (modelId) => createDeepSeekWebModel(modelId, config, fetchImpl),
 	};
 }
-

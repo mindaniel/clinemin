@@ -1,8 +1,8 @@
+import * as fs from "node:fs";
+import * as path from "node:path";
 import { Llms } from "@cline/core";
 import type { ChoiceContext } from "@opentui-ui/dialog";
 import { useDialogKeyboard } from "@opentui-ui/dialog/react";
-import * as fs from "node:fs";
-import * as path from "node:path";
 import { useState } from "react";
 import { palette } from "../../palette";
 import {
@@ -37,7 +37,9 @@ export function LlamaCppFolderInputContent(
 		}
 		const models = Llms.scanLlamaCppModels(folder);
 		if (models.length === 0) {
-			setError("No .gguf files found in that folder (checked one level of subfolders too).");
+			setError(
+				"No .gguf files found in that folder (checked one level of subfolders too).",
+			);
 			return;
 		}
 		resolve(models);
@@ -126,9 +128,7 @@ export function LlamaCppModelPickerContent(
 
 	return (
 		<box flexDirection="column" gap={1}>
-			<text>
-				Select Model ({models.length} found)
-			</text>
+			<text>Select Model ({models.length} found)</text>
 
 			<box border borderStyle="rounded" borderColor="gray" paddingX={1}>
 				<input
@@ -170,7 +170,10 @@ export function LlamaCppModelPickerContent(
 								overflow="hidden"
 								height={1}
 							>
-								<text fg={isSel ? palette.textOnSelection : "gray"} flexShrink={0}>
+								<text
+									fg={isSel ? palette.textOnSelection : "gray"}
+									flexShrink={0}
+								>
 									{isSel ? "\u276f" : " "}
 								</text>
 								<text fg={isSel ? palette.textOnSelection : undefined}>
@@ -224,7 +227,9 @@ export function LlamaCppNewProfileContent(
 ) {
 	const { resolve, dismiss, dialogId, existingPorts, existingIds } = props;
 	const suggestedPort = String(
-		existingPorts.length > 0 ? Math.max(...existingPorts.map(Number)) + 1 : 8080,
+		existingPorts.length > 0
+			? Math.max(...existingPorts.map(Number)) + 1
+			: 8080,
 	);
 	const [phase, setPhase] = useState<"name" | "port">("name");
 	const [name, setName] = useState("");
@@ -285,7 +290,12 @@ export function LlamaCppNewProfileContent(
 			{phase === "name" ? (
 				<>
 					<text fg="gray">Name this server (e.g. "fast", "big-context").</text>
-					<box border borderStyle="rounded" borderColor={palette.act} paddingX={1}>
+					<box
+						border
+						borderStyle="rounded"
+						borderColor={palette.act}
+						paddingX={1}
+					>
 						<input
 							value={name}
 							onInput={(v: string) => {
@@ -304,7 +314,12 @@ export function LlamaCppNewProfileContent(
 						Port for this server (must differ from any other running llama.cpp
 						server).
 					</text>
-					<box border borderStyle="rounded" borderColor={palette.act} paddingX={1}>
+					<box
+						border
+						borderStyle="rounded"
+						borderColor={palette.act}
+						paddingX={1}
+					>
 						<input
 							value={port}
 							onInput={(v: string) => {
@@ -320,7 +335,9 @@ export function LlamaCppNewProfileContent(
 			)}
 			{error && <text fg="red">{error}</text>}
 			<text fg="gray">
-				<em>Enter to continue, Esc to go back{phase === "port" ? " (name)" : ""}</em>
+				<em>
+					Enter to continue, Esc to go back{phase === "port" ? " (name)" : ""}
+				</em>
 			</text>
 		</box>
 	);
@@ -332,7 +349,11 @@ export function LlamaCppNewProfileContent(
  * contextWindow budget for compaction, since it's saved as the provider's
  * regular `contextWindow` setting (see ensureLlamaCppRunning's overrides).
  */
-const BASE_CONTEXT_SIZE_PRESETS: { value: number; label: string; desc: string }[] = [
+const BASE_CONTEXT_SIZE_PRESETS: {
+	value: number;
+	label: string;
+	desc: string;
+}[] = [
 	{ value: 4096, label: "4,096", desc: "Small — fastest, least RAM" },
 	{ value: 8192, label: "8,192", desc: "Default — good balance" },
 	{ value: 16384, label: "16,384", desc: "Medium — longer conversations" },
@@ -340,7 +361,11 @@ const BASE_CONTEXT_SIZE_PRESETS: { value: number; label: string; desc: string }[
 	{ value: 65536, label: "65,536", desc: "Extra large — needs more RAM" },
 	{ value: 131072, label: "131,072", desc: "128K" },
 	{ value: 262144, label: "262,144", desc: "256K" },
-	{ value: 1048576, label: "1,048,576", desc: "1M — only a few models support this" },
+	{
+		value: 1048576,
+		label: "1,048,576",
+		desc: "1M — only a few models support this",
+	},
 ];
 
 function formatContextLabel(n: number): string {
@@ -358,7 +383,10 @@ function formatContextLabel(n: number): string {
  * an informed choice instead of a silent surprise.
  */
 export function LlamaCppContextSizeContent(
-	props: ChoiceContext<number> & { modelName: string; detectedMax: number | null },
+	props: ChoiceContext<number> & {
+		modelName: string;
+		detectedMax: number | null;
+	},
 ) {
 	const { resolve, dismiss, dialogId, modelName, detectedMax } = props;
 
@@ -369,8 +397,14 @@ export function LlamaCppContextSizeContent(
 					label: `${formatContextLabel(detectedMax)} (recommended)`,
 					desc: "Detected from this model's metadata",
 				},
-				...BASE_CONTEXT_SIZE_PRESETS.filter((p) => p.value !== detectedMax).map((p) =>
-					p.value > detectedMax ? { ...p, desc: `${p.desc} — exceeds model's ${formatContextLabel(detectedMax)} limit` } : p,
+				...BASE_CONTEXT_SIZE_PRESETS.filter((p) => p.value !== detectedMax).map(
+					(p) =>
+						p.value > detectedMax
+							? {
+									...p,
+									desc: `${p.desc} — exceeds model's ${formatContextLabel(detectedMax)} limit`,
+								}
+							: p,
 				),
 			]
 		: BASE_CONTEXT_SIZE_PRESETS;
@@ -417,7 +451,10 @@ export function LlamaCppContextSizeContent(
 						onMouseDown={() => resolve(preset.value)}
 					>
 						<box flexDirection="row" gap={1} flexShrink={0}>
-							<text fg={i === selected ? palette.textOnSelection : "gray"} flexShrink={0}>
+							<text
+								fg={i === selected ? palette.textOnSelection : "gray"}
+								flexShrink={0}
+							>
 								{i === selected ? "\u276f" : " "}
 							</text>
 							<text fg={i === selected ? palette.textOnSelection : undefined}>

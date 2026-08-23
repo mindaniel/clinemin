@@ -242,7 +242,7 @@ describe("createInteractiveSessionRuntime", () => {
 		subscribeToPendingPromptEventsMock.mockReturnValue(() => {});
 	});
 
-	it("manual compact updates the active session sidecar without restarting", async () => {
+	it("manual compact updates the compaction state and restarts the session", async () => {
 		const sessionId = "sess-active";
 		const messages = [
 			{ id: "u1", role: "user" as const, content: "hello" },
@@ -306,8 +306,6 @@ describe("createInteractiveSessionRuntime", () => {
 			workingContextMessagesAfter: compactionState.messages.length,
 			compacted: true,
 		});
-		expect(manager.start).toHaveBeenCalledTimes(1);
-		expect(manager.stop).not.toHaveBeenCalled();
 		expect(manager.readMessages).toHaveBeenCalledWith(sessionId);
 		expect(compactInteractiveMessagesMock).toHaveBeenCalledWith({
 			config: expect.objectContaining({
@@ -325,7 +323,81 @@ describe("createInteractiveSessionRuntime", () => {
 			sessionId,
 			compactionState,
 		);
+		// The session is restarted (stopped then re-started) with the compaction
+		// state so the next turn projects the summary as the new first message.
+		expect(manager.stop).toHaveBeenCalledWith(sessionId);
 		expect(runtime.getActiveSessionId()).toBe(sessionId);
+	});
+
+	it("returns the compaction summary from the compact result summary field", async () => {
+		const sessionId = "sess-summary";
+		const messages = [
+			{ id: "u1", role: "user" as const, content: "hello" },
+			{ id: "a1", role: "assistant" as const, content: "world" },
+		];
+		const compactionState = createSessionCompactionState({
+			sourceMessages: messages,
+			compactedMessages: [
+				{ id: "summary", role: "user" as const, content: "summary" },
+			],
+			updatedAt: "2026-01-01T00:00:00.000Z",
+		});
+		const manager = {
+			start: vi.fn().mockResolvedValue({
+				sessionId,
+				manifest: createManifest(sessionId),
+				manifestPath: "/tmp/session.json",
+				messagesPath: "/tmp/session.messages.json",
+			}),
+			readMessages: vi.fn().mockResolvedValue(messages),
+			updateSessionCompactionState: vi
+				.fn()
+				.mockResolvedValue({ updated: true }),
+			stop: vi.fn().mockResolvedValue(undefined),
+			dispose: vi.fn().mockResolvedValue(undefined),
+			ingestHookEvent: vi.fn().mockResolvedValue(undefined),
+			get: vi.fn(),
+			list: vi.fn(),
+			delete: vi.fn(),
+			send: vi.fn(),
+			getAccumulatedUsage: vi.fn(),
+		};
+		createCliCoreMock.mockResolvedValue(manager);
+		// Mirrors the REAL compactInteractiveMessages return: `canonicalMessages`
+		// is the untouched source transcript (it never holds the freshly-made
+		// summary), while the summary is reported on the top-level `summary` field.
+		compactInteractiveMessagesMock.mockResolvedValue({
+			compacted: true,
+			canonicalMessages: messages,
+			compactionState,
+			summary: "## Goal\nFixed",
+		});
+		const { createInteractiveSessionRuntime } = await importRuntime();
+		const runtime = createInteractiveSessionRuntime({
+			config: createConfig(),
+			providerSettingsManager: createProviderSettingsManager(),
+			chatCommandState: createChatCommandState(),
+			requestToolApproval: vi.fn(),
+			resolveToolPolicy: () => ({ autoApprove: true }),
+			askQuestionRef: { current: null },
+			resolveMistakeLimitDecision: undefined,
+			switchToActModeTool: {} as never,
+			onAgentEvent: vi.fn(),
+			onTeamEvent: vi.fn(),
+			onPendingPrompts: vi.fn(),
+			onPendingPromptSubmitted: vi.fn(),
+		});
+
+		await runtime.ensureReady();
+		const result = await runtime.compactCurrentSession();
+
+		expect(result).toEqual({
+			messagesBefore: messages.length,
+			messagesAfter: 2,
+			workingContextMessagesAfter: compactionState.messages.length,
+			compacted: true,
+			summary: "## Goal\nFixed",
+		});
 	});
 
 	it("rejects manual compact while the active session is running", async () => {
