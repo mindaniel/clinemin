@@ -62,9 +62,54 @@ const STORE_STUB_RE =
 const STORE_STUB_EXIT_CODE = 9009;
 
 /**
+ * Details about the first malformed code point found in a string bound for the
+ * validator. A lone surrogate is a UTF-16 code unit in the range
+ * `\ud800`–`\udfff` that has no matching partner — common when a CJK character
+ * from an LLM response got split/corrupted. Node cannot UTF-8-encode it, which
+ * is why piping it to `python3` previously crashed with a cryptic
+ * `UnicodeEncodeError: 'surrogates not allowed'`.
+ */
+export interface UnsupportedUnicodeError {
+	/** Character offset (UTF-16 code units) into `text` where it first appears. */
+	offset: number;
+	/** Human description of which half of the surrogate pair is orphaned. */
+	description?: string;
+}
+
+/**
+ * Return the first lone (unpaired) surrogate in `text`, or `undefined` when the
+ * string contains no malformed code points.
+ */
+export function findInvalidUnicode(text: string): UnsupportedUnicodeError | undefined {
+	for (let i = 0; i < text.length; i++) {
+		const code = text.charCodeAt(i);
+		// High surrogate requires a following low surrogate...
+		if (code >= 0xd800 && code <= 0xdbff) {
+			const next = i + 1 < text.length ? text.charCodeAt(i + 1) : -1;
+			const hasLowPair = next >= 0xdc00 && next <= 0xdfff;
+			if (!hasLowPair) {
+				return { offset: i, description: "orphaned high surrogate" };
+			}
+			i++; // skip the paired low surrogate
+		} else if (code >= 0xdc00 && code <= 0xdfff) {
+			// ...a low surrogate without a preceding high surrogate is orphaned.
+			return { offset: i, description: "orphaned low surrogate" };
+		}
+	}
+	return undefined;
+}
+
+/*
  * Validate that `code` is syntactically valid Python using an external Python
  * interpreter driven over stdin. Prefers `python3`; falls back to `python` /
  * `py` (covers the Windows Store-alias trap where `python3` is a dead stub).
+ *
+ * Handles malformed Unicode up front: if the AI's response embeds a lone
+ * surrogate (`\ud800`-`\udfff` — typically a mangled CJK character that Node's
+ * UTF-8 encoder cannot write), we reject with a precise, actionable message
+ * instead of surfacing a cryptic internal `UnicodeEncodeError`. The offending
+ * tool call is dropped and the retry prompt tells the model to re-emit the
+ * text as proper UTF-8, exactly what it can learn from.
  *
  * @param code The Python source to validate.
  * @returns `{ valid: true }` on success (including when no real interpreter is
@@ -77,6 +122,21 @@ export function validatePythonCode(code: string): ValidationResult {
 		return { valid: true };
 	}
 
+	// Reject lone surrogates before attempting to spawn a subprocess, so we
+	// never hit Node's "surrogates not allowed" UTF-8 encode crash and instead
+	// report exactly what the AI got wrong (embeddable, actionable text).
+	const unicodeIssue = findInvalidUnicode(code);
+	if (unicodeIssue) {
+		return {
+			valid: false,
+			error:
+				`Unicode error at offset ${unicodeIssue.offset}: the embedded text contains an invalid ` +
+				`Unicode surrogate${unicodeIssue.description ? ` (${unicodeIssue.description})` : ""}. ` +
+				"Re-emit the `new_text` with proper UTF-8 encoding — an international (e.g. CJK) character " +
+				"was split or corrupted. Never output raw surrogate escape sequences.",
+		};
+	}
+
 	let lastUnavailable: string | undefined;
 
 	for (const candidate of PYTHON_CANDIDATES) {
@@ -86,6 +146,16 @@ export function validatePythonCode(code: string): ValidationResult {
 		if (run.kind === "unavailable") {
 			lastUnavailable = candidate;
 			continue;
+		}
+
+		// A subprocess-level failure that is NOT a Python syntax error (e.g. an
+		// encoding/pipe problem). Report it clearly rather than as a fake
+		// "Python syntax error" the model cannot act on.
+		if (run.kind === "encodeError" || run.kind === "spawnError") {
+			return {
+				valid: false,
+				error: run.stderr ?? "could not run the Python validator",
+			};
 		}
 
 		// Real interpreter reached its timeout — treat as an inconclusive skip.
@@ -125,7 +195,7 @@ export function validatePythonCode(code: string): ValidationResult {
 }
 
 interface InterpretedResult {
-	kind: "ran" | "unavailable" | "timeout";
+	kind: "ran" | "unavailable" | "timeout" | "encodeError" | "spawnError";
 	status: number | null;
 	stderr?: string;
 }
@@ -148,8 +218,21 @@ function runAstCheck(command: string, code: string): InterpretedResult {
 		// ENOENT: executable not on PATH. Fall through to the next candidate.
 		const codeValue = (error as NodeJS.ErrnoException).code;
 		if (codeValue === "ENOENT") return { kind: "unavailable", status: null };
+		// Node's UTF-8 encoder rejected the input (lone surrogate). We already
+		// pre-check `findInvalidUnicode`, so this is a belt-and-suspenders path
+		// that surfaces a clear message instead of a cryptic one.
+		if (error instanceof TypeError && /surrogates? not allowed/i.test(String(error))) {
+			return {
+				kind: "encodeError",
+				status: 1,
+				stderr:
+					"The code text contains invalid Unicode (a lone surrogate) that cannot be " +
+					"encoded as UTF-8. Re-emit the `new_text` with proper UTF-8 — an international " +
+					"(e.g. CJK) character was corrupted.",
+			};
+		}
 		return {
-			kind: "ran",
+			kind: "spawnError",
 			status: 1,
 			stderr: `interpreter could not run: ${String(error)}`,
 		};

@@ -63,9 +63,30 @@ how to re-emit the rejected call correctly.
 - `processResponseForTools(rawResponse): ProcessedResponse` — stage 3 (full)
 - `validateToolCalls(calls): ProcessedResponse` — stage 3 (integration entry)
 - `hasToolBlock(rawResponse): boolean` — cheap fast-path guard
+- `findInvalidUnicode(text)` / `UnsupportedUnicodeError` — stage-2 helper for
+  malformed code points
 
 Types: `ParsedTool`, `ParseResult`, `ValidationResult`, `ValidTool`,
 `ParsedToolInput`, `ProcessedResponse`.
+
+## Unicode / international-text handling
+
+Non-ASCII text (CJK, accented Latin, emoji) in `new_text` is **fully supported**.
+Valid UTF-8 passes validation; well-formed surrogate pairs (e.g. emoji) are not
+flagged. Two things the pipeline handles especially:
+
+1. **Literal newlines inside JSON strings.** LLMs sometimes emit real line
+   breaks inside a string value (invalid strict JSON). The `jsonrepair` fallback
+   in `tool-parser` rewrites them to `\n` escapes, so the `editor` call is
+   accepted instead of rejected.
+2. **Lone surrogates (corrupted CJK).** If a response mangles an international
+   character into an orphaned surrogate (`\ud800`–`\udfff`), Node cannot
+   UTF-8-encode it, which used to surface as a cryptic internal
+   `UnicodeEncodeError: 'surrogates not allowed'` mislabeled as a Python syntax
+   error. `validatePythonCode` now pre-checks with `findInvalidUnicode` and
+   rejects with an **actionable** message — "the embedded text contains an
+   invalid Unicode surrogate (orphaned low surrogate) ... re-emit as proper
+   UTF-8" — so the retry prompt tells the model exactly what went wrong.
 
 ## DeepSeek frequency throttle ("Messages too frequent")
 

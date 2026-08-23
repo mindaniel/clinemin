@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { validatePythonCode } from "./python-validator";
+import { findInvalidUnicode, validatePythonCode } from "./python-validator";
 import {
 	type ParsedToolInput,
 	processResponseForTools,
@@ -90,6 +90,40 @@ describe("tool-pipeline validatePythonCode", () => {
 	it("treats empty code as valid", () => {
 		expect(validatePythonCode("").valid).toBe(true);
 		expect(validatePythonCode("   ").valid).toBe(true);
+	});
+
+	it("validates Python containing proper (valid UTF-8) CJK characters", () => {
+		// `万泽股份` written via proper escapes — this must PASS, not produce a
+		// "surrogates not allowed" error. Chinese text is fully supported.
+		const cjk = "\u4e07\u6cfd\u80a1\u4efd"; // 万泽股份
+		const code = `DATA.append(("000533", F))\n# ${cjk} 2025\nF = "${cjk}_2025.pdf"\n`;
+		expect(findInvalidUnicode(code)).toBeUndefined();
+		expect(validatePythonCode(code).valid).toBe(true);
+	});
+
+	it("rejects a lone low surrogate with an actionable Unicode message (not a cryptic encode crash)", () => {
+		// A mangled CJK char (orphaned low surrogate) — the exact cause of the
+		// old "UnicodeEncodeError: 'surrogates not allowed'" crash the AI saw.
+		const lone = String.fromCharCode(0xdc90);
+		const code = `x = 1\n# \u4e07\u6cfd${lone}\u80a1\n`;
+		const issue = findInvalidUnicode(code);
+		expect(issue?.offset).toBeDefined();
+		expect(issue?.description).toContain("surrogate");
+
+		const result = validatePythonCode(code);
+		expect(result.valid).toBe(false);
+		expect(result.error).toMatch(/Unicode error at offset \d+/);
+		expect(result.error).toMatch(/proper UTF-8/);
+		// Must NOT surface Node's internal encode error as a misleading
+		// "Python syntax error".
+		expect(result.error).not.toMatch(/Python syntax error/);
+	});
+
+	it("accepts a well-formed surrogate pair (e.g. an emoji) — not flagged", () => {
+		// Emoji is a correct high+low surrogate pair; must not be treated as invalid.
+		const code = 'x = "start \ud83d\ude00 end"\n';
+		expect(findInvalidUnicode(code)).toBeUndefined();
+		expect(validatePythonCode(code).valid).toBe(true);
 	});
 });
 
