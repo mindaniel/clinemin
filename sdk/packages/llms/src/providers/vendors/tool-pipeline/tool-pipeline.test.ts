@@ -229,4 +229,31 @@ describe("tool-pipeline validateToolCalls (provider integration entry)", () => {
 		expect(tools).toHaveLength(1);
 		expect(retryPrompt).toBeUndefined();
 	});
+
+	it("accepts editor calls with non-Python files even when content looks like invalid Python", () => {
+		// Non-.py files should not be validated as Python, even if content is
+		// syntactically invalid Python. This handles cases like .md, .json, .txt,
+		// .csv where the content happens to look like broken code.
+		const calls: ParsedToolInput[] = [
+			{
+				name: "editor",
+				arguments: {
+					path: "README.md",
+					new_text: "# Invalid Python:\nif x\n  print('test')",
+				},
+			},
+			{
+				name: "editor",
+				arguments: {
+					path: "data.json",
+					new_text: "{ broken json: [1, 2", // Missing quote, invalid Python
+				},
+			},
+		];
+		const { tools, retryPrompt } = validateToolCalls(calls);
+		// Both should be accepted — no Python validation for non-.py files.
+		expect(tools).toHaveLength(2);
+		expect(tools.map((t) => t.name)).toEqual(["editor", "editor"]);
+		expect(retryPrompt).toBeUndefined();
+	});
 });

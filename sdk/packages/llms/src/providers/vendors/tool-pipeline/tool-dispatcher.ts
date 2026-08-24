@@ -68,27 +68,35 @@ function validateSingleTool(
 		tool.name === "editor" &&
 		typeof (tool.arguments as EditorNewText).new_text === "string"
 	) {
-		const python = (tool.arguments as EditorNewText).new_text as string;
-		const validation = validatePythonCode(python);
-		if (!validation.valid) {
-			// Reject precisely, using the line-anchored message from stage 2.
-			return { ok: false, error: validation.error ?? "invalid Python" };
-		}
-		// Lone surrogates in `new_text` (a transport artifact, not a syntax
-		// error) are sanitized to U+FFFD during validation. Write the sanitized
-		// string back so the surrogate never reaches the executor's UTF-8
-		// encoder downstream (`JSON.stringify` / file writes).
-		if (validation.sanitized !== undefined && validation.sanitized !== python) {
-			return {
-				ok: true,
-				value: {
-					name: tool.name,
-					arguments: {
-						...tool.arguments,
-						new_text: validation.sanitized,
+		const args = tool.arguments as Record<string, unknown>;
+		const python = args.new_text as string;
+		const filePath = typeof args.path === "string" ? args.path : "";
+
+		// Only validate Python files (determined by file extension).
+		// Default to validation if path is missing (for safety).
+		const isPythonFile = !filePath || filePath.endsWith(".py");
+		if (isPythonFile) {
+			const validation = validatePythonCode(python);
+			if (!validation.valid) {
+				// Reject precisely, using the line-anchored message from stage 2.
+				return { ok: false, error: validation.error ?? "invalid Python" };
+			}
+			// Lone surrogates in `new_text` (a transport artifact, not a syntax
+			// error) are sanitized to U+FFFD during validation. Write the sanitized
+			// string back so the surrogate never reaches the executor's UTF-8
+			// encoder downstream (`JSON.stringify` / file writes).
+			if (validation.sanitized !== undefined && validation.sanitized !== python) {
+				return {
+					ok: true,
+					value: {
+						name: tool.name,
+						arguments: {
+							...args,
+							new_text: validation.sanitized,
+						},
 					},
-				},
-			};
+				};
+			}
 		}
 	}
 	return { ok: true, value: { name: tool.name, arguments: tool.arguments } };
