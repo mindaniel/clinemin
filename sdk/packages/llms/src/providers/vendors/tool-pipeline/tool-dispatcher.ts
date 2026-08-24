@@ -74,6 +74,22 @@ function validateSingleTool(
 			// Reject precisely, using the line-anchored message from stage 2.
 			return { ok: false, error: validation.error ?? "invalid Python" };
 		}
+		// Lone surrogates in `new_text` (a transport artifact, not a syntax
+		// error) are sanitized to U+FFFD during validation. Write the sanitized
+		// string back so the surrogate never reaches the executor's UTF-8
+		// encoder downstream (`JSON.stringify` / file writes).
+		if (validation.sanitized !== undefined && validation.sanitized !== python) {
+			return {
+				ok: true,
+				value: {
+					name: tool.name,
+					arguments: {
+						...tool.arguments,
+						new_text: validation.sanitized,
+					},
+				},
+			};
+		}
 	}
 	return { ok: true, value: { name: tool.name, arguments: tool.arguments } };
 }

@@ -40,6 +40,8 @@ export interface ValidationResult {
 	error?: string;
 	/** Present when validation could not run (e.g. `python3` missing). */
 	warning?: string;
+	/** Sanitized code (lone surrogates → U+FFFD), when sanitization changed it. */
+	sanitized?: string;
 }
 
 /**
@@ -164,7 +166,7 @@ export function validatePythonCode(code: string): ValidationResult {
 
 		// Clean parse.
 		if (run.status === 0) {
-			return { valid: true };
+			return { valid: true, sanitized };
 		}
 
 		// Nonzero exit. The Windows Store stub reports a fake "Python was not
