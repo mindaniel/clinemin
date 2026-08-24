@@ -42,14 +42,18 @@ function summarizeInvalidInput(message: string): string | undefined {
 		/^Tool call\s+([A-Za-z0-9_-]+)\s+was rejected before execution:\s+Invalid input for tool\s+([A-Za-z0-9_-]+):\s*([^.\n]+)(?:\.|\n|$)/,
 	);
 	if (rejected) {
-		return `Invalid ${rejected[2]} input; tool call skipped.`;
+		const toolName = rejected[2];
+		const detail = rejected[3];
+		return `Invalid ${toolName} input: ${detail}. Expected format: <tool>{"name":"${toolName}","arguments":{...}}</tool>. Please correct and retry.`;
 	}
 
 	const invalid = message.match(
 		/^Invalid input for tool\s+([A-Za-z0-9_-]+):\s*([^.\n]+)(?:\.|\n|$)/,
 	);
 	if (invalid) {
-		return `Invalid ${invalid[1]} input; tool call skipped.`;
+		const toolName = invalid[1];
+		const detail = invalid[2];
+		return `Invalid ${toolName} input: ${detail}. Expected format: <tool>{"name":"${toolName}","arguments":{...}}</tool>. Please correct and retry.`;
 	}
 
 	return undefined;
