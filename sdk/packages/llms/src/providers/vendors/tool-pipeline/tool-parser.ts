@@ -74,15 +74,24 @@ function stripMarkdownFences(raw: string): string {
  * Attempt to interpret a JSON body as a tool call of the canonical shape
  * `{ "name": string, "arguments": object }`. Returns a `ParseResult`.
  */
+function normalizeJsonKeySeparators(text: string): string {
+	return text.replace(/"([a-zA-Z0-9_]+)"\s*>\s*(?=["\[\{])/g, '"$1": ');
+}
+
 function parseToolJson(body: string): ParseResult {
 	const inner = stripMarkdownFences(body);
 	if (!inner) {
 		return { ok: false, error: "empty <tool> block", raw: body };
 	}
 
+	// 0. Normalize a common malformed shape before parsing: a stray `> ` where
+	//    `: ` belongs (e.g. `{"name"> "editor"}`). Rewrite it so the envelope
+	//    parses as normal JSON while producing the same tool call.
+	const normalized = normalizeJsonKeySeparators(inner);
+
 	// 1. Try the strict parser first — valid JSON is always returned verbatim.
 	try {
-		const parsed: unknown = JSON.parse(inner);
+		const parsed: unknown = JSON.parse(normalized);
 		return toParseResult(parsed, inner);
 	} catch (_strictError) {
 		// Fall through to repair below.
@@ -91,7 +100,7 @@ function parseToolJson(body: string): ParseResult {
 	// 2. Syntax-only repair for genuinely-broken JSON. This fixes envelope
 	//    sloppiness (commas, quotes, fences, missing brackets) — never logic.
 	try {
-		const repaired = jsonrepair(inner);
+		const repaired = jsonrepair(normalized);
 		const parsed: unknown = JSON.parse(repaired);
 		return toParseResult(parsed, inner);
 	} catch {

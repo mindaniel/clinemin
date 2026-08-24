@@ -14,7 +14,39 @@
  */
 
 import { type SpawnSyncReturns, spawnSync } from "node:child_process";
-import { sanitizeSurrogates } from "@cline/shared";
+
+/**
+ * Replace lone (unpaired) UTF-16 surrogates with a safe ASCII `?` marker.
+ *
+ * We deliberately do NOT use `sanitizeSurrogates` from `@cline/shared`: its
+ * compiled bundle replaces surrogates with a `U+FFFD` literal that gets mangled
+ * during bundling and re-enters the string as fresh lone surrogates (e.g.
+ * `\udc90`), which then crashes `spawnSync` with a cryptic
+ * `UnicodeEncodeError: surrogates not allowed`. A plain ASCII `?` is always
+ * UTF-8-safe and still signals the corrupted char without re-triggering the
+ * crash.
+ */
+function sanitizeLoneSurrogates(text: string): string {
+	let out = "";
+	for (let i = 0; i < text.length; i++) {
+		const code = text.charCodeAt(i);
+		if (code >= 0xd800 && code <= 0xdbff) {
+			const next = i + 1 < text.length ? text.charCodeAt(i + 1) : -1;
+			if (next >= 0xdc00 && next <= 0xdfff) {
+				// Valid surrogate pair (e.g. emoji) — keep both code units.
+				out += text[i] + text[i + 1];
+				i++;
+			} else {
+				out += "?";
+			}
+		} else if (code >= 0xdc00 && code <= 0xdfff) {
+			out += "?";
+		} else {
+			out += text[i];
+		}
+	}
+	return out;
+}
 
 /**
  * The Python one-liner piped `code` via stdin. It parses the whole stdin
@@ -133,7 +165,7 @@ export function validatePythonCode(code: string): ValidationResult {
 	// rejecting otherwise-correct Python, we sanitize lone surrogates to the
 	// Unicode replacement char (U+FFFD) before parsing. This keeps the validator
 	// non-aggressive: it only rejects genuinely malformed Python.
-	const sanitized = sanitizeSurrogates(code);
+	const sanitized = sanitizeLoneSurrogates(code);
 
 	let lastUnavailable: string | undefined;
 
