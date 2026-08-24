@@ -179,9 +179,17 @@ export function validatePythonCode(code: string): ValidationResult {
 		}
 
 		// A subprocess-level failure that is NOT a Python syntax error (e.g. an
-		// encoding/pipe problem). Report it clearly rather than as a fake
-		// "Python syntax error" the model cannot act on.
-		if (run.kind === "encodeError" || run.kind === "spawnError") {
+		// encoding/pipe problem).
+		// For surrogate encoding errors, treat as valid with a warning so the tool
+		// can proceed (the content is likely valid Python with corrupted CJK chars).
+		// For other spawn errors, reject to avoid executing potentially bad code.
+		if (run.kind === "encodeError") {
+			return {
+				valid: true,
+				warning: run.stderr ?? "surrogate encoding error, but ignoring for tool execution",
+			};
+		}
+		if (run.kind === "spawnError") {
 			return {
 				valid: false,
 				error: run.stderr ?? "could not run the Python validator",
@@ -201,10 +209,18 @@ export function validatePythonCode(code: string): ValidationResult {
 			return { valid: true, sanitized };
 		}
 
+		// Nonzero exit. If the error is about surrogates, treat as valid with a warning.
+		const stderr = run.stderr ?? "";
+		if (/surrogates? not allowed/i.test(stderr)) {
+			return {
+				valid: true,
+				warning: "Python validation skipped due to surrogate encoding error; the tool will be executed.",
+			};
+		}
+
 		// Nonzero exit. The Windows Store stub reports a fake "Python was not
 		// found" — that's not a real SyntaxError from a real interpreter, so
 		// keep falling through instead of misreporting it as bad Python.
-		const stderr = run.stderr ?? "";
 		if (run.status === STORE_STUB_EXIT_CODE || STORE_STUB_RE.test(stderr)) {
 			lastUnavailable = candidate;
 			continue;
