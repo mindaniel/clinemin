@@ -51,6 +51,12 @@ export interface ParseResult {
 const TOOL_BLOCK_RE = /<tool>([\s\S]*?)<\/tool>/gi;
 
 /**
+ * Match a malformed opening tag where `>` is missing: `<tool { ...`
+ * (case-insensitive, allows whitespace after `tool`).
+ */
+const MALFORMED_TOOL_RE = /<tool\s+([\s\S]*?)(?:<\/tool>|$)/gi;
+
+/**
  * Match an opening markdown fence that may or may not carry a language hint
  * (`` ```json ``, ` ``` `, ` ```python `). Captured at the very start.
  */
@@ -171,12 +177,37 @@ export function extractToolCalls(rawResponse: string): Array<ParseResult> {
 
 	const results: ParseResult[] = [];
 
+	// First, collect all proper <tool>...</tool> blocks.
 	TOOL_BLOCK_RE.lastIndex = 0;
-	for (;;) {
-		const match = TOOL_BLOCK_RE.exec(rawResponse);
-		if (match === null) break;
+	const properMatches: Array<{ start: number; end: number; body: string }> = [];
+	let match;
+	while ((match = TOOL_BLOCK_RE.exec(rawResponse)) !== null) {
+		const start = match.index;
+		const end = match.index + match[0].length;
 		const body = match[1] ?? "";
+		properMatches.push({ start, end, body });
 		results.push(parseToolJson(body));
+	}
+
+	// Build intervals for proper blocks to avoid overlapping with malformed detection.
+	const intervals = properMatches.map((m) => ({ start: m.start, end: m.end }));
+
+	// Now scan for malformed tags: <tool ... without the '>' after 'tool'.
+	MALFORMED_TOOL_RE.lastIndex = 0;
+	let malformedMatch;
+	while ((malformedMatch = MALFORMED_TOOL_RE.exec(rawResponse)) !== null) {
+		const start = malformedMatch.index;
+		const end = start + malformedMatch[0].length;
+		// Check if this overlaps with any proper block.
+		const overlaps = intervals.some((iv) => start < iv.end && end > iv.start);
+		if (!overlaps) {
+			const body = malformedMatch[1] ?? "";
+			results.push({
+				ok: false,
+				error: `Malformed tool tag: missing '>' after '<tool'. Expected format: <tool>{"name":"...","arguments":{...}}</tool>.`,
+				raw: body,
+			});
+		}
 	}
 
 	// Never fail the caller because of a stray block; surface a warning instead.
