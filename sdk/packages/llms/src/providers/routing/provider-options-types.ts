@@ -18,6 +18,7 @@ export type AiSdkProviderOptionsTarget =
 	| "opencode"
 	| "dify"
 	| "ollama"
+	| "qwen-web"
 	| "sapaicore"
 	| "deepseek-web"
 	| "deepseek-web-v2";
@@ -95,6 +96,8 @@ export function inferProviderOptionsTarget(
 			return "deepseek-web";
 		case "deepseek-web-v2":
 			return "deepseek-web-v2";
+		case "qwen-web":
+			return "qwen-web";
 		default:
 			return "openai-compatible";
 	}

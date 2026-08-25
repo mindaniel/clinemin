@@ -47,8 +47,9 @@ export interface ParseResult {
 /**
  * Match every `<tool>...</tool>` block. `[\\s\\S]*?` is non-greedy so adjacent
  * blocks don't swallow each other; `gi` makes it case-insensitive + global.
+ * Allows whitespace around the `tool` tag name: `< tool>`, `<tool >`, `</ tool>`, `</tool >`.
  */
-const TOOL_BLOCK_RE = /<tool>([\s\S]*?)<\/tool>/gi;
+const TOOL_BLOCK_RE = /<\s*tool\s*>([\s\S]*?)<\s*\/\s*tool\s*>/gi;
 
 /**
  * Match a malformed opening tag where `>` is missing: `<tool { ...`
@@ -210,6 +211,7 @@ export function extractToolCalls(rawResponse: string): Array<ParseResult> {
 		}
 	}
 
+
 	// Never fail the caller because of a stray block; surface a warning instead.
 	const failures = results.filter((r) => !r.ok);
 	if (failures.length > 0) {
@@ -218,6 +220,26 @@ export function extractToolCalls(rawResponse: string): Array<ParseResult> {
 			`[tool-parser] skipped ${failures.length} unparseable <tool> block(s)`,
 			failures.map((f) => f.error),
 		);
+	}
+
+	// If the response contains '<tool' but no valid blocks were extracted, the model
+	// likely attempted a tool call with malformed syntax. Provide explicit feedback.
+	if (results.length === 0 && /<tool/i.test(rawResponse)) {
+		let errorMsg = "Detected '<tool' in the response but no complete <tool>...</tool> block was found. ";
+		if (/<tool\s+[^>]*$/.test(rawResponse)) {
+			errorMsg = "Malformed tool tag: missing '>' after '<tool'. Expected format: <tool>{\"name\":\"...\",\"arguments\":{...}}</tool>";
+		} else if (/<tool[^>]*>[^<]*$/.test(rawResponse)) {
+			errorMsg = "Unclosed tool tag: found '<tool>' but no matching '</tool>' closing tag. Expected format: <tool>{\"name\":\"...\",\"arguments\":{...}}</tool>";
+		} else if (/<tool[^>]*>\s*$/.test(rawResponse)) {
+			errorMsg = "Incomplete tool tag: missing JSON body after '<tool>'. Expected format: <tool>{\"name\":\"...\",\"arguments\":{...}}</tool>";
+		} else {
+			errorMsg += "Please use the exact format: <tool>{\"name\":\"tool_name\",\"arguments\":{...}}</tool>";
+		}
+		results.push({
+			ok: false,
+			error: errorMsg,
+			raw: rawResponse.slice(0, 200),
+		});
 	}
 
 	return results;

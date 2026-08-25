@@ -1,6 +1,7 @@
 import type { DeepSeekWebV2ChatEntry } from "@cline/llms";
 import type { ChoiceContext } from "@opentui-ui/dialog";
 import { useDialogKeyboard } from "@opentui-ui/dialog/react";
+import { useState } from "react";
 import { palette } from "../../palette";
 import {
 	getSearchableListRowsWindow,
@@ -10,30 +11,67 @@ import {
 
 /**
  * Dialog content for `/findchat`: a searchable list of the persisted
- * DeepSeek Web v2 chats. Press Enter (or click) to pick one → resolves with its
+ * DeepSeek Web v2 chats. Press Enter (or click) to pick one ? resolves with its
  * `sessionId`; Escape dismisses.
+ *
+ * Delete: press 'd' to mark a chat for deletion, then 'y' to confirm or 'n' to cancel.
  */
 export function FindChatDialogContent(
-	props: ChoiceContext<string> & { chats: DeepSeekWebV2ChatEntry[] },
+	props: ChoiceContext<string> & { chats: DeepSeekWebV2ChatEntry[]; onDelete: (chatKey: string) => Promise<void> | void },
 ) {
-	const { resolve, dismiss, dialogId, chats } = props;
+	const { resolve, dismiss, dialogId, chats: initialChats, onDelete } = props;
+	const [chats, setChats] = useState(initialChats);
+	const [confirmDelete, setConfirmDelete] = useState<string | null>(null);
 
 	const items: SearchableItem[] = chats.map((chat) => ({
 		key: chat.sessionId,
-		label: `${new Date(chat.lastActive).toLocaleString()} — ${chat.sessionId}`,
+		label: `${new Date(chat.lastActive).toLocaleString()} � ${chat.sessionId}`,
 		section: "DeepSeek Web v2 chats",
 		searchText: `${chat.sessionId} ${chat.chatKey} ${chat.lastActive}`,
 	}));
 
 	const list = useSearchableList(items);
 
-	useDialogKeyboard((key) => {
+	useDialogKeyboard(async (key) => {
 		if (key.name === "escape") {
 			dismiss();
 			return;
 		}
 		if (key.name === "return") {
 			if (list.selectedItem) resolve(list.selectedItem.key);
+			return;
+		}
+		// Delete flow
+		if (confirmDelete) {
+			if (key.name === "y") {
+				// Actually delete
+				try {
+					await onDelete(confirmDelete);
+					// Remove from local state
+					setChats((prev) => prev.filter((c) => c.chatKey !== confirmDelete));
+				} catch (_) {
+					// Error handled by parent
+				}
+				setConfirmDelete(null);
+				return;
+			}
+			if (key.name === "n") {
+				setConfirmDelete(null);
+				return;
+			}
+			// Any other key cancels confirmation
+			setConfirmDelete(null);
+			return;
+		}
+
+		if (key.name === "d" || (key.ctrl && key.name === "d")) {
+			const selected = list.selectedItem;
+			if (selected) {
+				const chatEntry = chats.find((c) => c.sessionId === selected.key);
+				if (chatEntry) {
+					setConfirmDelete(chatEntry.chatKey);
+				}
+			}
 			return;
 		}
 		if (key.name === "up" || (key.ctrl && key.name === "p")) {
@@ -47,6 +85,10 @@ export function FindChatDialogContent(
 
 	const { visibleRows, aboveCount, belowCount, showAbove, showBelow } =
 		getSearchableListRowsWindow(list.filtered, list.safeSelected, 10);
+
+	const footerText = confirmDelete
+		? `Delete chat ${confirmDelete}? (y/n)`
+		: `d to delete, Enter to open, Esc to cancel`;
 
 	return (
 		<box flexDirection="column" gap={1}>
@@ -81,6 +123,7 @@ export function FindChatDialogContent(
 							);
 						}
 						const isSel = row.itemIndex === list.safeSelected;
+						const isConfirm = confirmDelete === row.item.key;
 						return (
 							<box
 								key={row.item.key}
@@ -101,6 +144,11 @@ export function FindChatDialogContent(
 								<text fg={isSel ? palette.textOnSelection : undefined}>
 									{row.item.label}
 								</text>
+								{isConfirm && (
+									<text fg="red" flexShrink={0}>
+										{"  [delete? y/n]"}
+									</text>
+								)}
 							</box>
 						);
 					})}
@@ -113,6 +161,9 @@ export function FindChatDialogContent(
 					)}
 				</box>
 			)}
+			<text fg="gray" marginTop={1}>
+				<em>{footerText}</em>
+			</text>
 		</box>
 	);
 }

@@ -111,8 +111,10 @@ export {
 // DeepSeek Web v2 chat-session helpers (used by the CLI `/findchat` command).
 export {
 	type DeepSeekWebV2ChatEntry,
+	deleteChatSession,
 	listDeepSeekWebV2Chats,
 	openDeepSeekWebV2Chat,
+	resolveDeepSeekWebV2Config,
 } from "./providers/vendors/deepseek-web-v2";
 export {
 	defaultModelsDir as llamaCppDefaultModelsDir,

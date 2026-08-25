@@ -1199,6 +1199,12 @@ async function createProviderModule(
 			);
 			return createDeepSeekWebV2ProviderModule(config, context);
 		}
+		case "qwen-web": {
+			const { createQwenWebProviderModule } = await import(
+				"./vendors/qwen-web"
+			);
+			return createQwenWebProviderModule(config, context);
+		}
 	}
 }
 
@@ -1370,3 +1376,4 @@ export const createSapAiCoreProvider = createAiSdkProvider("sapaicore");
 export const createDeepSeekWebProvider = createAiSdkProvider("deepseek-web");
 export const createDeepSeekWebV2Provider =
 	createAiSdkProvider("deepseek-web-v2");
+export const createQwenWebProvider = createAiSdkProvider("qwen-web");

@@ -944,6 +944,10 @@ export {
 	toProviderConfig,
 } from "./services/llms/provider-settings";
 export {
+	createAgentModelFromConfig,
+	createProvider,
+} from "./services/llms/handler-factory";
+export {
 	defineLlmsConfig,
 	loadLlmsConfigFromFile,
 } from "./services/llms/runtime-config";

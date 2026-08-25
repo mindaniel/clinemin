@@ -25,6 +25,7 @@ import {
 	createOpenAICompatibleProvider,
 	createOpenAIProvider,
 	createOpenCodeProvider,
+	createQwenWebProvider,
 	createSapAiCoreProvider,
 	createVertexProvider,
 } from "./ai-sdk";
@@ -173,6 +174,8 @@ function resolveFactory(
 			return createDeepSeekWebProvider;
 		case "deepseek-web-v2":
 			return createDeepSeekWebV2Provider;
+		case "qwen-web":
+			return createQwenWebProvider;
 		default:
 			return createOpenAICompatibleProvider;
 	}

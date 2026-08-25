@@ -31,6 +31,7 @@ export enum BUILT_IN_PROVIDER {
 	OMNIROUTE = "omniroute",
 	DEEPSEEK_WEB = "deepseek-web",
 	DEEPSEEK_WEB_V2 = "deepseek-web-v2",
+	QWEN_WEB = "qwen-web",
 	// OpenAI-compatible
 	DEEPSEEK = "deepseek",
 	XAI = "xai",

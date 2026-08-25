@@ -715,6 +715,21 @@ export class AgentRuntime {
 						message: toolMessage,
 					});
 				}
+				// Add a user message after tool execution to prevent the model from hanging.
+				if (toolMessages.length > 0) {
+					const continuationMessage: AgentMessage = {
+						id: `cont-${Date.now()}`,
+						role: "user",
+						content: [{ type: "text", text: "Use tool to continue the task or if finish, then tell 'finish'." }],
+						createdAt: Date.now(),
+					};
+					this.state.messages.push(continuationMessage);
+					await this.emit({
+						type: "message-added",
+						snapshot: this.snapshot(),
+						message: continuationMessage,
+					});
+				}
 				await this.emit({
 					type: "turn-finished",
 					snapshot: this.snapshot(),

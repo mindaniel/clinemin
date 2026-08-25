@@ -180,6 +180,36 @@ function toGatewayConfiguredModel(
 	};
 }
 
+/**
+ * Create an AgentModel from a ProviderConfig.
+ * Used by the CLI for compaction and other provider-direct operations.
+ */
+export function createProvider(input: {
+	providerConfig: ProviderConfig;
+	logger?: BasicLogger;
+	telemetry?: ITelemetryService;
+}): AgentModel {
+	const { providerConfig, logger, telemetry } = input;
+	const agentConfig: AgentConfig = {
+		providerId: providerConfig.providerId,
+		modelId: providerConfig.modelId,
+		apiKey: providerConfig.apiKey,
+		baseUrl: providerConfig.baseUrl,
+		headers: providerConfig.headers,
+		providerConfig: providerConfig,
+		maxTokensPerTurn: providerConfig.maxOutputTokens,
+		temperature: providerConfig.temperature,
+		reasoningEffort: providerConfig.reasoningEffort as any,
+		thinkingBudgetTokens: providerConfig.thinkingBudgetTokens as any,
+		thinking: providerConfig.thinking as any,
+		telemetry: telemetry,
+		systemPrompt: "", // Empty for provider-only usage (no agent behavior needed)
+		tools: [], // No tools needed for provider-only usage
+	};
+
+	return createAgentModelFromConfig(agentConfig, logger, telemetry);
+}
+
 export function createAgentModelFromConfig(
 	config: AgentConfig,
 	logger: BasicLogger | undefined,

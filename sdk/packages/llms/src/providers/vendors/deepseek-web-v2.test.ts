@@ -600,6 +600,66 @@ describe("deepseek-web-v2 buildPrompt (lean conversation on follow-up turns)", (
 		expect(built).not.toMatch(/\nAssistant:/);
 	});
 
+	it("keeps the previous user message and tool results on a continuation turn", () => {
+		const prompt = [
+			msg("system", "sys"),
+			msg("user", "do the thing"),
+			msg("assistant", "<tool>{\"name\":\"read_file\"}</tool>"),
+			msg("tool", "the latest result"),
+			msg("user", "Use tool to continue the task or if finish, then tell 'finish'."),
+		] as never;
+		// The agent runtime appends a synthetic continuation user message right
+		// after tool execution, so the trimmer must not reduce the prompt to the
+		// bare continuation sentence: the previous user message (as context) and
+		// the fresh tool results must ride along. The continuation itself is the
+		// current directive, so it is framed as "Note:" — not "Previous user
+		// message:" (stale context).
+		const built = buildPrompt(prompt, undefined);
+		expect(built).toContain("Previous user message: do the thing");
+		expect(built).toContain("Tool result:");
+		expect(built).toContain("the latest result");
+		expect(built).toContain(
+			"Note: Use tool to continue the task or if finish, then tell 'finish'.",
+		);
+		expect(built).not.toContain(
+			"Previous user message: Use tool to continue the task or if finish, then tell 'finish'.",
+		);
+		expect(built).not.toContain("sys");
+	});
+
+	it("keeps every tool result of the current turn on a continuation turn", () => {
+		const prompt = [
+			msg("system", "sys"),
+			msg("user", "run it"),
+			msg("assistant", "<tool>{\"name\":\"run\"}</tool>"),
+			msg("tool", "first result"),
+			msg("assistant", "<tool>{\"name\":\"read\"}</tool>"),
+			msg("tool", "second result"),
+			msg("user", "Use tool to continue the task or if finish, then tell 'finish'."),
+		] as never;
+		const built = buildPrompt(prompt, undefined);
+		expect(built).toContain("first result");
+		expect(built).toContain("second result");
+		expect(built).toContain("Previous user message: run it");
+		expect(built).not.toContain("sys");
+	});
+
+	it("drops stale tool results on a fresh user message even after a continuation turn", () => {
+		const prompt = [
+			msg("system", "sys"),
+			msg("user", "first request"),
+			msg("assistant", "<tool>{\"name\":\"read\"}</tool>"),
+			msg("tool", "stale result"),
+			msg("user", "Use tool to continue the task or if finish, then tell 'finish'."),
+			msg("assistant", "done"),
+			msg("user", "second request"),
+		] as never;
+		const built = buildPrompt(prompt, undefined);
+		expect(built).toContain("second request");
+		expect(built).not.toContain("first request");
+		expect(built).not.toContain("stale result");
+	});
+
 	it("preserves the compaction summary on the first turn that opens the new chat", () => {
 		const prompt = [
 			msg("system", "sys"),

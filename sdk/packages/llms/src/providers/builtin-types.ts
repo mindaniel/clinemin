@@ -23,6 +23,7 @@ export type ProviderFamily =
 	| "opencode"
 	| "dify"
 	| "ollama"
+	| "qwen-web"
 	| "sap-ai-core"
 	| "deepseek-web"
 	| "deepseek-web-v2";

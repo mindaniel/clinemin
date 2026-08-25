@@ -25,6 +25,21 @@ import {
 	parseLooseDeepSeekToolCalls,
 resolveModelOptions,
 } from "./deepseek-web";
+
+/**
+ * Detect a malformed tool tag where `<tool` is present but `>` is missing
+ * (e.g., `<tool {"name":...}`). Returns an error message if found, otherwise null.
+ */
+function detectMalformedToolTag(text: string): string | null {
+	// Look for `<tool` followed by whitespace and then `{` before any `>`.
+	// This catches the common mistake of missing `>` after `<tool`.
+	const match = /<tool\s+\{/i.exec(text);
+	if (match) {
+		console.log("[deepseek-web-v2] malformed tag detected in:", text);
+		return "Malformed tool tag: missing '>' after '<tool'. Expected format: <tool>{\"name\":\"...\",\"arguments\":{...}}</tool>.";
+	}
+	return null;
+}
 import { validateToolCalls } from "./tool-pipeline/tool-dispatcher";
 import type { ProviderFactoryResult } from "./types";
 
@@ -440,6 +455,17 @@ export function recordChatSession(
 		last_active: new Date().toISOString(),
 	};
 	writeChatRegistry(chatsFile, registry);
+}
+
+export function deleteChatSession(
+	chatsFile: string,
+	chatKey: string,
+): void {
+	const registry = readChatRegistry(chatsFile);
+	if (registry[chatKey]) {
+		delete registry[chatKey];
+		writeChatRegistry(chatsFile, registry);
+	}
 }
 
 /** A single persisted DeepSeek web chat, as shown by `/findchat`. */
@@ -1683,6 +1709,14 @@ function hasLeadingCompactionSummary(prompt: LanguageModelV2Prompt): boolean {
  *      * the most recent user message (the current prompt), and
  *      * any `tool` result messages that come after that user message (the
  *        results of the agent's latest tool calls).
+ *  - Iteration turns are special-cased: the agent runtime appends a synthetic
+ *    "Use tool to continue..." user message right after tool execution (see
+ *    agent-runtime.ts), so the most recent user message is that continuation
+ *    and the latest tool results sit BEFORE it. Keeping only "last user +
+ *    tool results after it" would trim to the bare continuation sentence and
+ *    lose both the tool outputs and the original instruction. When the last
+ *    user message is directly preceded by tool results, the previous user
+ *    message, the intervening tool results, and the continuation are all kept.
  *  - Compaction-transition turns are special-cased: when a `compaction_summary`
  *    user message leads the prompt, that summary is retained as the leading
  *    context so the fresh DeepSeek web chat (which has no prior server-side
@@ -1699,11 +1733,15 @@ function buildLeanConversation(
 	const isFirstTurn = nonSystem.length === 1 && nonSystem[0].role === "user";
 	if (isFirstTurn) return prompt;
 
-	// Find the index of the last user message.
+	// Find the index of the last user message and the user message before it.
 	let lastUserIndex = -1;
+	let prevUserIndex = -1;
 	for (let i = nonSystem.length - 1; i >= 0; i--) {
-		if (nonSystem[i].role === "user") {
+		if (nonSystem[i].role !== "user") continue;
+		if (lastUserIndex === -1) {
 			lastUserIndex = i;
+		} else {
+			prevUserIndex = i;
 			break;
 		}
 	}
@@ -1720,14 +1758,30 @@ function buildLeanConversation(
 		firstUserIndex >= 0 &&
 		hasLeadingCompactionSummary(nonSystem);
 
+	// An iteration turn: the last user message is the runtime's synthetic
+	// "Use tool to continue..." continuation, which directly follows the tool
+	// results. Keep the previous user message (as "Previous user message"
+	// context), every tool result after it, and the continuation message so
+	// the model sees both the tool outputs and the original instruction.
+	const isContinuationTurn =
+		lastUserIndex > 0 && nonSystem[lastUserIndex - 1]?.role === "tool";
+
 	// Keep the last user message plus every tool result after it.
 	const kept: LanguageModelV2Prompt = [];
 	if (hasCompactionSummary && lastUserIndex > firstUserIndex) {
 		kept.push(nonSystem[firstUserIndex]);
 	}
-	if (lastUserIndex >= 0) kept.push(nonSystem[lastUserIndex]);
-	for (let i = lastUserIndex + 1; i < nonSystem.length; i++) {
-		if (nonSystem[i].role === "tool") kept.push(nonSystem[i]);
+	if (isContinuationTurn && prevUserIndex >= 0) {
+		kept.push(nonSystem[prevUserIndex]);
+		for (let i = prevUserIndex + 1; i < nonSystem.length; i++) {
+			if (nonSystem[i].role === "tool") kept.push(nonSystem[i]);
+		}
+		kept.push(nonSystem[lastUserIndex]);
+	} else {
+		if (lastUserIndex >= 0) kept.push(nonSystem[lastUserIndex]);
+		for (let i = lastUserIndex + 1; i < nonSystem.length; i++) {
+			if (nonSystem[i].role === "tool") kept.push(nonSystem[i]);
+		}
 	}
 
 	// Fallback (no user message at all): keep only trailing tool results.
@@ -1786,14 +1840,34 @@ export function buildPrompt(
 		return messagesToPrompt([systemMessage, ...conversation], {
 			historyWindow: 10,
 			userLabel: "Previous user message",
+			lastUserLabel: continuationLabel(conversation),
 			toolResultLabel: "Tool result",
 		});
 	}
 	return messagesToPrompt(conversation, {
 		historyWindow: 10,
 		userLabel: "Previous user message",
+		lastUserLabel: continuationLabel(conversation),
 		toolResultLabel: "Tool result",
 	});
+}
+
+/**
+ * Label for the final user message of the lean conversation. On an iteration
+ * turn the runtime appends a synthetic "Use tool to continue..." continuation
+ * as the LAST user message (directly after the tool results), so it is the
+ * current directive — frame it as "Note:" instead of "Previous user message:"
+ * (stale context). Any other final user message keeps the generic label.
+ */
+function continuationLabel(
+	conversation: LanguageModelV2Prompt,
+): string | undefined {
+	const last = conversation[conversation.length - 1];
+	const beforeLast = conversation[conversation.length - 2];
+	if (last?.role !== "user" || beforeLast?.role !== "tool") {
+		return undefined;
+	}
+	return "Note";
 }
 
 function finishReasonFor(
@@ -1930,6 +2004,18 @@ function createDeepSeekWebV2Model(
 
 		if (functionTools.length > 0) {
 			const toolNames = functionTools.map((t) => t.name);
+			
+			// Check for malformed tool tag before parsing
+			const malformedError = detectMalformedToolTag(text);
+			if (malformedError) {
+				return {
+					text: text + "\n\n" + malformedError,
+					reasoning,
+					toolCalls: [],
+					usage,
+				};
+			}
+			
 			const { cleanedContent, toolCalls } = parseDeepSeekToolCalls(
 				text,
 				toolNames,

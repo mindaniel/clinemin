@@ -16,6 +16,17 @@ import { ensureFetch } from "../http";
 import type { ProviderFactoryResult } from "./types";
 
 /**
+ * Error thrown when the DeepSeek web provider detects a context length exceeded
+ * hint from the server. The runtime can catch this and trigger compaction.
+ */
+export class ContextLengthExceededError extends Error {
+	constructor(message: string) {
+		super(message);
+		this.name = "ContextLengthExceededError";
+	}
+}
+
+/**
  * DeepSeek Web ("deepseek-web") provider.
  *
  * chat.deepseek.com does not expose a public API. This provider drives the
@@ -658,6 +669,12 @@ export interface MessagesToPromptOptions {
 	 * instruction, and doesn't re-answer it.
 	 */
 	userLabel?: string;
+	/**
+	 * Label prefix for the FINAL user message only, overriding `userLabel`.
+	 * v2 uses "Note" for the runtime's synthetic "Use tool to continue..."
+	 * continuation, so the current directive is not framed as stale context.
+	 */
+	lastUserLabel?: string;
 	/** Label prefix for trailing tool results. Defaults to "Tool result". */
 	toolResultLabel?: string;
 }
@@ -672,10 +689,12 @@ export function messagesToPrompt(
 			: historyWindowOrOptions;
 	const historyWindow = options.historyWindow ?? DEFAULT_AUTO_HISTORY_WINDOW;
 	const userLabel = options.userLabel ?? "User";
+	const lastUserLabel = options.lastUserLabel;
 	const toolResultLabel = options.toolResultLabel ?? "Tool result";
 	const systemParts: string[] = [];
 	const conversation: Array<{ role: string; text: string }> = [];
 	let lastUserContent = "";
+	let lastUserIndex = -1;
 
 	for (const message of messages) {
 		const parts = toPromptParts(message);
@@ -691,7 +710,10 @@ export function messagesToPrompt(
 		if (message.role === "system") {
 			if (text) systemParts.push(text);
 		} else if (message.role === "user" || message.role === "assistant") {
-			if (text) conversation.push({ role: message.role, text });
+			if (text) {
+				conversation.push({ role: message.role, text });
+				if (message.role === "user") lastUserIndex = conversation.length - 1;
+			}
 			if (message.role === "user") lastUserContent = text;
 		} else if (message.role === "tool") {
 			// Tool results have no native slot in the flat-prompt format; fold
@@ -716,13 +738,23 @@ export function messagesToPrompt(
 		const recent = conversation.slice(-effectiveWindow);
 		outputParts.push(
 			recent
-				.map((turn) =>
-					turn.role === "assistant"
-						? `Assistant: ${turn.text}`
-						: turn.role === "tool"
-							? `${toolResultLabel}: ${turn.text}`
-							: `${userLabel}: ${turn.text}`,
-				)
+				.map((turn, index) => {
+					if (turn.role === "assistant") {
+						return `Assistant: ${turn.text}`;
+					}
+					if (turn.role === "tool") {
+						return `${toolResultLabel}: ${turn.text}`;
+					}
+					// The final user message (e.g. the runtime's synthetic
+					// "Use tool to continue..." continuation) may carry its own
+					// label instead of the generic prior-user label.
+					const isLastUser =
+						lastUserIndex >= 0 &&
+						conversation.length - recent.length + index === lastUserIndex;
+					return isLastUser && lastUserLabel
+						? `${lastUserLabel}: ${turn.text}`
+						: `${userLabel}: ${turn.text}`;
+				})
 				.join("\n\n"),
 		);
 	} else if (lastUserContent) {
@@ -890,6 +922,7 @@ export async function consumeDeepSeekSse(
 	};
 
 	try {
+		let currentEventType: string | null = null;
 		while (true) {
 			const { done, value } = await reader.read();
 			if (done) break;
@@ -898,13 +931,44 @@ export async function consumeDeepSeekSse(
 			buffer = lines.pop() ?? "";
 			for (const line of lines) {
 				const trimmed = line.trim();
-				if (!trimmed.startsWith("data:")) continue;
-				const payload = trimmed.replace(/^data:\s*/, "").trim();
-				if (!payload || payload === "[DONE]") continue;
-				try {
-					handleEvent(JSON.parse(payload) as DeepSeekCompletionEvent);
-				} catch {
-					// ignore malformed lines
+				if (!trimmed) continue;
+
+				// Handle event: lines
+				if (trimmed.startsWith("event:")) {
+					currentEventType = trimmed.replace(/^event:\s*/, "").trim();
+					continue;
+				}
+
+				// Handle data: lines
+				if (trimmed.startsWith("data:")) {
+					const payload = trimmed.replace(/^data:\s*/, "").trim();
+					if (!payload || payload === "[DONE]") {
+						currentEventType = null;
+						continue;
+					}
+
+					// If this is a hint event, check for context_length_exceeded
+					if (currentEventType === "hint") {
+						try {
+							const hintData = JSON.parse(payload) as { type?: string; finish_reason?: string };
+							if (hintData.type === "error" && hintData.finish_reason === "context_length_exceeded") {
+								throw new ContextLengthExceededError("Length limit reached. Please start a new chat.");
+							}
+						} catch (e) {
+							if (e instanceof ContextLengthExceededError) throw e;
+							// ignore other malformed hint data
+						}
+						currentEventType = null;
+						continue;
+					}
+
+					// Normal event (response/fragments)
+					try {
+						handleEvent(JSON.parse(payload) as DeepSeekCompletionEvent);
+					} catch {
+						// ignore malformed lines
+					}
+					currentEventType = null;
 				}
 			}
 		}

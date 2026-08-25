@@ -1,6 +1,8 @@
 import {
+	createAgentModelFromConfig,
 	createContextCompactionPrepareTurn,
 	createSessionCompactionState,
+	type AgentConfig,
 	type ProviderConfig,
 	type ProviderSettings,
 	type ProviderSettingsManager,
@@ -61,6 +63,8 @@ export async function compactInteractiveMessages(input: {
 	compactionState?: SessionCompactionState;
 	summary?: string;
 }> {
+	console.log('[compact] function called, providerId:', input.config.providerId, 'modelId:', input.config.modelId);
+	console.log('[compact] messages count:', input.messages.length);
 	const modelInfo = input.config.knownModels?.[input.config.modelId];
 	const compactionModelInfo = modelInfo
 		? {
@@ -71,6 +75,60 @@ export async function compactInteractiveMessages(input: {
 				id: input.config.modelId,
 				maxInputTokens: FALLBACK_MANUAL_COMPACTION_MAX_INPUT_TOKENS,
 			};
+
+	// Special handling for deepseek-web-v2: send a custom compaction prompt and use the response as summary.
+	console.log('[compact] checking providerId:', input.config.providerId);
+	if (input.config.providerId === 'deepseek-web-v2') {
+		console.log('[compact] entering deepseek-web-v2 branch');
+		try {
+			const providerConfig = resolveCompactionProviderConfig(input.config, input.providerSettingsManager);
+			// Build an AgentConfig from the ProviderConfig
+			const agentConfig: AgentConfig = {
+				provider: providerConfig.providerId,
+				model: providerConfig.modelId,
+				apiKey: providerConfig.apiKey,
+				baseUrl: providerConfig.baseUrl,
+				headers: providerConfig.headers,
+				reasoning: providerConfig.reasoning,
+				knownModels: providerConfig.knownModels,
+			};
+			const model = await createAgentModelFromConfig(agentConfig, input.config.logger);
+			const compactionPrompt =
+				"Give me a detailed prompt to continue in next chat. Make sure the next chat understand the context, what it should do and should not do, and any other information you think its necessary for it to fully understand.";
+			const messages: Message[] = [...input.messages, { role: 'user', content: compactionPrompt }];
+			const result = await model.doGenerate({
+				prompt: messages,
+				tools: [],
+				abortSignal: input.abortSignal,
+			});
+			const summary = result.text;
+			if (!summary) {
+				return { compacted: false, canonicalMessages: input.messages };
+			}
+			const compactionState = createSessionCompactionState({
+				sourceMessages: input.messages,
+				compactedMessages: [{ role: 'user', content: summary }],
+				conversationId: input.sessionId,
+				systemPrompt: '',
+			});
+			return {
+				compacted: true,
+				canonicalMessages: input.messages,
+				compactionState,
+				summary,
+			};
+		} catch (error) {
+			console.error('[compact] ERROR:', error);
+			if (input.config.logger) {
+				input.config.logger.log(
+					`DeepSeek Web v2 custom compaction failed: ${error instanceof Error ? error.message : String(error)}`,
+					{ severity: 'error' },
+				);
+			}
+			return { compacted: false, canonicalMessages: input.messages };
+		}
+	}
+
 	const compact = createContextCompactionPrepareTurn(
 		{
 			providerConfig: resolveCompactionProviderConfig(

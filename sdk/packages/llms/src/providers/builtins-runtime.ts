@@ -79,6 +79,13 @@ async function loadFamilyFactory(
 				const module = await import("./ai-sdk");
 				return module.createDeepSeekWebV2Provider;
 			}
+			case "qwen-web": {
+				const module = await import("./ai-sdk");
+				return module.createQwenWebProvider;
+			}
+			default: {
+				throw new Error(`Unsupported provider family: ${family}`);
+			}
 		}
 	})();
 

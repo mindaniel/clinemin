@@ -529,6 +529,7 @@ function inferClient(spec: BuiltinSpec): ProviderClient {
 		case "opencode":
 		case "dify":
 		case "ollama":
+		case "qwen-web":
 		case "sap-ai-core":
 		case "deepseek-web":
 		case "deepseek-web-v2":
@@ -1225,6 +1226,37 @@ const BUILTIN_SPEC_OVERRIDES: BuiltinSpecOverride[] = [
 				name: "DeepSeek Vision",
 				capabilities: ["streaming"],
 				contextWindow: 1_000_000,
+			},
+		}),
+		metadata: { usageCostDisplay: "hide" },
+	},
+	{
+		id: "qwen-web",
+		name: "Qwen (Web — Browser)",
+		description:
+			"Qwen via your real Chrome browser session (CDP) — no API key needed. Log in to chat.qwen.ai once in the browser profile. Options (headless, debug, chromePath, profileDir, debugPort) in ~/.cline/qwen-web/config.json or QWEN_WEB_* env vars",
+		family: "qwen-web",
+		popular: 25,
+		capabilities: ["local-auth", "tools", "streaming"],
+		defaultModelId: "qwen-max",
+		modelsFactory: () => ({
+			"qwen-max": {
+				id: "qwen-max",
+				name: "Qwen Max",
+				capabilities: ["streaming"],
+				contextWindow: 32_000,
+			},
+			"qwen-plus": {
+				id: "qwen-plus",
+				name: "Qwen Plus",
+				capabilities: ["streaming"],
+				contextWindow: 32_000,
+			},
+			"qwen-turbo": {
+				id: "qwen-turbo",
+				name: "Qwen Turbo",
+				capabilities: ["streaming"],
+				contextWindow: 32_000,
 			},
 		}),
 		metadata: { usageCostDisplay: "hide" },

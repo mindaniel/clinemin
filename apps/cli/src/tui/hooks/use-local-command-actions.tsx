@@ -2,6 +2,8 @@ import {
 	type DeepSeekWebV2ChatEntry,
 	listDeepSeekWebV2Chats,
 	openDeepSeekWebV2Chat,
+	deleteChatSession,
+	resolveDeepSeekWebV2Config,
 } from "@cline/llms";
 import { useTerminalDimensions } from "@opentui/react";
 import type { ChoiceContext } from "@opentui-ui/dialog";
@@ -201,7 +203,7 @@ export function useLocalCommandActions(input: {
 					entry.kind === "status"
 						? {
 								...entry,
-								text: `Auto-compaction context limit set to ${label} tokens. The session will restart to apply it.`,
+								text: `Auto-compaction context limit set to ${label} tokens. The new limit will apply immediately.`,
 							}
 						: entry,
 				);
@@ -292,11 +294,17 @@ export function useLocalCommandActions(input: {
 			return true;
 		}
 
+		const onDelete = async (chatKey: string) => {
+			const config = resolveDeepSeekWebV2Config();
+			deleteChatSession(config.chatsFile, chatKey);
+			session.appendEntry({ kind: "status", text: `Deleted chat ${chatKey}` });
+		};
+
 		const dialogChoice = await dialog.choice<string>({
 			size: "large",
 			style: { maxHeight: termHeight - 2 },
 			content: (ctx: ChoiceContext<string>) => (
-				<FindChatDialogContent {...ctx} chats={chats} />
+				<FindChatDialogContent {...ctx} chats={chats} onDelete={onDelete} />
 			),
 		});
 		refocusTextarea();
