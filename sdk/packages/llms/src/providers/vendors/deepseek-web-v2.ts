@@ -1216,6 +1216,7 @@ async function withTimeout<T>(
 	});
 }
 
+
 // ── Completion capture (Network domain — mirrors browser.py page.on("response")) ─
 
 /**
@@ -1405,6 +1406,176 @@ async function streamCompletionFromPage(input: {
 	return result;
 }
 
+
+/**
+ * Edit the last user message on the page by appending a period "." to the text.
+ * Returns true if successful, false otherwise.
+ */
+async function editLastUserMessage(
+    cdp: CdpClient,
+    sessionId: string,
+    logger?: BasicLogger,
+): Promise<boolean> {
+    const script = `
+        (() => {
+            // Find all user messages (exclude assistant/thinking blocks)
+            const userMessages = Array.from(document.querySelectorAll('.ds-message')).filter(msg => {
+                if (msg.textContent.includes('Thought for')) return false;
+                if (msg.querySelector('.ds-markdown')) return false;
+                return true;
+            });
+
+            if (userMessages.length === 0) return false;
+
+            const targetMessage = userMessages[userMessages.length - 1];
+            const oldText = targetMessage.textContent.trim();
+
+            // Simulate hover to reveal edit button
+            const rect = targetMessage.getBoundingClientRect();
+            const x = rect.left + rect.width / 2;
+            const y = rect.top + rect.height / 2;
+
+            const hoverEvents = [
+                new MouseEvent('mouseover', { bubbles: true, view: window, clientX: x, clientY: y }),
+                new MouseEvent('mouseenter', { bubbles: false, view: window, clientX: x, clientY: y }),
+                new MouseEvent('mousemove', { bubbles: true, view: window, clientX: x, clientY: y })
+            ];
+
+            let element = targetMessage;
+            while (element) {
+                hoverEvents.forEach(evt => element.dispatchEvent(evt));
+                element = element.parentElement;
+            }
+            document.body.dispatchEvent(new MouseEvent('mousemove', { bubbles: true, clientX: x, clientY: y }));
+
+            // Wait for edit button (synchronous polling)
+            const start = Date.now();
+            let editBtn = null;
+            while (Date.now() - start < 5000) {
+                editBtn = targetMessage.querySelector('svg path[d*="M9.94076"]')?.closest('[role="button"]')
+                    || targetMessage.querySelector('[class*="d4910adc"]');
+                if (!editBtn) {
+                    editBtn = document.querySelector('svg path[d*="M9.94076"]')?.closest('[role="button"]')
+                        || document.querySelector('[class*="d4910adc"]');
+                }
+                if (!editBtn) {
+                    const candidates = document.querySelectorAll('[role="button"], button');
+                    for (const btn of candidates) {
+                        const label = (btn.getAttribute('aria-label') || '').toLowerCase();
+                        const title = (btn.getAttribute('title') || '').toLowerCase();
+                        if (label.includes('edit') || title.includes('edit')) {
+                            editBtn = btn;
+                            break;
+                        }
+                    }
+                }
+                if (editBtn) break;
+                // Wait a bit before next check
+                await new Promise(resolve => setTimeout(resolve, 200));
+            }
+            if (!editBtn) return false;
+
+            // Click edit
+            editBtn.click();
+
+            // Wait for edit textarea to appear
+            return new Promise((resolve) => {
+                setTimeout(() => {
+                    // Find the visible textarea
+                    const allTextareas = Array.from(document.querySelectorAll('textarea'));
+                    let editTextarea = null;
+                    for (const ta of allTextareas) {
+                        const isVisible = ta.offsetWidth > 0 || ta.offsetHeight > 0 || ta.getClientRects().length > 0;
+                        if (isVisible) {
+                            editTextarea = ta;
+                            break;
+                        }
+                    }
+                    if (!editTextarea && allTextareas.length > 0) {
+                        editTextarea = allTextareas[allTextareas.length - 1];
+                    }
+                    if (!editTextarea) {
+                        resolve(false);
+                        return;
+                    }
+
+                    // Append a period to the existing text
+                    const newText = editTextarea.value + " .";
+                    const nativeSetter = Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, 'value').set;
+                    if (nativeSetter) {
+                        nativeSetter.call(editTextarea, newText);
+                    } else {
+                        editTextarea.value = newText;
+                    }
+                    editTextarea.dispatchEvent(new Event('input', { bubbles: true }));
+                    editTextarea.dispatchEvent(new Event('change', { bubbles: true }));
+
+                    // Find and click submit button
+                    const submitSelectors = [
+                        '.ds-button--filled',
+                        'button[type="submit"]',
+                        '[role="button"][aria-label*="Send"]',
+                        '[role="button"][aria-label*="Submit"]',
+                        '[role="button"][aria-label*="Save"]',
+                        '[role="button"][aria-label*="Update"]',
+                        '.ds-button--primary'
+                    ];
+                    let submitBtn = null;
+                    for (const sel of submitSelectors) {
+                        const btn = document.querySelector(sel);
+                        if (btn && !btn.classList.contains('ds-button--disabled')) {
+                            submitBtn = btn;
+                            break;
+                        }
+                    }
+                    if (!submitBtn) {
+                        // Fallback: look for visible button with text "Send", "Save", "Submit"
+                        const allButtons = Array.from(document.querySelectorAll('[role="button"], button'));
+                        const textLabels = ['send', 'save', 'submit', 'update'];
+                        for (const btn of allButtons) {
+                            const text = btn.textContent.trim().toLowerCase();
+                            if (textLabels.some(label => text.includes(label)) && btn.offsetWidth > 0) {
+                                submitBtn = btn;
+                                break;
+                            }
+                        }
+                    }
+                    if (submitBtn) {
+                        submitBtn.click();
+                        resolve(true);
+                    } else {
+                        // Try Enter key
+                        editTextarea.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', code: 'Enter', keyCode: 13, which: 13, bubbles: true }));
+                        resolve(true);
+                    }
+                }, 600);
+            });
+        })();
+    `;
+
+    try {
+        const result = await cdp.send(
+            "Runtime.evaluate",
+            {
+                expression: script,
+                returnByValue: true,
+                awaitPromise: true,
+            },
+            sessionId,
+        );
+        const success = result.result?.value === true;
+        if (success) {
+            logger?.debug?.("[deepseek-web-v2] Edited last user message (appended ' .')");
+        } else {
+            logger?.log("[deepseek-web-v2] Failed to edit last user message", { severity: "warn" });
+        }
+        return success;
+    } catch (err) {
+        logger?.log(`[deepseek-web-v2] Error editing last user message: ${err}`, { severity: "warn" });
+        return false;
+    }
+}
+
 async function runCompletion(input: {
 	modelId: string;
 	prompt: string;
@@ -1474,20 +1645,64 @@ async function runCompletion(input: {
 
 	await waitForComposerReady(cdp, sessionId, config, logger);
 
-	const result = await streamCompletionFromPage({
-		cdp,
-		sessionId,
-		config,
-		prompt,
-		modelType,
-		deepThinking,
-		thinkingEnabled: deepThinking === true,
-		isToolTurn,
-		onText,
-		onReasoning,
-		signal,
-		logger,
-	});
+	// Retry logic: if the first attempt fails (empty response or error), edit the last user message and retry.
+	let attempt = 0;
+	const maxAttempts = 2;
+	let lastError: Error | null = null;
+	let result: Awaited<ReturnType<typeof streamCompletionFromPage>> | null = null;
+
+	while (attempt < maxAttempts) {
+		attempt++;
+		try {
+			result = await streamCompletionFromPage({
+				cdp,
+				sessionId,
+				config,
+				prompt,
+				modelType,
+				deepThinking,
+				thinkingEnabled: deepThinking === true,
+				isToolTurn,
+				onText,
+				onReasoning,
+				signal,
+				logger,
+			});
+
+			// Check if the response is empty (no text and no reasoning)
+			if (!result.text && !result.reasoning) {
+				if (attempt < maxAttempts) {
+					logger?.log("[deepseek-web-v2] Empty response detected, attempting retry...", { severity: "warn" });
+					const edited = await editLastUserMessage(cdp, sessionId, logger);
+					if (!edited) {
+						logger?.log("[deepseek-web-v2] Failed to edit message for retry", { severity: "warn" });
+						break;
+					}
+					await sleep(2000);
+					continue;
+				}
+			}
+			// Success
+			break;
+		} catch (err) {
+			lastError = err instanceof Error ? err : new Error(String(err));
+			if (attempt < maxAttempts) {
+				logger?.log(`[deepseek-web-v2] Error during completion (attempt ${attempt}/${maxAttempts}): ${lastError.message}`, { severity: "warn" });
+				const edited = await editLastUserMessage(cdp, sessionId, logger);
+				if (!edited) {
+					logger?.log("[deepseek-web-v2] Failed to edit message for retry", { severity: "warn" });
+					break;
+				}
+				await sleep(2000);
+				continue;
+			}
+			throw lastError;
+		}
+	}
+
+	if (!result) {
+		throw new Error("Failed to get completion after retries");
+	}
 
 	// After sending, the SPA routes to `/a/chat/s/<session_id>`; capture it so
 	// the next turn (or a resume) can reopen this same DeepSeek chat.

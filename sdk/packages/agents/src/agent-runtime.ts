@@ -627,6 +627,7 @@ export class AgentRuntime {
 			}
 
 			let finalAssistantMessage: AgentMessage | undefined;
+			let autoContinued = false;
 
 			while (
 				this.config.maxIterations === undefined ||
@@ -672,6 +673,22 @@ export class AgentRuntime {
 					finishReason,
 				});
 
+				// If the assistant only produced thinking/reasoning and no text or tool calls,
+				// automatically send a follow-up user message to continue outside thinking mode.
+				if (!autoContinued && this.isThinkingOnlyMessage(message)) {
+					autoContinued = true;
+					const continuationPrompt = "Continue and send outside thinking mode";
+					const userMessage = createMessage("user", [{ type: "text", text: continuationPrompt }]);
+					this.state.messages.push(userMessage);
+					await this.emit({
+						type: "message-added",
+						snapshot: this.snapshot(),
+						message: userMessage,
+					});
+					continue;
+				}
+
+
 				if (finishReason === "max-tokens" && toolCalls.length === 0) {
 					throw new Error(MAX_TOKENS_INCOMPLETE_TURN_MESSAGE);
 				}
@@ -686,6 +703,7 @@ export class AgentRuntime {
 						snapshot: this.snapshot(),
 						iteration: this.state.iteration,
 						toolCallCount: 0,
+
 					});
 					const completionReminderMessages =
 						this.getCompletionReminderMessages();
@@ -824,6 +842,18 @@ export class AgentRuntime {
 			await hook({ snapshot: this.snapshot(), result });
 		}
 	}
+
+    /**
+     * Check if an assistant message contains only thinking/reasoning content
+     * (no text, no tool calls). This indicates the model is stuck in thinking mode.
+     */
+    private isThinkingOnlyMessage(message: AgentMessage): boolean {
+        const parts = message.content;
+        const hasText = parts.some((part) => part.type === "text");
+        const hasToolCalls = parts.some((part) => part.type === "tool-call");
+        const hasReasoning = parts.some((part) => part.type === "reasoning");
+        return !hasText && !hasToolCalls && hasReasoning;
+    }
 
 	private async generateAssistantMessage(): Promise<{
 		message: AgentMessage;

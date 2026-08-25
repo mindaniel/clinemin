@@ -679,7 +679,7 @@ export function useModelSelector(opts: {
 						const browseModel = modelOptions.find(
 							(m: ModelOption) => m.key === browseResult,
 						);
-						if (browseModel?.supportsReasoning) {
+						if (browseModel?.supportsReasoning && config.providerId !== "deepseek-web-v2") {
 							const lvl: ThinkingLevel = config.reasoningEffort
 								? (config.reasoningEffort as ThinkingLevel)
 								: config.thinking

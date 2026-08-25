@@ -32,7 +32,7 @@ const DEFAULT_CHATS_FILE = path.join(CONFIG_DIR, "chats.json");
 const QWEN_WEB_URL = "https://chat.qwen.ai/";
 const QWEN_API_ENDPOINT = "/api/v2/chat/completions";
 
-const DEFAULT_DEBUG_PORT = 9222;
+const DEFAULT_DEBUG_PORT = 9223;
 const DEFAULT_LAUNCH_TIMEOUT_MS = 30000;
 const DEFAULT_RESPONSE_TIMEOUT_MS = 120000;
 const DEFAULT_LOGIN_TIMEOUT_MS = 120000;
@@ -206,6 +206,23 @@ async function connectCdp(port: number, timeoutMs: number): Promise<CdpClient> {
     const detail = lastError instanceof Error ? `: ${lastError.message}` : "";
     throw new Error(`Could not connect to Chrome DevTools at ${endpoint} within ${Math.round(timeoutMs / 1000)}s${detail}`);
 }
+async function waitForEndpoint(port: number, timeoutMs: number): Promise<void> {
+    const deadline = Date.now() + timeoutMs;
+    let lastError: unknown;
+    while (Date.now() < deadline) {
+        try {
+            if (await isEndpointUp(port)) {
+                return;
+            }
+        } catch (err) {
+            lastError = err;
+        }
+        await sleep(500);
+    }
+    const detail = lastError instanceof Error ? `: ${lastError.message}` : "";
+    throw new Error(`Chrome DevTools endpoint at port ${port} did not become available within ${Math.round(timeoutMs / 1000)}s${detail}`);
+}
+
 
 async function connectBrowser(config: QwenWebV2RuntimeConfig): Promise<CdpClient> {
     const key = `${config.debugPort}`;
@@ -241,76 +258,185 @@ async function connectBrowser(config: QwenWebV2RuntimeConfig): Promise<CdpClient
     const child = spawn(executablePath, args, {
         detached: true,
         stdio: "ignore",
-        shell: process.platform === "win32",
     });
     child.unref();
 
-    await sleep(3000);
+    try {
+        await waitForEndpoint(config.debugPort, config.launchTimeoutMs);
+    } catch (err) {
+        throw new Error(
+            `Failed to launch Chrome for Qwen Web: ${(err as Error).message}. ` +
+            "If Chrome is already running with this profile, close it or set a different QWEN_WEB_PROFILE_DIR."
+        );
+    }
     activeCdp = await connectCdp(config.debugPort, connectTimeoutMs);
     activeCdpKey = key;
     return activeCdp;
 }
 
-// ── Page-side send script ────────────────────────────────────────────────────
-
+// ── Enhanced Qwen send script (from send_qwen.txt) ──────────────────────────
 const SEND_MESSAGE_SOURCE = `
-function findSendButton() {
-    var selectors = [
-        'button[type="submit"]',
-        '.send-btn',
-        '[data-testid="send-button"]',
-        'button[aria-label*="Send" i]'
+// ---------- Helper: Select thinking mode ----------
+async function selectThinkingMode(mode) {
+    // mode: 'auto' | 'fast' | 'thinking'
+    // Find the thinking mode toggle/button
+    const selectors = [
+        'button[aria-label*="Think" i]',
+        'button[aria-label*="思考" i]',
+        '[role="button"][aria-label*="Think" i]',
+        '.thinking-toggle',
+        '.deep-thinking-toggle'
     ];
-    for (var sel of selectors) {
-        var el = document.querySelector(sel);
-        if (el) return el;
+    let btn = null;
+    for (const sel of selectors) {
+        btn = document.querySelector(sel);
+        if (btn) break;
     }
-    return null;
-}
-
-function findTextarea() {
-    var selectors = [
-        'textarea',
-        'textarea[placeholder*="message" i]',
-        'input[type="text"]',
-        '.chat-input'
-    ];
-    for (var sel of selectors) {
-        var el = document.querySelector(sel);
-        if (el && !el.disabled) return el;
-    }
-    return null;
-}
-
-function sendMessageToQwen(message) {
-    var textarea = findTextarea();
-    if (!textarea) {
-        console.error('Textarea not found');
+    if (!btn) {
+        console.warn('⚠️ Thinking mode toggle not found');
         return false;
     }
-    textarea.focus();
-    var nativeSetter = Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, 'value').set;
-    if (nativeSetter) {
-        nativeSetter.call(textarea, message);
-    } else {
-        textarea.value = message;
+    // Click to toggle to desired mode (simple toggle: if mode is 'thinking' and not active, click; if mode is 'fast' and active, click)
+    const isActive = btn.classList.contains('active') || btn.getAttribute('aria-pressed') === 'true';
+    const targetActive = mode === 'thinking';
+    if (isActive !== targetActive) {
+        btn.click();
+        console.log('🔄 Toggled thinking mode to', mode);
+        await new Promise(resolve => setTimeout(resolve, 300));
     }
-    textarea.dispatchEvent(new Event('input', { bubbles: true }));
-    textarea.dispatchEvent(new Event('change', { bubbles: true }));
-    setTimeout(function() {
-        var sendBtn = findSendButton();
-        if (sendBtn) {
-            sendBtn.click();
-        } else {
-            textarea.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true }));
+    return true;
+}
+
+// ---------- Helper: Select model ----------
+async function selectModel(modelName) {
+    if (!modelName) return true;
+    // Find the model selector button
+    const modelBtn = document.querySelector('button[aria-label*="Model" i], button[aria-label*="模型" i], .model-selector, [role="button"][aria-label*="Model"]');
+    if (!modelBtn) {
+        console.warn('⚠️ Model selector button not found');
+        return false;
+    }
+    modelBtn.click();
+    await new Promise(resolve => setTimeout(resolve, 400));
+    // Find the model option in dropdown
+    const options = document.querySelectorAll('[role="option"], .model-option, li');
+    for (const opt of options) {
+        if (opt.textContent.trim().toLowerCase().includes(modelName.toLowerCase())) {
+            opt.click();
+            console.log('✅ Selected model:', modelName);
+            await new Promise(resolve => setTimeout(resolve, 300));
+            return true;
         }
-    }, 300);
+    }
+    console.warn('⚠️ Model not found in dropdown:', modelName);
+    // Close dropdown
+    document.body.click();
+    return false;
+}
+
+// ---------- Robust Send Button Clicker ----------
+async function clickSendButton(timeout) {
+    timeout = timeout || 3000;
+    const start = Date.now();
+    while (Date.now() - start < timeout) {
+        const selectors = [
+            'button[type="submit"]',
+            'button[aria-label*="Send" i]',
+            'button[aria-label*="发送" i]',
+            'button[class*="send"]',
+            'button[class*="send-btn"]',
+            '.ant-btn-primary',
+            'button[class*="ant-btn-primary"]',
+            '[role="button"][aria-label*="Send" i]',
+            '[role="button"][aria-label*="发送" i]'
+        ];
+        for (const sel of selectors) {
+            const btn = document.querySelector(sel);
+            if (btn && !btn.disabled && btn.offsetWidth > 0) {
+                btn.dispatchEvent(new MouseEvent('mousedown', { bubbles: true }));
+                btn.dispatchEvent(new MouseEvent('mouseup', { bubbles: true }));
+                btn.click();
+                console.log('🖱️ Clicked send button:', sel);
+                return true;
+            }
+        }
+        // Check for button with icon arrow up
+        const arrowButton = document.querySelector('button svg[class*="send"]')?.closest('button');
+        if (arrowButton && arrowButton.offsetWidth > 0) {
+            arrowButton.click();
+            console.log('🖱️ Clicked send button (icon)');
+            return true;
+        }
+        await new Promise(resolve => setTimeout(resolve, 200));
+    }
+    console.warn('⚠️ Send button not found, falling back to Enter');
+    return false;
+}
+
+// ---------- Main send function ----------
+async function sendMessageToQwen(message, options) {
+    options = options || {};
+    const { thinkingMode, model } = options;
+
+    // Apply thinking mode if specified
+    if (thinkingMode) {
+        await selectThinkingMode(thinkingMode);
+        await new Promise(resolve => setTimeout(resolve, 500));
+    }
+
+    // Apply model if specified
+    if (model) {
+        await selectModel(model);
+        await new Promise(resolve => setTimeout(resolve, 500));
+    }
+
+    // Find input field
+    const inputField = document.querySelector('textarea[placeholder*="消息" i], textarea[placeholder*="Message" i], textarea, [contenteditable="true"]');
+    if (!inputField) {
+        console.error('❌ Input field not found');
+        return false;
+    }
+
+    // Focus and set text
+    inputField.focus();
+    if (inputField.tagName === 'TEXTAREA') {
+        const nativeSetter = Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, 'value').set;
+        if (nativeSetter) {
+            nativeSetter.call(inputField, message);
+        } else {
+            inputField.value = message;
+        }
+        inputField.dispatchEvent(new Event('input', { bubbles: true }));
+        inputField.dispatchEvent(new Event('change', { bubbles: true }));
+    } else if (inputField.isContentEditable) {
+        inputField.textContent = message;
+        inputField.dispatchEvent(new Event('input', { bubbles: true }));
+    }
+
+    // Wait for React state update
+    await new Promise(resolve => setTimeout(resolve, 300));
+
+    // Attempt to click send button
+    const sendSuccess = await clickSendButton();
+    if (sendSuccess) {
+        console.log('✅ Sent:', message);
+        return true;
+    }
+
+    // Fallback: try pressing Enter
+    const enterEvent = new KeyboardEvent('keydown', { key: 'Enter', code: 'Enter', keyCode: 13, which: 13, bubbles: true });
+    inputField.dispatchEvent(enterEvent);
+    console.log('✅ Sent with Enter:', message);
     return true;
 }
 `;
 
-function buildSendScript(prompt: string): string {
-    return `${SEND_MESSAGE_SOURCE} sendMessageToQwen(${JSON.stringify(prompt)}); true;`;
+function buildSendScript(prompt: string, options?: { model?: string; thinkingMode?: string }): string {
+    const opts = options || {};
+    return `(async () => {
+        ${SEND_MESSAGE_SOURCE}
+        await sendMessageToQwen(${JSON.stringify(prompt)}, ${JSON.stringify(opts)});
+    })(); true;`;
 }
 
 // ── Wait for composer ready ──────────────────────────────────────────────────
@@ -497,6 +623,7 @@ async function sendAndCapture(
     prompt: string,
     config: QwenWebV2RuntimeConfig,
     logger?: BasicLogger,
+    sendOptions?: { model?: string; thinkingMode?: string },
 ): Promise<{ text: string; finishReason: LanguageModelV2FinishReason; usage: { inputTokens: number; outputTokens: number; totalTokens: number } }> {
     await cdp.send("Network.enable", {}, cdpSessionId);
 
@@ -522,7 +649,7 @@ async function sendAndCapture(
     await waitForComposerReady(cdp, cdpSessionId, config, logger);
 
     await cdp.send("Runtime.evaluate", {
-        expression: buildSendScript(prompt),
+        expression: buildSendScript(prompt, sendOptions),
         returnByValue: true,
         awaitPromise: false,
     }, cdpSessionId);
@@ -599,9 +726,19 @@ function createQwenWebModel(modelId: string, logger?: BasicLogger): LanguageMode
                     .filter(Boolean)
                     .join("\n");
 
-                debugLog(`Sending prompt (${promptText.length} chars)`);
+                // Determine thinking mode: use explicit thinking flag if provided, or infer from modelId
+                const thinkingMode = (options as any).thinking === true ? "thinking" :
+                                     modelId.includes("thinking") || modelId.includes("think") ? "thinking" :
+                                     "auto";
+                // Use modelId as the model name to pass to the UI
+                const modelName = modelId;
 
-                const result = await sendAndCapture(cdp, cdpSessionId, promptText, runtimeConfig, logger);
+                debugLog(`Sending prompt (${promptText.length} chars) with model=${modelName}, thinking=${thinkingMode}`);
+
+                const result = await sendAndCapture(cdp, cdpSessionId, promptText, runtimeConfig, logger, {
+                    model: modelName,
+                    thinkingMode: thinkingMode,
+                });
 
                 debugLog(`Received response (${result.text.length} chars)`);
 
