@@ -21,6 +21,7 @@ export {
 	isCanonicalModelIdForAliasRules,
 	MODEL_COLLECTIONS_BY_PROVIDER_ID,
 	preferCanonicalModelIds,
+	providerSkipsLiveCatalog,
 	registerModel,
 	registerProvider,
 	resetRegistry,

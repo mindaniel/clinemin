@@ -4,6 +4,11 @@ import {
 	openDeepSeekWebV2Chat,
 	deleteChatSession,
 	resolveDeepSeekWebV2Config,
+	type QwenWebChatEntry,
+	listQwenWebChats,
+	openQwenWebChat,
+	deleteQwenChatSession,
+	resolveQwenWebV2Config,
 } from "@cline/llms";
 import { useTerminalDimensions } from "@opentui/react";
 import type { ChoiceContext } from "@opentui-ui/dialog";
@@ -43,6 +48,7 @@ export function useLocalCommandActions(input: {
 	onFork: TuiProps["onFork"];
 	onUndo: () => Promise<void>;
 	onExit: TuiProps["onExit"];
+	providerId: string;
 }) {
 	const dialog = useDialog();
 	const session = useSession();
@@ -66,6 +72,7 @@ export function useLocalCommandActions(input: {
 		onFork,
 		onUndo,
 		onExit,
+		providerId,
 	} = input;
 
 	const openHistory = useCallback(async () => {
@@ -272,39 +279,63 @@ export function useLocalCommandActions(input: {
 		}
 	}, [canForkSession, dialog, onFork, refocusTextarea, session]);
 
-	// `/findchat` — recall a DeepSeek Web v2 chat in the SAME Chrome the
-	// provider drives. Lists the provider's persisted chats; when you pick one,
-	// it navigates the live page to that chat so you can continue the history.
+	// `/findchat` — recall a Web chat in the SAME Chrome the provider drives.
+	// Automatically detects the active provider (qwen-web or deepseek-web-v2).
 	const findChat = useCallback(async (): Promise<boolean> => {
-		let chats: DeepSeekWebV2ChatEntry[];
-		try {
-			chats = listDeepSeekWebV2Chats();
-		} catch (error) {
-			session.appendEntry({
-				kind: "error",
-				text: `/findchat: could not read DeepSeek Web v2 chat history: ${error instanceof Error ? error.message : String(error)}`,
-			});
-			return true;
+		let chats: (DeepSeekWebV2ChatEntry | QwenWebChatEntry)[];
+		let providerName = "";
+		let onDeleteFn: (chatKey: string) => void;
+		let openChatFn: (sessionId: string) => Promise<{ sessionId: string; url: string }>;
+
+		if (providerId === "qwen-web") {
+			providerName = "Qwen Web";
+			try {
+				chats = listQwenWebChats();
+			} catch (error) {
+				session.appendEntry({
+					kind: "error",
+					text: `/findchat: could not read Qwen Web chat history: ${error instanceof Error ? error.message : String(error)}`,
+				});
+				return true;
+			}
+			onDeleteFn = (chatKey: string) => {
+				const config = resolveQwenWebV2Config();
+				deleteQwenChatSession(config.chatsFile, chatKey);
+				session.appendEntry({ kind: "status", text: `Deleted chat ${chatKey}` });
+			};
+			openChatFn = openQwenWebChat;
+		} else {
+			providerName = "DeepSeek Web v2";
+			try {
+				chats = listDeepSeekWebV2Chats();
+			} catch (error) {
+				session.appendEntry({
+					kind: "error",
+					text: `/findchat: could not read DeepSeek Web v2 chat history: ${error instanceof Error ? error.message : String(error)}`,
+				});
+				return true;
+			}
+			onDeleteFn = (chatKey: string) => {
+				const config = resolveDeepSeekWebV2Config();
+				deleteChatSession(config.chatsFile, chatKey);
+				session.appendEntry({ kind: "status", text: `Deleted chat ${chatKey}` });
+			};
+			openChatFn = openDeepSeekWebV2Chat;
 		}
+
 		if (chats.length === 0) {
 			session.appendEntry({
 				kind: "status",
-				text: "/findchat: no persisted DeepSeek Web v2 chats yet (run a turn with the deepseek-web-v2 provider first).",
+				text: `/findchat: no persisted ${providerName} chats yet (run a turn with the provider first).`,
 			});
 			return true;
 		}
-
-		const onDelete = async (chatKey: string) => {
-			const config = resolveDeepSeekWebV2Config();
-			deleteChatSession(config.chatsFile, chatKey);
-			session.appendEntry({ kind: "status", text: `Deleted chat ${chatKey}` });
-		};
 
 		const dialogChoice = await dialog.choice<string>({
 			size: "large",
 			style: { maxHeight: termHeight - 2 },
 			content: (ctx: ChoiceContext<string>) => (
-				<FindChatDialogContent {...ctx} chats={chats} onDelete={onDelete} />
+				<FindChatDialogContent {...ctx} chats={chats} onDelete={onDeleteFn} providerName={providerName} />
 			),
 		});
 		refocusTextarea();
@@ -312,15 +343,13 @@ export function useLocalCommandActions(input: {
 
 		session.appendEntry({
 			kind: "status",
-			text: `Opening DeepSeek Web v2 chat ${dialogChoice}...`,
+			text: `Opening ${providerName} chat ${dialogChoice}...`,
 		});
 		try {
-			await withLoadingDialog(dialog, "Opening chat...", () =>
-				openDeepSeekWebV2Chat(dialogChoice),
-			);
+			await withLoadingDialog(dialog, "Opening chat...", () => openChatFn(dialogChoice));
 			session.updateLastEntry(() => ({
 				kind: "status",
-				text: `Opened DeepSeek Web v2 chat ${dialogChoice}.`,
+				text: `Opened ${providerName} chat ${dialogChoice}.`,
 			}));
 		} catch (error) {
 			session.updateLastEntry(() => ({
@@ -329,7 +358,7 @@ export function useLocalCommandActions(input: {
 			}));
 		}
 		return true;
-	}, [dialog, refocusTextarea, session, termHeight]);
+	}, [dialog, providerId, refocusTextarea, session, termHeight]);
 
 	const handleSlashCommand = useCallback(
 		(command: string, invocation?: LocalSlashCommandInvocation) => {

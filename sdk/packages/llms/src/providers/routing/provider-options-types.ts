@@ -19,6 +19,7 @@ export type AiSdkProviderOptionsTarget =
 	| "dify"
 	| "ollama"
 	| "qwen-web"
+	| "chatgpt-web"
 	| "sapaicore"
 	| "deepseek-web"
 	| "deepseek-web-v2";
@@ -98,6 +99,8 @@ export function inferProviderOptionsTarget(
 			return "deepseek-web-v2";
 		case "qwen-web":
 			return "qwen-web";
+		case "chatgpt-web":
+			return "chatgpt-web";
 		default:
 			return "openai-compatible";
 	}

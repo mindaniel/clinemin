@@ -24,6 +24,7 @@ export type ProviderFamily =
 	| "dify"
 	| "ollama"
 	| "qwen-web"
+	| "chatgpt-web"
 	| "sap-ai-core"
 	| "deepseek-web"
 	| "deepseek-web-v2";

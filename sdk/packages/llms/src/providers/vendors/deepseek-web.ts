@@ -1067,6 +1067,17 @@ export function parseDeepSeekToolCalls(
 	content: string,
 	toolNames: string[],
 ): { cleanedContent: string; toolCalls: ParsedToolCall[] } {
+	// Some DeepSeek web replies drop the `>` after `<tool` when the JSON body
+	// is pushed to a new line (`<tool\n{"name":...}`) instead of staying on
+	// the same line (`<tool {"name":...}`). Both look identical to the tag
+	// matcher below without a `>`, so repair them the same way: insert the
+	// missing `>` whenever `<tool` (optionally `:name`) is directly followed
+	// by whitespace/newline and then `{`, with no `>` in between.
+	content = content.replace(
+		/<tool(:[\w-]+)?\s+(?=\{)/gi,
+		(_m, suffix: string | undefined) => `<tool${suffix ?? ""}>`,
+	);
+
 	// Alias-aware accepted names so near-miss model output still executes.
 	const accepted = new Set(toolNames.map(normalizeToolName));
 	const toolCalls: ParsedToolCall[] = [];
@@ -1169,6 +1180,13 @@ export function parseLooseDeepSeekToolCalls(
 content: string,
 toolNames: string[],
 ): ParsedToolCall[] {
+// See the matching repair pass in parseDeepSeekToolCalls: recover a `<tool`
+// tag whose `>` was dropped before a newline/space-then-`{` JSON body.
+content = content.replace(
+	/<tool(:[\w-]+)?\s+(?=\{)/gi,
+	(_m, suffix: string | undefined) => `<tool${suffix ?? ""}>`,
+);
+
 const accepted = new Set(toolNames.map(normalizeToolName));
 const toolCalls: ParsedToolCall[] = [];
 

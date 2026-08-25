@@ -1627,9 +1627,9 @@ describe("refreshProviderModelsFromSource", () => {
 		expect(result).toMatchObject({ providerId: "ollama", refreshed: true });
 		expect(fetchMock).toHaveBeenCalledWith(
 			"http://tailscale-host:11434/api/tags",
-			{
+			expect.objectContaining({
 				method: "GET",
-			},
+			}),
 		);
 		const modelsState = await readModelsFile(
 			resolveModelsRegistryPath(manager),

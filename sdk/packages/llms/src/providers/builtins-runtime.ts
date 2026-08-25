@@ -83,6 +83,10 @@ async function loadFamilyFactory(
 				const module = await import("./ai-sdk");
 				return module.createQwenWebProvider;
 			}
+			case "chatgpt-web": {
+				const module = await import("./ai-sdk");
+				return module.createChatGPTWebProvider;
+			}
 			default: {
 				throw new Error(`Unsupported provider family: ${family}`);
 			}

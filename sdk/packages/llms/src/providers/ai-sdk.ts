@@ -1205,6 +1205,12 @@ async function createProviderModule(
 			);
 			return createQwenWebProviderModule(config, context);
 		}
+		case "chatgpt-web": {
+			const { createChatGPTWebProviderModule } = await import(
+				"./vendors/chatgpt-web"
+			);
+			return createChatGPTWebProviderModule(config, context);
+		}
 	}
 }
 
@@ -1377,3 +1383,4 @@ export const createDeepSeekWebProvider = createAiSdkProvider("deepseek-web");
 export const createDeepSeekWebV2Provider =
 	createAiSdkProvider("deepseek-web-v2");
 export const createQwenWebProvider = createAiSdkProvider("qwen-web");
+export const createChatGPTWebProvider = createAiSdkProvider("chatgpt-web");

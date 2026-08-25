@@ -530,6 +530,7 @@ function inferClient(spec: BuiltinSpec): ProviderClient {
 		case "dify":
 		case "ollama":
 		case "qwen-web":
+		case "chatgpt-web":
 		case "sap-ai-core":
 		case "deepseek-web":
 		case "deepseek-web-v2":
@@ -1238,25 +1239,44 @@ const BUILTIN_SPEC_OVERRIDES: BuiltinSpecOverride[] = [
 		family: "qwen-web",
 		popular: 25,
 		capabilities: ["local-auth", "tools", "streaming"],
-		defaultModelId: "qwen-max",
+		defaultModelId: "qwen-auto",
 		modelsFactory: () => ({
-			"qwen-max": {
-				id: "qwen-max",
-				name: "Qwen Max",
+			"qwen-auto": {
+				id: "qwen-auto",
+				name: "Qwen Auto",
 				capabilities: ["streaming"],
-				contextWindow: 32_000,
+				contextWindow: 1_000_000,
 			},
-			"qwen-plus": {
-				id: "qwen-plus",
-				name: "Qwen Plus",
+			"qwen-thinking": {
+				id: "qwen-thinking",
+				name: "Qwen Thinking",
 				capabilities: ["streaming"],
-				contextWindow: 32_000,
+				contextWindow: 1_000_000,
 			},
-			"qwen-turbo": {
-				id: "qwen-turbo",
-				name: "Qwen Turbo",
+			"qwen-fast": {
+				id: "qwen-fast",
+				name: "Qwen Fast",
 				capabilities: ["streaming"],
-				contextWindow: 32_000,
+				contextWindow: 1_000_000,
+			},
+		}),
+		metadata: { usageCostDisplay: "hide" },
+	},
+	{
+		id: "chatgpt-web",
+		name: "ChatGPT (Web — Browser)",
+		description:
+			"ChatGPT via your real Chrome browser session (CDP) — no API key needed. Log in to chatgpt.com once in the browser profile. Options (headless, debug, chromePath, profileDir, debugPort) in ~/.cline/chatgpt-web/config.json or CHATGPT_WEB_* env vars",
+		family: "chatgpt-web",
+		popular: 25,
+		capabilities: ["local-auth", "tools", "streaming"],
+		defaultModelId: "gpt-auto",
+		modelsFactory: () => ({
+			"gpt-auto": {
+				id: "gpt-auto",
+				name: "GPT Auto",
+				capabilities: ["streaming"],
+				contextWindow: 1_000_000,
 			},
 		}),
 		metadata: { usageCostDisplay: "hide" },
@@ -1268,6 +1288,27 @@ export const BUILTIN_SPECS: BuiltinSpec[] = mergeBuiltinSpecs(
 	GENERATED_PROVIDER_SPECS,
 	BUILTIN_SPEC_OVERRIDES,
 );
+
+/**
+ * True for a provider whose model list is fully self-contained (a static
+ * `modelsFactory`, not sourced from another provider's live catalog via
+ * `modelsProviderId`) AND has no live auth flow (`local-auth`, e.g. the
+ * browser-driven deepseek-web-v2/qwen-web providers). Such a provider can
+ * never gain anything from a live models.dev catalog fetch, so callers can
+ * skip that network round trip entirely instead of waiting on it every time
+ * the model picker opens for it.
+ *
+ * `modelsProviderId` only exists on the build-time `BuiltinSpec` (it is
+ * consumed to populate `ModelCollection.models` and is not carried on the
+ * runtime `ProviderInfo`), so this check has to run against `BUILTIN_SPECS`
+ * rather than `MODEL_COLLECTIONS_BY_PROVIDER_ID`.
+ */
+export function providerSkipsLiveCatalog(providerId: string): boolean {
+	const spec = BUILTIN_SPECS.find((s) => s.id === providerId);
+	return Boolean(
+		spec?.capabilities?.includes("local-auth") && !spec?.modelsProviderId,
+	);
+}
 
 const API_LINE_BASE_URLS_BY_PROVIDER_ID: ReadonlyMap<
 	string,

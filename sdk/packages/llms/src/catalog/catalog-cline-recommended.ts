@@ -133,11 +133,18 @@ export function normalizeClineRecommendedProviderModels(
 	return result;
 }
 
+// See the matching constant/comment in catalog-live.ts: without a timeout, a
+// stalled connection hangs this fetch forever instead of rejecting, which the
+// caller's `.catch(() => fallback)` can't recover from.
+const CLINE_RECOMMENDED_MODELS_FETCH_TIMEOUT_MS = 8_000;
+
 export async function fetchClineRecommendedModelsPayload(
 	fetcher: typeof fetch = fetch,
 ): Promise<ClineRecommendedModelsPayload> {
 	const url = `${getClineEnvironmentConfig().apiBaseUrl}/api/v1/ai/cline/recommended-models`;
-	const response = await fetcher(url);
+	const response = await fetcher(url, {
+		signal: AbortSignal.timeout(CLINE_RECOMMENDED_MODELS_FETCH_TIMEOUT_MS),
+	});
 	if (!response.ok) {
 		throw new Error(
 			`Failed to load Cline recommended models from ${url}: HTTP ${response.status}`,

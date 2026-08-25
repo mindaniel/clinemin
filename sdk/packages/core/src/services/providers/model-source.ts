@@ -52,11 +52,21 @@ export function extractModelIdsFromPayload(
 	return [];
 }
 
+// Without a timeout, a stalled connection (server not actually listening,
+// proxy misconfiguration) hangs this fetch forever instead of rejecting —
+// callers wrap this in `.catch()`, which only handles rejection, so an
+// unbounded fetch here surfaces as the model picker's "Loading ... models..."
+// dialog spinning indefinitely with no way to recover.
+const MODEL_SOURCE_FETCH_TIMEOUT_MS = 8_000;
+
 export async function fetchModelIdsFromSource(
 	url: string,
 	providerId: string,
 ): Promise<string[]> {
-	const response = await fetch(url, { method: "GET" });
+	const response = await fetch(url, {
+		method: "GET",
+		signal: AbortSignal.timeout(MODEL_SOURCE_FETCH_TIMEOUT_MS),
+	});
 	if (!response.ok) {
 		throw new Error(
 			`failed to fetch models from ${url}: HTTP ${response.status}`,

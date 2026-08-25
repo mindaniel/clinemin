@@ -25,6 +25,7 @@ import {
 	createOpenAICompatibleProvider,
 	createOpenAIProvider,
 	createOpenCodeProvider,
+	createChatGPTWebProvider,
 	createQwenWebProvider,
 	createSapAiCoreProvider,
 	createVertexProvider,
@@ -176,6 +177,8 @@ function resolveFactory(
 			return createDeepSeekWebV2Provider;
 		case "qwen-web":
 			return createQwenWebProvider;
+		case "chatgpt-web":
+			return createChatGPTWebProvider;
 		default:
 			return createOpenAICompatibleProvider;
 	}

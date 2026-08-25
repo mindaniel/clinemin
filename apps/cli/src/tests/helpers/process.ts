@@ -28,7 +28,7 @@ export interface RunOptions {
 	env?: NodeJS.ProcessEnv;
 	/** Stdin to pipe into the process */
 	stdin?: string;
-	/** Timeout in ms (default: 30_000) */
+	/** Timeout in ms (default: 60_000) */
 	timeout?: number;
 	/** Working directory for the spawned process */
 	cwd?: string;
@@ -45,7 +45,7 @@ export function runCline(args: string[], opts: RunOptions = {}): RunResult {
 		config = "default",
 		env: extraEnv = {},
 		stdin,
-		timeout = 30_000,
+		timeout = 60_000,
 		cwd = process.cwd(),
 	} = opts;
 

@@ -3,7 +3,12 @@ import type {
 	ModelInfo,
 	ProviderInfo,
 } from "../catalog/types";
-import { BUILTIN_PROVIDER_COLLECTION_LIST } from "./builtins";
+import {
+	BUILTIN_PROVIDER_COLLECTION_LIST,
+	providerSkipsLiveCatalog,
+} from "./builtins";
+
+export { providerSkipsLiveCatalog };
 
 function buildInitialRegistry(): Map<string, ModelCollection> {
 	const map = new Map<string, ModelCollection>();

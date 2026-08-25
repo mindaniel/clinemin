@@ -30,6 +30,7 @@ export {
 	getProviderIds,
 	hasProvider,
 	MODEL_COLLECTIONS_BY_PROVIDER_ID,
+	providerSkipsLiveCatalog,
 	registerModel,
 	registerProvider,
 	resetRegistry,

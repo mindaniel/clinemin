@@ -1,4 +1,4 @@
-import type { DeepSeekWebV2ChatEntry } from "@cline/llms";
+import type { DeepSeekWebV2ChatEntry, QwenWebChatEntry } from "@cline/llms";
 import type { ChoiceContext } from "@opentui-ui/dialog";
 import { useDialogKeyboard } from "@opentui-ui/dialog/react";
 import { useState } from "react";
@@ -9,24 +9,26 @@ import {
 	useSearchableList,
 } from "../searchable-list";
 
+export type WebChatEntry = DeepSeekWebV2ChatEntry | QwenWebChatEntry;
+
 /**
  * Dialog content for `/findchat`: a searchable list of the persisted
- * DeepSeek Web v2 chats. Press Enter (or click) to pick one ? resolves with its
+ * Web chats. Press Enter (or click) to pick one -> resolves with its
  * `sessionId`; Escape dismisses.
  *
  * Delete: press 'd' to mark a chat for deletion, then 'y' to confirm or 'n' to cancel.
  */
 export function FindChatDialogContent(
-	props: ChoiceContext<string> & { chats: DeepSeekWebV2ChatEntry[]; onDelete: (chatKey: string) => Promise<void> | void },
+	props: ChoiceContext<string> & { chats: WebChatEntry[]; onDelete: (chatKey: string) => Promise<void> | void; providerName: string },
 ) {
-	const { resolve, dismiss, dialogId, chats: initialChats, onDelete } = props;
+	const { resolve, dismiss, dialogId, chats: initialChats, onDelete, providerName } = props;
 	const [chats, setChats] = useState(initialChats);
 	const [confirmDelete, setConfirmDelete] = useState<string | null>(null);
 
 	const items: SearchableItem[] = chats.map((chat) => ({
 		key: chat.sessionId,
 		label: `${new Date(chat.lastActive).toLocaleString()} � ${chat.sessionId}`,
-		section: "DeepSeek Web v2 chats",
+		section: providerName,
 		searchText: `${chat.sessionId} ${chat.chatKey} ${chat.lastActive}`,
 	}));
 
@@ -92,7 +94,7 @@ export function FindChatDialogContent(
 
 	return (
 		<box flexDirection="column" gap={1}>
-			<text>Find a DeepSeek Web v2 chat ({chats.length} found)</text>
+			<text>Find a {providerName} chat ({chats.length} found)</text>
 
 			<box border borderStyle="rounded" borderColor="gray" paddingX={1}>
 				<input

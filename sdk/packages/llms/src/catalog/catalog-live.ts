@@ -356,11 +356,22 @@ export function normalizeModelsDevProviderSpecs(
 	return providerSpecs;
 }
 
+/**
+ * Bounds every live-catalog fetch below. Without it a stalled connection
+ * (flaky network, proxy, DNS black hole) hangs the promise forever instead of
+ * rejecting — the caller's `.catch(() => fallback)` only handles rejection,
+ * so an unbounded fetch here surfaces as the model picker's "Loading ...
+ * models..." dialog spinning indefinitely with no way to recover.
+ */
+const LIVE_CATALOG_FETCH_TIMEOUT_MS = 8_000;
+
 async function fetchModelsDevPayload(
 	url: string,
 	fetcher: typeof fetch = fetch,
 ): Promise<ModelsDevPayload> {
-	const response = await fetcher(url);
+	const response = await fetcher(url, {
+		signal: AbortSignal.timeout(LIVE_CATALOG_FETCH_TIMEOUT_MS),
+	});
 	if (!response.ok) {
 		throw new Error(
 			`Failed to load model catalog from ${url}: HTTP ${response.status}`,

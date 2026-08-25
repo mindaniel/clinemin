@@ -833,6 +833,10 @@ export class CdpClient {
 		this.listeners.get(method)?.add(cb);
 	}
 
+	off(method: string, cb: (params: any, sessionId?: string) => void): void {
+		this.listeners.get(method)?.delete(cb);
+	}
+
 	close(): void {
 		this.ws.close();
 	}
@@ -1291,14 +1295,21 @@ async function streamCompletionFromPage(input: {
 	// Observe the completion response like browser.py's page.on("response") —
 	// the Network domain watches without pausing the request, and the body is
 	// only read after `loadingFinished` confirms it is fully written.
-	cdp.on("Network.responseReceived", (event: any) => {
+	// Scoped to this call's own CDP sessionId and unregistered in `finally` —
+	// without both, a listener from an earlier turn stays registered on the
+	// shared `activeCdp` (module-level singleton) forever, still fires on every
+	// later turn's events, and races the current turn's own listener for
+	// `Network.getResponseBody`. That's what made capture flaky "after a while".
+	const onResponseReceived = (event: any, eventSessionId?: string) => {
+		if (eventSessionId !== sessionId) return;
 		const url: string = event.response?.url ?? "";
 		if (!url.includes("chat/completion")) return;
 		if (event.response?.status !== 200) return;
 		completionRequestId = event.requestId;
 		debugLog(`completion response received (${url})`);
-	});
-	cdp.on("Network.loadingFinished", async (event: any) => {
+	};
+	const onLoadingFinished = async (event: any, eventSessionId?: string) => {
+		if (eventSessionId !== sessionId) return;
 		if (event.requestId !== completionRequestId) return;
 		debugLog("completion body fully written — reading it");
 		try {
@@ -1317,7 +1328,9 @@ async function streamCompletionFromPage(input: {
 		} catch (err) {
 			sink.error(err);
 		}
-	});
+	};
+	cdp.on("Network.responseReceived", onResponseReceived);
+	cdp.on("Network.loadingFinished", onLoadingFinished);
 
 	try {
 		await cdp.send("Network.enable", {}, sessionId);
@@ -1399,6 +1412,8 @@ async function streamCompletionFromPage(input: {
 					: ""),
 		);
 	} finally {
+		cdp.off("Network.responseReceived", onResponseReceived);
+		cdp.off("Network.loadingFinished", onLoadingFinished);
 		await cdp.send("Network.disable", {}, sessionId).catch(() => {});
 		sink.close();
 	}
@@ -1417,7 +1432,7 @@ async function editLastUserMessage(
     logger?: BasicLogger,
 ): Promise<boolean> {
     const script = `
-        (() => {
+        (async () => {
             // Find all user messages (exclude assistant/thinking blocks)
             const userMessages = Array.from(document.querySelectorAll('.ds-message')).filter(msg => {
                 if (msg.textContent.includes('Thought for')) return false;
@@ -1938,7 +1953,7 @@ function hasLeadingCompactionSummary(prompt: LanguageModelV2Prompt): boolean {
  *    state) is re-seeded with what was compacted. The summary is kept alongside
  *    the current user prompt and any trailing tool results.
  */
-function buildLeanConversation(
+export function buildLeanConversation(
 	prompt: LanguageModelV2Prompt,
 	preserveCompactionContext = false,
 ): LanguageModelV2Prompt {
@@ -2074,7 +2089,7 @@ export function buildPrompt(
  * current directive — frame it as "Note:" instead of "Previous user message:"
  * (stale context). Any other final user message keeps the generic label.
  */
-function continuationLabel(
+export function continuationLabel(
 	conversation: LanguageModelV2Prompt,
 ): string | undefined {
 	const last = conversation[conversation.length - 1];
@@ -2219,18 +2234,7 @@ function createDeepSeekWebV2Model(
 
 		if (functionTools.length > 0) {
 			const toolNames = functionTools.map((t) => t.name);
-			
-			// Check for malformed tool tag before parsing
-			const malformedError = detectMalformedToolTag(text);
-			if (malformedError) {
-				return {
-					text: text + "\n\n" + malformedError,
-					reasoning,
-					toolCalls: [],
-					usage,
-				};
-			}
-			
+
 			const { cleanedContent, toolCalls } = parseDeepSeekToolCalls(
 				text,
 				toolNames,
@@ -2248,6 +2252,19 @@ function createDeepSeekWebV2Model(
 					? `${cleanedContent}\n\n${looseRetry}`.trim()
 					: cleanedContent;
 				return { text: looseText, reasoning, toolCalls: validatedLoose, usage };
+			}
+			// Both parsers above already repair a `<tool` tag whose `>` was
+			// dropped before the JSON body — only surface the malformed-tag
+			// hint when that repair still couldn't recover a call (e.g. the
+			// JSON body itself is broken too).
+			const malformedError = detectMalformedToolTag(text);
+			if (malformedError) {
+				return {
+					text: text + "\n\n" + malformedError,
+					reasoning,
+					toolCalls: [],
+					usage,
+				};
 			}
 			// The web model often ignores the <tool> contract and answers with
 			// plain text (a plan, code fences, install commands). If no

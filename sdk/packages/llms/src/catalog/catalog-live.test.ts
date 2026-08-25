@@ -610,7 +610,10 @@ describe("models-dev-catalog", () => {
 			fetcher as unknown as typeof fetch,
 		);
 
-		expect(fetcher).toHaveBeenCalledWith("https://models.dev/api.json");
+		expect(fetcher).toHaveBeenCalledWith(
+			"https://models.dev/api.json",
+			expect.objectContaining({ signal: expect.anything() }),
+		);
 		expect(result["openai-native"]).toHaveProperty("gpt-live");
 	});
 
@@ -654,9 +657,13 @@ describe("models-dev-catalog", () => {
 			fetcher as unknown as typeof fetch,
 		);
 
-		expect(fetcher).toHaveBeenCalledWith("https://models.dev/api.json");
+		expect(fetcher).toHaveBeenCalledWith(
+			"https://models.dev/api.json",
+			expect.objectContaining({ signal: expect.anything() }),
+		);
 		expect(fetcher).toHaveBeenCalledWith(
 			"https://api.cline.bot/api/v1/ai/cline/recommended-models",
+			expect.objectContaining({ signal: expect.anything() }),
 		);
 		expect(result.openrouter).toHaveProperty("vendor/live-base-model");
 		expect(result["cline-pass"]?.["cline-pass/live-base-model"]).toMatchObject({

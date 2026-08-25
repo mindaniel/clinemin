@@ -891,10 +891,21 @@ export async function resolveProviderConfig(
 		return undefined;
 	}
 
+	// Providers whose model list is fully self-contained (a static
+	// `modelsFactory`, not sourced from another provider's live catalog via
+	// `modelsProviderId`) can never gain anything from the live models.dev +
+	// Cline-recommended fetch — e.g. the browser-driven deepseek-web-v2 and
+	// qwen-web providers, which have no API to report new models from at all.
+	// Skipping it here means switching to/within these providers is an
+	// instant local config change instead of waiting on a network round trip
+	// that was always going to resolve to "no additional models found".
+	const skipLiveCatalog = Llms.providerSkipsLiveCatalog(providerId);
+
 	try {
-		const liveCatalog = modelCatalog?.loadLatestOnInit
-			? await getLiveModelsCatalog(modelCatalog)
-			: undefined;
+		const liveCatalog =
+			modelCatalog?.loadLatestOnInit && !skipLiveCatalog
+				? await getLiveModelsCatalog(modelCatalog)
+				: undefined;
 		const liveModels = liveCatalog
 			? resolveCatalogModels(providerId, liveCatalog)
 			: {};

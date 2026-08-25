@@ -26,6 +26,7 @@ export {
 	isCanonicalModelIdForAliasRules,
 	MODEL_COLLECTIONS_BY_PROVIDER_ID,
 	preferCanonicalModelIds,
+	providerSkipsLiveCatalog,
 	registerModel,
 	registerProvider,
 	resetRegistry,
@@ -108,7 +109,7 @@ export {
 	type ResolveProviderRequestHeadersInput,
 	resolveProviderRequestHeaders,
 } from "./providers/request-headers";
-// DeepSeek Web v2 chat-session helpers (used by the CLI `/findchat` command).
+// Web chat-session helpers (used by the CLI `/findchat` command).
 export {
 	type DeepSeekWebV2ChatEntry,
 	deleteChatSession,
@@ -116,6 +117,20 @@ export {
 	openDeepSeekWebV2Chat,
 	resolveDeepSeekWebV2Config,
 } from "./providers/vendors/deepseek-web-v2";
+export {
+	type QwenWebChatEntry,
+	deleteQwenChatSession,
+	listQwenWebChats,
+	openQwenWebChat,
+	resolveQwenWebV2Config,
+} from "./providers/vendors/qwen-web";
+export {
+	type ChatGPTWebChatEntry,
+	deleteChatGPTChatSession,
+	listChatGPTWebChats,
+	openChatGPTWebChat,
+	resolveChatGPTWebV2Config,
+} from "./providers/vendors/chatgpt-web";
 export {
 	defaultModelsDir as llamaCppDefaultModelsDir,
 	ensureLlamaCppRunning,
