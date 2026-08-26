@@ -7,6 +7,7 @@ import {
 	setToolAutoApproveGlobally,
 	type UserInstructionConfigService,
 } from "@cline/core";
+import { setContinuationNote } from "@cline/llms";
 import { formatModeSwitchNotice } from "@cline/shared";
 import type { CliMigrationNotice } from "../kanban-migration/notice";
 import { logCliError } from "../logging/errors";
@@ -31,6 +32,7 @@ import { disableOpenTuiGraphicsProbe } from "../tui/opentui-env";
 import type { QueuedPromptItem, TuiStartupTarget } from "../tui/types";
 import { type ChatCommandState, chatCommandHost } from "../utils/chat-commands";
 import { applyCliCompactionMode } from "../utils/compaction-mode";
+import { readProjectContinuationNote } from "../utils/continuation-note";
 import {
 	shouldZeroClineFreeModelCost,
 	zeroCliAgentEventCost,
@@ -188,6 +190,10 @@ export async function runInteractive(
 	},
 ): Promise<void> {
 	assertInteractivePreflight(config);
+
+	// Apply this project's post-tool continuation note before any turn runs. The
+	// runtime appends it after each round of tool execution; `/note` changes it.
+	setContinuationNote(readProjectContinuationNote(config.cwd));
 
 	const initialRepoStatus = await readRepoStatus(config.cwd);
 	const workflowSlashCommands = listInteractiveSlashCommands(

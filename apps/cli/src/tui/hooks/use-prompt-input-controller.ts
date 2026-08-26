@@ -418,6 +418,19 @@ export function usePromptInputController(input: {
 		submitRef.current();
 	}, [initialPrompt]);
 
+	/**
+	 * Submit `text` as if the user had typed it. Used by local commands that
+	 * need to kick off a turn on their own (e.g. `/paste`, which queues a
+	 * manually recovered reply and then needs a turn to consume it).
+	 */
+	const submitText = useCallback((text: string) => {
+		const prompt = text.trim();
+		if (!prompt) return;
+		inputValueRef.current = prompt;
+		setInputValue(prompt);
+		submitRef.current();
+	}, []);
+
 	const handleSubmit = useCallback(() => {
 		if (autocomplete.mode) {
 			const opts = autocomplete.getFilteredOptions();
@@ -494,6 +507,7 @@ export function usePromptInputController(input: {
 		focusTextarea,
 		refocusTextarea,
 		submitInitialPrompt,
+		submitText,
 		selectAutocompleteOption,
 		handleImagePaste,
 		handleLargeTextPaste,

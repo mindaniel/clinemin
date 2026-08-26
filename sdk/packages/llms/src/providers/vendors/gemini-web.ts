@@ -1,7 +1,7 @@
 /**
- * ChatGPT Web ("chatgpt-web") provider.
+ * Gemini Web ("gemini-web") provider.
  *
- * Drives the real ChatGPT web client (chatgpt.com) through your installed Chrome
+ * Drives the real Gemini web client (gemini.google.com) through your installed Chrome
  * via the DevTools Protocol — no API key needed.
  */
 
@@ -49,13 +49,13 @@ import {
 import { validateToolCalls } from "./tool-pipeline/tool-dispatcher";
 import type { ProviderFactoryResult } from "./types";
 
-const CONFIG_DIR = path.join(os.homedir(), ".cline", "chatgpt-web");
+const CONFIG_DIR = path.join(os.homedir(), ".cline", "gemini-web");
 const CONFIG_FILE = path.join(CONFIG_DIR, "config.json");
 const DEFAULT_CHATS_FILE = path.join(CONFIG_DIR, "chats.json");
-const CHATGPT_WEB_URL = "https://chatgpt.com/";
-const CHATGPT_API_ENDPOINT = "/backend-api/f/conversation";
+const GEMINI_WEB_URL = "https://gemini.google.com/";
+const GEMINI_API_ENDPOINT = "/StreamGenerate";
 
-const DEFAULT_DEBUG_PORT = 9224;
+const DEFAULT_DEBUG_PORT = 9226;
 const DEFAULT_LAUNCH_TIMEOUT_MS = 30000;
 const DEFAULT_RESPONSE_TIMEOUT_MS = 1200000; // Increased to 1200s (20 mins) to prevent premature timeout on long thinking/tool calls
 const DEFAULT_LOGIN_TIMEOUT_MS = 120000;
@@ -69,23 +69,23 @@ const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
 /**
  * One-shot "recover from a throttle/block" signal, mirroring deepseek-web-v2's
  * own flag (kept separate — this provider drives an unrelated tab/profile, so
- * the two must never share recovery state). When ChatGPT rate-limits a turn, the
+ * the two must never share recovery state). When Gemini rate-limits a turn, the
  * page can be left blocked; the next `runCompletion` forces a full reload even
  * if the URL already matches to clear it. Consumed (reset) after one reload.
  */
-let chatgptRecoverFromThrottle = false;
+let geminiRecoverFromThrottle = false;
 
-function requestChatGPTThrottleRecoveryReload(): void {
-	chatgptRecoverFromThrottle = true;
+function requestGeminiThrottleRecoveryReload(): void {
+	geminiRecoverFromThrottle = true;
 }
 
-function consumeChatGPTThrottleRecoveryReload(): boolean {
-	const shouldReload = chatgptRecoverFromThrottle;
-	chatgptRecoverFromThrottle = false;
+function consumeGeminiThrottleRecoveryReload(): boolean {
+	const shouldReload = geminiRecoverFromThrottle;
+	geminiRecoverFromThrottle = false;
 	return shouldReload;
 }
 
-export interface ChatGPTWebV2RuntimeConfig {
+export interface GeminiWebV2RuntimeConfig {
 	chromePath?: string;
 	profileDir?: string;
 	debugPort: number;
@@ -109,14 +109,14 @@ interface ChatSessionRecord {
 	last_active: string;
 }
 
-export interface ChatGPTWebChatEntry {
+export interface GeminiWebChatEntry {
 	chatKey: string;
 	sessionId: string;
 	firstSeen: string;
 	lastActive: string;
 }
 
-function readConfigFile(): Partial<ChatGPTWebV2RuntimeConfig> {
+function readConfigFile(): Partial<GeminiWebV2RuntimeConfig> {
 	try {
 		return JSON.parse(fs.readFileSync(CONFIG_FILE, "utf-8"));
 	} catch {
@@ -124,56 +124,56 @@ function readConfigFile(): Partial<ChatGPTWebV2RuntimeConfig> {
 	}
 }
 
-export function resolveChatGPTWebV2Config(): ChatGPTWebV2RuntimeConfig {
+export function resolveGeminiWebV2Config(): GeminiWebV2RuntimeConfig {
 	const fileConfig = readConfigFile();
 	const port =
-		Number(process.env.CHATGPT_WEB_DEBUG_PORT ?? fileConfig.debugPort) ||
+		Number(process.env.GEMINI_WEB_DEBUG_PORT ?? fileConfig.debugPort) ||
 		DEFAULT_DEBUG_PORT;
 	return {
-		chromePath: process.env.CHATGPT_WEB_CHROME_PATH || fileConfig.chromePath,
-		profileDir: process.env.CHATGPT_WEB_PROFILE_DIR || fileConfig.profileDir,
+		chromePath: process.env.GEMINI_WEB_CHROME_PATH || fileConfig.chromePath,
+		profileDir: process.env.GEMINI_WEB_PROFILE_DIR || fileConfig.profileDir,
 		debugPort: port,
 		headless:
-			process.env.CHATGPT_WEB_HEADLESS !== undefined
-				? process.env.CHATGPT_WEB_HEADLESS !== "false"
+			process.env.GEMINI_WEB_HEADLESS !== undefined
+				? process.env.GEMINI_WEB_HEADLESS !== "false"
 				: (fileConfig.headless ?? false),
 		debug:
-			process.env.CHATGPT_WEB_DEBUG !== undefined
-				? process.env.CHATGPT_WEB_DEBUG !== "false"
+			process.env.GEMINI_WEB_DEBUG !== undefined
+				? process.env.GEMINI_WEB_DEBUG !== "false"
 				: (fileConfig.debug ?? false),
 		launchTimeoutMs:
 			Number(
-				process.env.CHATGPT_WEB_LAUNCH_TIMEOUT_MS ?? fileConfig.launchTimeoutMs,
+				process.env.GEMINI_WEB_LAUNCH_TIMEOUT_MS ?? fileConfig.launchTimeoutMs,
 			) || DEFAULT_LAUNCH_TIMEOUT_MS,
 		responseTimeoutMs:
 			Number(
-				process.env.CHATGPT_WEB_RESPONSE_TIMEOUT_MS ??
+				process.env.GEMINI_WEB_RESPONSE_TIMEOUT_MS ??
 					fileConfig.responseTimeoutMs,
 			) || DEFAULT_RESPONSE_TIMEOUT_MS,
 		loginTimeoutMs:
 			Number(
-				process.env.CHATGPT_WEB_LOGIN_TIMEOUT_MS ?? fileConfig.loginTimeoutMs,
+				process.env.GEMINI_WEB_LOGIN_TIMEOUT_MS ?? fileConfig.loginTimeoutMs,
 			) || DEFAULT_LOGIN_TIMEOUT_MS,
 		chatsFile:
-			process.env.CHATGPT_WEB_CHATS_FILE ||
+			process.env.GEMINI_WEB_CHATS_FILE ||
 			fileConfig.chatsFile ||
 			DEFAULT_CHATS_FILE,
 		minSendDelayMs:
 			Number(
-				process.env.CHATGPT_WEB_MIN_SEND_DELAY_MS ?? fileConfig.minSendDelayMs,
+				process.env.GEMINI_WEB_MIN_SEND_DELAY_MS ?? fileConfig.minSendDelayMs,
 			) || DEFAULT_MIN_SEND_DELAY_MS,
 		maxSendDelayMs:
 			Number(
-				process.env.CHATGPT_WEB_MAX_SEND_DELAY_MS ?? fileConfig.maxSendDelayMs,
+				process.env.GEMINI_WEB_MAX_SEND_DELAY_MS ?? fileConfig.maxSendDelayMs,
 			) || DEFAULT_MAX_SEND_DELAY_MS,
 		toolTurnExtraMinMs:
 			Number(
-				process.env.CHATGPT_WEB_TOOL_TURN_EXTRA_MIN_MS ??
+				process.env.GEMINI_WEB_TOOL_TURN_EXTRA_MIN_MS ??
 					fileConfig.toolTurnExtraMinMs,
 			) || DEFAULT_TOOL_TURN_EXTRA_MIN_MS,
 		toolTurnExtraMaxMs:
 			Number(
-				process.env.CHATGPT_WEB_TOOL_TURN_EXTRA_MAX_MS ??
+				process.env.GEMINI_WEB_TOOL_TURN_EXTRA_MAX_MS ??
 					fileConfig.toolTurnExtraMaxMs,
 			) || DEFAULT_TOOL_TURN_EXTRA_MAX_MS,
 	};
@@ -363,7 +363,7 @@ async function waitForEndpoint(port: number, timeoutMs: number): Promise<void> {
 }
 
 async function connectBrowser(
-	config: ChatGPTWebV2RuntimeConfig,
+	config: GeminiWebV2RuntimeConfig,
 ): Promise<CdpClient> {
 	const key = `${config.debugPort}`;
 	if (activeCdp && activeCdpKey === key && activeCdp.isOpen()) {
@@ -381,7 +381,7 @@ async function connectBrowser(
 	const executablePath = config.chromePath ?? findChromePath();
 	if (!executablePath) {
 		throw new Error(
-			"Could not find Chrome. Set chromePath in ~/.cline/chatgpt-web/config.json or CHATGPT_WEB_CHROME_PATH.",
+			"Could not find Chrome. Set chromePath in ~/.cline/gemini-web/config.json or GEMINI_WEB_CHROME_PATH.",
 		);
 	}
 	const profileDir = config.profileDir ?? path.join(CONFIG_DIR, "profile");
@@ -393,7 +393,7 @@ async function connectBrowser(
 		"--no-first-run",
 		"--no-default-browser-check",
 		"--remote-allow-origins=*",
-		CHATGPT_WEB_URL,
+		GEMINI_WEB_URL,
 	];
 	if (config.headless) args.push("--headless=new");
 
@@ -407,8 +407,8 @@ async function connectBrowser(
 		await waitForEndpoint(config.debugPort, config.launchTimeoutMs);
 	} catch (err) {
 		throw new Error(
-			`Failed to launch Chrome for ChatGPT Web: ${(err as Error).message}. ` +
-				"If Chrome is already running with this profile, close it or set a different CHATGPT_WEB_PROFILE_DIR.",
+			`Failed to launch Chrome for Gemini Web: ${(err as Error).message}. ` +
+				"If Chrome is already running with this profile, close it or set a different GEMINI_WEB_PROFILE_DIR.",
 		);
 	}
 	activeCdp = await connectCdp(config.debugPort, connectTimeoutMs);
@@ -416,199 +416,91 @@ async function connectBrowser(
 	return activeCdp;
 }
 
-// ── Enhanced ChatGPT send script (from send_chatgpt.txt) ──────────────────────────
+// ── Enhanced Gemini send script (from send_gemini.txt) ──────────────────────────
 const SEND_MESSAGE_SOURCE = `
-// ---------- 1. Toggle "Think" mode ----------
-async function setChatGPTThink(enable) {
-    const thinkBtn = Array.from(document.querySelectorAll('button')).find(btn => {
-        const text = btn.textContent.trim();
-        return text === 'Think' || text.includes('Think');
-    });
-
-    if (!thinkBtn) {
-        console.warn('⚠️ Think button not found');
-        return false;
-    }
-
-    const isPressed = thinkBtn.getAttribute('aria-pressed') === 'true';
-    if (enable === isPressed) {
-        console.log('🧠 Think already ' + (enable ? 'ON' : 'OFF'));
-        return true;
-    }
-
-    thinkBtn.click();
-    console.log('🧠 Think ' + (enable ? 'ENABLED' : 'DISABLED'));
-
-    await new Promise(resolve => setTimeout(resolve, 300));
-    return true;
-}
-
-// ---------- 2. Set text in ProseMirror contenteditable ----------
-async function setChatGPTInput(message) {
-    console.log('🔍 Step 1: Looking for input editor...');
-    const editor = document.querySelector('#prompt-textarea');
+// ---------- 1. Set text in Quill editor ----------
+async function setGeminiInput(message) {
+    const editor = document.querySelector('.ql-editor.textarea.new-input-ui') ||
+                   document.querySelector('[data-test-id="textarea-inner"] .ql-editor') ||
+                   document.querySelector('[contenteditable="true"][role="textbox"]');
     if (!editor) {
-        console.error('❌ Input editor #prompt-textarea not found');
+        console.error('Input editor not found');
         return false;
     }
-    console.log('✅ Found editor:', editor);
 
-    // Focus the editor
-    console.log('🔍 Step 2: Focusing editor...');
     editor.focus();
-
-    // Clear existing content (select all)
-    console.log('🔍 Step 3: Selecting existing content to clear...');
     const selection = window.getSelection();
     const range = document.createRange();
     range.selectNodeContents(editor);
     selection.removeAllRanges();
     selection.addRange(range);
 
-    // Method 1: Use execCommand to insert text (works well with ProseMirror)
-    console.log('🔍 Step 4: Inserting text via execCommand...');
     try {
-        const success = document.execCommand('insertText', false, message);
-        console.log('✍️ Text inserted via execCommand, success:', success);
+        document.execCommand('insertText', false, message);
     } catch (e) {
-        console.warn('⚠️ execCommand failed, trying innerHTML fallback:', e);
-        // Method 2: Fallback – set innerHTML and dispatch input event
         editor.innerHTML = '<p>' + message + '</p>';
-        editor.dispatchEvent(new InputEvent('input', {
-            bubbles: true,
-            inputType: 'insertText',
-            data: message
-        }));
-        console.log('✍️ Text inserted via innerHTML fallback');
     }
 
-    // Dispatch a secondary input event to ensure React state updates
-    console.log('🔍 Step 5: Dispatching secondary input event for React...');
     editor.dispatchEvent(new InputEvent('input', {
         bubbles: true,
         inputType: 'insertText',
         data: message
     }));
 
-    // Wait for the send button to become enabled
-    console.log('🔍 Step 6: Waiting 500ms for send button to enable...');
-    await new Promise(resolve => setTimeout(resolve, 500));
-    
-    console.log('✅ setChatGPTInput completed successfully');
+    await new Promise(resolve => setTimeout(resolve, 300));
     return true;
 }
 
-// ---------- 3. Click the send button ----------
-async function clickChatGPTSend() {
-    const selectors = [
-        'button[data-testid="send-button"]',
-        'button[aria-label="Send"]',
-        'button[aria-label="Send message"]',
-        'button[type="submit"]',
-        'form button[type="submit"]',
-        'button[class*="send"]'
-    ];
-
-    let sendBtn = null;
-    // Try each selector with a small delay between attempts
-    for (const sel of selectors) {
-        sendBtn = document.querySelector(sel);
-        if (sendBtn && !sendBtn.disabled) {
-            break;
+// ---------- 2. Click the send button ----------
+async function waitForSendButton(timeout) {
+    timeout = timeout || 4000;
+    const start = Date.now();
+    while (Date.now() - start < timeout) {
+        const selectors = [
+            '[data-test-id="send-button"]',
+            'button[aria-label*="Send"]',
+            'button[class*="send"]',
+            'button[type="submit"]'
+        ];
+        for (const sel of selectors) {
+            const btn = document.querySelector(sel);
+            if (btn && !btn.disabled) return btn;
         }
-        // Wait a bit before trying the next selector
-        await new Promise(resolve => setTimeout(resolve, 100));
+        await new Promise(resolve => setTimeout(resolve, 200));
     }
+    return null;
+}
 
-    // If not found, look for the icon arrow-up button
-    if (!sendBtn || sendBtn.disabled) {
-        sendBtn = Array.from(document.querySelectorAll('button')).find(btn => {
-            const svg = btn.querySelector('svg');
-            const label = (btn.getAttribute('aria-label') || '').toLowerCase();
-            // Look for SVG with arrow-up or send icon
-            if (svg) {
-                const innerHTML = svg.innerHTML.toLowerCase();
-                const hasArrow = innerHTML.includes('arrow') || innerHTML.includes('send') || innerHTML.includes('up');
-                if (hasArrow || label.includes('send')) {
-                    return !btn.disabled;
-                }
-            }
-            return svg && label.includes('send') && !btn.disabled;
-        });
-    }
-
-    if (!sendBtn || sendBtn.disabled) {
-        console.warn('⚠️ Send button not found or disabled, trying Enter key');
-        const editor = document.querySelector('#prompt-textarea') || document.querySelector('div[contenteditable="true"]');
+async function clickGeminiSend() {
+    const sendBtn = await waitForSendButton();
+    if (sendBtn) {
+        sendBtn.dispatchEvent(new MouseEvent('mousedown', { bubbles: true }));
+        sendBtn.dispatchEvent(new MouseEvent('mouseup', { bubbles: true }));
+        sendBtn.click();
+    } else {
+        const editor = document.querySelector('.ql-editor.textarea.new-input-ui') ||
+                       document.querySelector('[contenteditable="true"][role="textbox"]');
         if (editor) {
-            // Try both keydown and keypress events
             editor.dispatchEvent(new KeyboardEvent('keydown', {
                 key: 'Enter',
                 code: 'Enter',
                 keyCode: 13,
                 which: 13,
-                bubbles: true,
-                cancelable: true
+                bubbles: true
             }));
-            editor.dispatchEvent(new KeyboardEvent('keypress', {
-                key: 'Enter',
-                code: 'Enter',
-                keyCode: 13,
-                which: 13,
-                bubbles: true,
-                cancelable: true
-            }));
-            // Also try a simulated Enter on the textarea if it exists
-            if (editor.tagName === 'TEXTAREA' || editor.tagName === 'INPUT') {
-                editor.dispatchEvent(new KeyboardEvent('keydown', {
-                    key: 'Enter',
-                    code: 'Enter',
-                    keyCode: 13,
-                    which: 13,
-                    bubbles: true,
-                    cancelable: true
-                }));
-            }
         }
-        return true;
     }
-
-    // Ensure the button is fully visible and clickable
-    try {
-        sendBtn.scrollIntoView({ block: 'center', behavior: 'instant' });
-    } catch (e) {}
-
-    // Simulate a full click
-    sendBtn.dispatchEvent(new MouseEvent('mousedown', { bubbles: true }));
-    sendBtn.dispatchEvent(new MouseEvent('mouseup', { bubbles: true }));
-    sendBtn.click();
-    console.log('🖱️ Send button clicked');
     return true;
 }
 
-// ---------- 4. Main function ----------
-async function sendMessageToChatGPT(message, options) {
+// ---------- 3. Main function ----------
+async function sendMessageToGemini(message, options) {
     options = options || {};
-    const think = options.think !== undefined ? options.think : null; // true/false or null to skip
-
-    // Toggle Think if requested
-    if (think !== null) {
-        await setChatGPTThink(think);
-    }
-
-    // Set the message text
-    const inputSuccess = await setChatGPTInput(message);
-    if (!inputSuccess) {
-        console.error('❌ Failed to set input text');
-        return false;
-    }
-
-    // Wait for send button to become enabled
+    const inputSuccess = await setGeminiInput(message);
+    if (!inputSuccess) return false;
     await new Promise(resolve => setTimeout(resolve, 500));
-
-    // Send the message
-    await clickChatGPTSend();
-    console.log('✅ Message sent: ' + message);
+    await clickGeminiSend();
+    console.log('Message sent');
     return true;
 }
 `;
@@ -620,7 +512,7 @@ function buildSendScript(
 	const opts = options || {};
 	return `(async () => {
         ${SEND_MESSAGE_SOURCE}
-        await sendMessageToChatGPT(${JSON.stringify(prompt)}, ${JSON.stringify(opts)});
+        await sendMessageToGemini(${JSON.stringify(prompt)}, ${JSON.stringify(opts)});
     })(); true;`;
 }
 
@@ -644,18 +536,18 @@ function writeChatRegistry(
 		fs.mkdirSync(path.dirname(chatsFile), { recursive: true });
 		fs.writeFileSync(chatsFile, JSON.stringify(registry, null, 2), "utf-8");
 	} catch (error) {
-		console.warn(`[chatgpt-web] failed to persist chat registry: ${error}`);
+		console.warn(`[gemini-web] failed to persist chat registry: ${error}`);
 	}
 }
 
-export function lookupChatGPTChatSession(
+export function lookupGeminiChatSession(
 	chatsFile: string,
 	chatKey: string,
 ): string | undefined {
 	return readChatRegistry(chatsFile)[chatKey]?.session_id;
 }
 
-export function recordChatGPTChatSession(
+export function recordGeminiChatSession(
 	chatsFile: string,
 	chatKey: string,
 	sessionId: string,
@@ -670,7 +562,7 @@ export function recordChatGPTChatSession(
 	writeChatRegistry(chatsFile, registry);
 }
 
-export function deleteChatGPTChatSession(
+export function deleteGeminiChatSession(
 	chatsFile: string,
 	chatKey: string,
 ): void {
@@ -712,13 +604,13 @@ function lastUserText(prompt: LanguageModelV2Prompt): string {
 	return "";
 }
 
-export function extractChatGPTSessionId(url: string): string | undefined {
-	const match = /\/c\/([a-f0-9-]+)/.exec(url);
+export function extractGeminiSessionId(url: string): string | undefined {
+	const match = /\/app\/([a-f0-9]+)/.exec(url);
 	return match?.[1] ?? undefined;
 }
 
-export function listChatGPTWebChats(): ChatGPTWebChatEntry[] {
-	const config = resolveChatGPTWebV2Config();
+export function listGeminiWebChats(): GeminiWebChatEntry[] {
+	const config = resolveGeminiWebV2Config();
 	const registry = readChatRegistry(config.chatsFile);
 	return Object.entries(registry)
 		.map(([chatKey, record]) => ({
@@ -731,21 +623,22 @@ export function listChatGPTWebChats(): ChatGPTWebChatEntry[] {
 }
 
 /**
- * Opens an existing ChatGPT Web chat in the browser driven by this provider.
+ * Opens an existing Gemini Web chat in the browser driven by this provider.
  * This is what the CLI `/findchat` command calls after you pick a chat.
  */
-export async function openChatGPTWebChat(
+export async function openGeminiWebChat(
 	sessionId: string,
 ): Promise<{ sessionId: string; url: string }> {
-	const config = resolveChatGPTWebV2Config();
+	const config = resolveGeminiWebV2Config();
 	const cdp = await connectBrowser(config);
 	const targets = await cdp.send("Target.getTargets");
 	let pageTarget = targets.targetInfos?.find(
-		(t: any) => t.type === "page" && t.url?.startsWith("https://chatgpt.com"),
+		(t: any) =>
+			t.type === "page" && t.url?.startsWith("https://gemini.google.com"),
 	);
 	if (!pageTarget) {
 		const result = await cdp.send("Target.createTarget", {
-			url: CHATGPT_WEB_URL,
+			url: GEMINI_WEB_URL,
 		});
 		await sleep(2000);
 		const newTargets = await cdp.send("Target.getTargets");
@@ -753,7 +646,7 @@ export async function openChatGPTWebChat(
 			(t: any) => t.targetId === result.targetId,
 		);
 		if (!pageTarget) {
-			throw new Error("Failed to create ChatGPT page");
+			throw new Error("Failed to create Gemini page");
 		}
 	}
 	const attachResult = await cdp.send("Target.attachToTarget", {
@@ -761,89 +654,82 @@ export async function openChatGPTWebChat(
 		flatten: true,
 	});
 	const cdpSessionId = attachResult.sessionId;
-	await navigateChatGPTChat(cdp, cdpSessionId, { fresh: false, sessionId });
+	await navigateGeminiChat(cdp, cdpSessionId, { fresh: false, sessionId });
 	return {
 		sessionId,
-		url: `https://chatgpt.com/c/${sessionId}`,
+		url: `https://gemini.google.com/app/${sessionId}`,
 	};
 }
 
-// ── SSE parser for ChatGPT ──────────────────────────────────────────────────────
+// ── SSE parser for Gemini ──────────────────────────────────────────────────────
 
-function consumeChatGPTSse(
+function consumeGeminiSse(
 	body: string,
 	onChunk: (text: string) => void,
 	onDone: () => void,
 	onError: (err: Error) => void,
-	onUsage?: (usage: {
+	_onUsage?: (usage: {
 		inputTokens: number;
 		outputTokens: number;
 		totalTokens: number;
 	}) => void,
 ): void {
 	try {
-		// ChatGPT SSE parsing: see consumeChatGPTSse doc below.
-		let fullText = "";
+		// Gemini returns length-prefixed JSON (each line starts with "[").
+		// Assistant text lives in arrays whose first element is an "rc_"
+		// string; the following element holds the list of text parts.
+		const extractText = (obj: any): string | null => {
+			if (typeof obj === "string") {
+				const s = obj.trim();
+				if (s.startsWith("[") || s.startsWith("{")) {
+					try {
+						return extractText(JSON.parse(s));
+					} catch {
+						return null;
+					}
+				}
+				return null;
+			}
+			if (Array.isArray(obj)) {
+				if (
+					obj.length > 1 &&
+					typeof obj[0] === "string" &&
+					obj[0].startsWith("rc_") &&
+					Array.isArray(obj[1])
+				) {
+					const parts = obj[1].filter((p: unknown) => typeof p === "string");
+					if (parts.length) return parts.join("");
+				}
+				for (const item of obj) {
+					const t = extractText(item);
+					if (t) return t;
+				}
+				return null;
+			}
+			if (obj && typeof obj === "object") {
+				for (const value of Object.values(obj)) {
+					const t = extractText(value);
+					if (t) return t;
+				}
+			}
+			return null;
+		};
 
+		let bestText = "";
 		for (const rawLine of body.split("\n")) {
 			const line = rawLine.trim();
-			if (!line.startsWith("data:")) continue;
-			const data = line.slice(5).trim();
-			if (!data || data === "[DONE]") continue;
-
-			let parsed: any;
+			if (!line || !line.startsWith("[")) continue;
+			let data: any;
 			try {
-				parsed = JSON.parse(data);
+				data = JSON.parse(line);
 			} catch {
 				continue;
 			}
-			if (!parsed || typeof parsed !== "object") continue;
-
-			// Streaming delta: { v: "...", o: "append" }. Skip patch diffs.
-			if (typeof parsed.v === "string") {
-				if (parsed.o === "patch") continue;
-				fullText += parsed.v;
-				continue;
-			}
-
-			// message.content.parts[] is ChatGPT's normal terminal payload.
-			const message = parsed.message;
-			if (message && typeof message === "object") {
-				const content = message.content;
-				if (typeof content === "string") {
-					fullText += content;
-				} else if (content && typeof content === "object") {
-					const parts = content.parts;
-					if (Array.isArray(parts)) {
-						for (const part of parts) {
-							if (typeof part === "string") fullText += part;
-						}
-					}
-				}
-			}
-
-			if (typeof parsed.content === "string" && parsed.content) {
-				fullText += parsed.content;
-			}
-			if (typeof parsed.text === "string" && parsed.text) {
-				fullText += parsed.text;
-			}
-
-			if (parsed.usage && onUsage) {
-				onUsage({
-					inputTokens:
-						parsed.usage.input_tokens || parsed.usage.prompt_tokens || 0,
-					outputTokens:
-						parsed.usage.output_tokens || parsed.usage.completion_tokens || 0,
-					totalTokens:
-						parsed.usage.total_tokens ||
-						(parsed.usage.prompt_tokens || 0) +
-							(parsed.usage.completion_tokens || 0),
-				});
-			}
+			const text = extractText(data);
+			if (text && text.length > bestText.length) bestText = text;
 		}
 
-		const finalText = fullText.trim();
+		const finalText = bestText.trim();
 		if (finalText) onChunk(finalText);
 		onDone();
 	} catch (err) {
@@ -856,20 +742,15 @@ function consumeChatGPTSse(
 async function waitForComposerReady(
 	cdp: CdpClient,
 	sessionId: string,
-	config: ChatGPTWebV2RuntimeConfig,
+	config: GeminiWebV2RuntimeConfig,
 	logger?: BasicLogger,
 ): Promise<void> {
 	const pageFullyLoaded = `(() => {
         if (document.readyState !== 'complete') return false;
-        // Prioritize the visible ProseMirror div over the hidden fallback textarea
-        var ta = document.querySelector('div#prompt-textarea') || 
-                 document.querySelector('div[contenteditable="true"][role="textbox"]') || 
-                 document.querySelector('textarea:not([style*="display: none"])');
-        if (!ta) return false;
-        // For divs, ensure they are actually contenteditable
-        if (ta.tagName === 'DIV' && !ta.isContentEditable) return false;
+        var ta = document.querySelector('.ql-editor.textarea.new-input-ui, [data-test-id="textarea-inner"] .ql-editor, [contenteditable="true"][role="textbox"]');
+        if (!ta || ta.disabled) return false;
         var s = window.getComputedStyle(ta);
-        if (s.display === 'none' || s.visibility === 'hidden' || s.opacity === '0') return false;
+        if (s.display === 'none' || s.visibility === 'hidden') return false;
         return true;
     })()`;
 
@@ -893,7 +774,7 @@ async function waitForComposerReady(
 		}
 
 		if (ready) {
-			if (config.debug) logger?.debug("[chatgpt-web] page fully loaded");
+			if (config.debug) logger?.debug("[gemini-web] page fully loaded");
 			await sleep(1500);
 			return;
 		}
@@ -901,16 +782,16 @@ async function waitForComposerReady(
 		if (!hintLogged) {
 			hintLogged = true;
 			logger?.log(
-				"ChatGPT Web: waiting for the chatgpt.com page to finish loading " +
+				"Gemini Web: waiting for the gemini.google.com page to finish loading " +
 					`(up to ${Math.round(config.loginTimeoutMs / 1000)}s). If the Chrome window shows a login page, log in now.`,
-				{ severity: "info", providerId: "chatgpt-web" },
+				{ severity: "info", providerId: "gemini-web" },
 			);
 		}
 
 		if (Date.now() >= deadline) {
 			throw new Error(
-				"ChatGPT Web: chatgpt.com did not finish loading within " +
-					`${Math.round(config.loginTimeoutMs / 1000)}s. Please log in to chatgpt.com in the Chrome window.`,
+				"Gemini Web: gemini.google.com did not finish loading within " +
+					`${Math.round(config.loginTimeoutMs / 1000)}s. Please log in to gemini.google.com in the Chrome window.`,
 			);
 		}
 		await sleep(500);
@@ -937,14 +818,14 @@ async function readPageUrl(
 }
 
 /**
- * Point the ChatGPT tab at a specific chat (load an old conversation) or at a
+ * Point the Gemini tab at a specific chat (load an old conversation) or at a
  * fresh composer (new chat). Skips navigating when the tab is already on the
  * destination — that is what avoids a needless full page reload on every
  * follow-up turn of the same conversation. `forceReload` skips that shortcut
  * to recover from a rate-limit block, where the page needs a real refresh to
  * accept messages again even though the URL is unchanged.
  */
-async function navigateChatGPTChat(
+async function navigateGeminiChat(
 	cdp: CdpClient,
 	cdpSessionId: string,
 	target: { sessionId?: string; fresh: boolean },
@@ -952,10 +833,10 @@ async function navigateChatGPTChat(
 	forceReload = false,
 ): Promise<void> {
 	const destination = target.fresh
-		? CHATGPT_WEB_URL
+		? GEMINI_WEB_URL
 		: target.sessionId
-			? `https://chatgpt.com/c/${target.sessionId}`
-			: CHATGPT_WEB_URL;
+			? `https://gemini.google.com/app/${target.sessionId}`
+			: GEMINI_WEB_URL;
 
 	const currentUrl = (await readPageUrl(cdp, cdpSessionId)) || "";
 	const alreadyThere = isSameChatLocation(currentUrl, destination);
@@ -979,7 +860,7 @@ async function navigateChatGPTChat(
 
 	if (alreadyThere && !forceReload) {
 		logger?.debug?.(
-			`[chatgpt-web] already on ${destination} — skipping navigation (no reload)`,
+			`[gemini-web] already on ${destination} — skipping navigation (no reload)`,
 		);
 		if (target.fresh) {
 			await cdp.send(
@@ -993,7 +874,7 @@ async function navigateChatGPTChat(
 	}
 
 	logger?.debug?.(
-		`[chatgpt-web] ${target.fresh ? "opening a new ChatGPT chat" : `loading ChatGPT chat ${target.sessionId}`}`,
+		`[gemini-web] ${target.fresh ? "opening a new Gemini chat" : `loading Gemini chat ${target.sessionId}`}`,
 	);
 	await cdp.send(
 		"Runtime.evaluate",
@@ -1031,7 +912,7 @@ async function sendAndCapture(
 	cdp: CdpClient,
 	cdpSessionId: string,
 	prompt: string,
-	config: ChatGPTWebV2RuntimeConfig,
+	config: GeminiWebV2RuntimeConfig,
 	logger?: BasicLogger,
 	sendOptions?: { think?: boolean },
 	isToolTurn = false,
@@ -1042,7 +923,7 @@ async function sendAndCapture(
 	rateLimited?: boolean;
 }> {
 	const debugLog = (msg: string) => {
-		if (config.debug) logger?.debug(`[chatgpt-web] ${msg}`);
+		if (config.debug) logger?.debug(`[gemini-web] ${msg}`);
 	};
 
 	let completionRequestId: string | undefined;
@@ -1055,7 +936,7 @@ async function sendAndCapture(
 	const onResponseReceived = (event: any, eventSessionId?: string) => {
 		if (eventSessionId !== cdpSessionId) return;
 		const url: string = event.response?.url ?? "";
-		if (!url.includes(CHATGPT_API_ENDPOINT)) return;
+		if (!url.toLowerCase().includes(GEMINI_API_ENDPOINT.toLowerCase())) return;
 		if (event.response?.status !== 200) return;
 		completionRequestId = event.requestId;
 		debugLog(`completion response received (${url})`);
@@ -1076,7 +957,7 @@ async function sendAndCapture(
 			debugLog(`completion body captured (${capturedBody.length} chars)`);
 		} catch (err) {
 			logger?.error?.(
-				`[chatgpt-web] failed to read response body: ${err instanceof Error ? err.message : String(err)}`,
+				`[gemini-web] failed to read response body: ${err instanceof Error ? err.message : String(err)}`,
 			);
 		} finally {
 			bodyResolve?.();
@@ -1091,7 +972,7 @@ async function sendAndCapture(
 
 		// Randomized human-like pacing before sending, plus an extra random
 		// amount on tool-request turns (the fastest back-to-back pattern in an
-		// agent run) — dodges chatgpt.com's own anti-abuse frequency throttle
+		// agent run) — dodges gemini.google.com's own anti-abuse frequency throttle
 		// the same way deepseek-web-v2 dodges DeepSeek's.
 		const sendDelay = computeSendDelay(config, { isToolTurn });
 		debugLog(
@@ -1125,14 +1006,14 @@ async function sendAndCapture(
 		let fullText = "";
 		const finishReason: LanguageModelV2FinishReason = "stop";
 		let usage = { inputTokens: 0, outputTokens: 0, totalTokens: 0 };
-		consumeChatGPTSse(
+		consumeGeminiSse(
 			capturedBody,
 			(chunk) => {
 				fullText += chunk;
 			},
 			() => {},
 			(err) => {
-				logger?.error?.(`[chatgpt-web] SSE parse error: ${err.message}`);
+				logger?.error?.(`[gemini-web] SSE parse error: ${err.message}`);
 			},
 			(nextUsage) => {
 				usage = nextUsage;
@@ -1144,11 +1025,11 @@ async function sendAndCapture(
 		// refresh to clear the temporarily-blocked composer.
 		const rateLimited = isRateLimitText(fullText);
 		if (rateLimited) {
-			requestChatGPTThrottleRecoveryReload();
+			requestGeminiThrottleRecoveryReload();
 			logger?.log?.(
-				"[chatgpt-web] ChatGPT throttled the request (rate-limit reply detected). " +
+				"[gemini-web] Gemini throttled the request (rate-limit reply detected). " +
 					"Next message will reload the page to recover, and sending is paced. " +
-					"Consider raising CHATGPT_WEB_MIN/MAX_SEND_DELAY_MS.",
+					"Consider raising GEMINI_WEB_MIN/MAX_SEND_DELAY_MS.",
 			);
 		}
 		return { text: fullText, finishReason, usage, rateLimited };
@@ -1161,22 +1042,22 @@ async function sendAndCapture(
 
 // ── Main provider ─────────────────────────────────────────────────────────────
 
-interface ChatGPTCompletionResult {
+interface GeminiCompletionResult {
 	text: string;
 	toolCalls: { name: string; arguments: Record<string, unknown> }[];
 	usage: { inputTokens: number; outputTokens: number; totalTokens: number };
 }
 
 /**
- * Build the flat prompt sent to chatgpt.com, mirroring deepseek-web-v2's
+ * Build the flat prompt sent to gemini.google.com, mirroring deepseek-web-v2's
  * `buildPrompt`: the real web client keeps its own server-side conversation
  * state, so the system prompt is sent verbatim on the conversation's first
  * turn (via `buildLeanConversation`'s own first-turn passthrough) and dropped
- * on every follow-up turn in the SAME ChatGPT chat — re-added only when
- * `reInjectSystem` is true (a brand-new ChatGPT chat, e.g. right after a
+ * on every follow-up turn in the SAME Gemini chat — re-added only when
+ * `reInjectSystem` is true (a brand-new Gemini chat, e.g. right after a
  * compaction opens a fresh one).
  */
-function buildChatGPTPrompt(
+function buildGeminiPrompt(
 	prompt: LanguageModelV2Prompt,
 	reInjectSystem: boolean,
 	preserveCompactionContext: boolean,
@@ -1201,14 +1082,14 @@ function buildChatGPTPrompt(
 	return messagesToPrompt(conversation, promptOptions);
 }
 
-function createChatGPTWebModel(
+function createGeminiWebModel(
 	modelId: string,
 	logger?: BasicLogger,
 ): LanguageModelV2 {
-	const runtimeConfig = resolveChatGPTWebV2Config();
+	const runtimeConfig = resolveGeminiWebV2Config();
 
 	const debugLog = (msg: string) => {
-		if (runtimeConfig.debug) logger?.debug(`[chatgpt-web] ${msg}`);
+		if (runtimeConfig.debug) logger?.debug(`[gemini-web] ${msg}`);
 	};
 
 	// De-dup: if the last user-authored message is identical to the one
@@ -1224,19 +1105,20 @@ function createChatGPTWebModel(
 	// divergent wrapper around doGenerate.
 	async function runCompletion(
 		options: LanguageModelV2CallOptions,
-	): Promise<ChatGPTCompletionResult> {
+	): Promise<GeminiCompletionResult> {
 		debugLog("runCompletion called");
 
 		const cdp = await connectBrowser(runtimeConfig);
 
 		const targets = await cdp.send("Target.getTargets");
 		let pageTarget = targets.targetInfos?.find(
-			(t: any) => t.type === "page" && t.url?.startsWith("https://chatgpt.com"),
+			(t: any) =>
+				t.type === "page" && t.url?.startsWith("https://gemini.google.com"),
 		);
 
 		if (!pageTarget) {
 			const result = await cdp.send("Target.createTarget", {
-				url: CHATGPT_WEB_URL,
+				url: GEMINI_WEB_URL,
 			});
 			await sleep(2000);
 			const newTargets = await cdp.send("Target.getTargets");
@@ -1244,7 +1126,7 @@ function createChatGPTWebModel(
 				(t: any) => t.targetId === result.targetId,
 			);
 			if (!pageTarget) {
-				throw new Error("Failed to create ChatGPT page");
+				throw new Error("Failed to create Gemini page");
 			}
 		}
 
@@ -1255,7 +1137,7 @@ function createChatGPTWebModel(
 		const cdpSessionId = attachResult.sessionId;
 
 		// Chat continuity: this CLI conversation is keyed by its first user
-		// message. A fresh key (no mapped ChatGPT chat yet) means this call opens
+		// message. A fresh key (no mapped Gemini chat yet) means this call opens
 		// a brand-new web chat, e.g. right after a compaction where the
 		// compaction summary becomes the first user message.
 		// Which web chat does this call go to? Normally the hash of the
@@ -1263,23 +1145,23 @@ function createChatGPTWebModel(
 		// last ordinary turn used, because the standalone summarize request
 		// would otherwise hash to an empty chat of its own. See
 		// `tool-pipeline/chat-target.ts` for the full /compact hand-off.
-		const routedChatKey = consumeChatKeyOverride("chatgpt-web");
+		const routedChatKey = consumeChatKeyOverride("gemini-web");
 		const chatKey = routedChatKey ?? chatKeyFromPrompt(options.prompt);
 		if (!routedChatKey) {
-			recordActiveChatKey("chatgpt-web", chatKey);
+			recordActiveChatKey("gemini-web", chatKey);
 		}
-		const existingChatGPTSession = lookupChatGPTChatSession(
+		const existingGeminiSession = lookupGeminiChatSession(
 			runtimeConfig.chatsFile,
 			chatKey,
 		);
-		const isNewChat = existingChatGPTSession === undefined;
+		const isNewChat = existingGeminiSession === undefined;
 
-		const forceReload = consumeChatGPTThrottleRecoveryReload();
-		await navigateChatGPTChat(
+		const forceReload = consumeGeminiThrottleRecoveryReload();
+		await navigateGeminiChat(
 			cdp,
 			cdpSessionId,
-			existingChatGPTSession
-				? { sessionId: existingChatGPTSession, fresh: false }
+			existingGeminiSession
+				? { sessionId: existingGeminiSession, fresh: false }
 				: { fresh: true },
 			logger,
 			forceReload,
@@ -1288,12 +1170,12 @@ function createChatGPTWebModel(
 		await waitForComposerReady(cdp, cdpSessionId, runtimeConfig, logger);
 
 		// Re-inject the system prompt only when this turn opens a brand-new
-		// ChatGPT chat — every other turn in the SAME chat sends no system
+		// Gemini chat — every other turn in the SAME chat sends no system
 		// prompt at all, since the web client already has it server-side.
 		// (Unlike deepseek-web-v2 this has no token-threshold re-injection:
-		// ChatGPT's SSE responses don't expose an equivalent cumulative
+		// Gemini's SSE responses don't expose an equivalent cumulative
 		// accumulated-context figure to gate that on.)
-		let promptText = buildChatGPTPrompt(options.prompt, isNewChat, isNewChat);
+		let promptText = buildGeminiPrompt(options.prompt, isNewChat, isNewChat);
 
 		// Key on the last message the USER actually typed, not the last user
 		// message: on an iteration turn that is the runtime's synthetic
@@ -1324,15 +1206,11 @@ function createChatGPTWebModel(
 		debugLog(`Received response (${result.text.length} chars)`);
 
 		// After sending, the SPA routes to `/c/<id>`; capture it so the next
-		// turn (or a resume) can reopen this same ChatGPT chat.
+		// turn (or a resume) can reopen this same Gemini chat.
 		const pageUrl = await readPageUrl(cdp, cdpSessionId);
-		const chatgptSession = extractChatGPTSessionId(pageUrl);
-		if (chatgptSession) {
-			recordChatGPTChatSession(
-				runtimeConfig.chatsFile,
-				chatKey,
-				chatgptSession,
-			);
+		const geminiSession = extractGeminiSessionId(pageUrl);
+		if (geminiSession) {
+			recordGeminiChatSession(runtimeConfig.chatsFile, chatKey, geminiSession);
 		}
 
 		if (functionTools.length === 0) {
@@ -1379,14 +1257,14 @@ function createChatGPTWebModel(
 
 	function finishReasonFor(
 		text: string,
-		toolCalls: ChatGPTCompletionResult["toolCalls"],
+		toolCalls: GeminiCompletionResult["toolCalls"],
 	): LanguageModelV2FinishReason {
 		return toolCalls.length > 0 ? "tool-calls" : text ? "stop" : "unknown";
 	}
 
 	const provider: LanguageModelV2 = {
 		specificationVersion: "v2",
-		provider: "chatgpt-web",
+		provider: "gemini-web",
 		modelId,
 		supportedUrls: {} as Record<string, RegExp[]>,
 
@@ -1413,14 +1291,14 @@ function createChatGPTWebModel(
 				};
 			} catch (error) {
 				const err = error instanceof Error ? error : new Error(String(error));
-				logger?.error?.(`[chatgpt-web] doGenerate error: ${err.message}`);
+				logger?.error?.(`[gemini-web] doGenerate error: ${err.message}`);
 				throw err;
 			}
 		},
 
 		async doStream(options: LanguageModelV2CallOptions) {
 			const { text, toolCalls, usage } = await runCompletion(options);
-			const id = `chatgpt-web-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+			const id = `gemini-web-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
 
 			const parts: LanguageModelV2StreamPart[] = [
 				{ type: "stream-start", warnings: [] },
@@ -1468,25 +1346,25 @@ function createChatGPTWebModel(
 
 // ── Provider factory ──────────────────────────────────────────────────────────
 
-export function createChatGPTWebProvider(
+export function createGeminiWebProvider(
 	_config: GatewayResolvedProviderConfig,
 	context?: GatewayProviderContext,
 ): ProviderFactoryResult {
 	const logger = context?.logger;
 	return {
-		model: (modelId: string) => createChatGPTWebModel(modelId, logger),
+		model: (modelId: string) => createGeminiWebModel(modelId, logger),
 	};
 }
 
-export function createChatGPTWebProviderFactory() {
-	return { id: "chatgpt-web", create: createChatGPTWebProvider };
+export function createGeminiWebProviderFactory() {
+	return { id: "gemini-web", create: createGeminiWebProvider };
 }
 
 // ── Module factory (used by ai-sdk.ts) ────────────────────────────────────────
 
-export function createChatGPTWebProviderModule(
+export function createGeminiWebProviderModule(
 	config: GatewayResolvedProviderConfig,
 	context?: GatewayProviderContext,
 ): ProviderFactoryResult {
-	return createChatGPTWebProvider(config, context);
+	return createGeminiWebProvider(config, context);
 }

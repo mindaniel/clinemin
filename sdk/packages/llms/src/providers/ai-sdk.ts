@@ -1211,6 +1211,18 @@ async function createProviderModule(
 			);
 			return createChatGPTWebProviderModule(config, context);
 		}
+		case "claude-web": {
+			const { createClaudeWebProviderModule } = await import(
+				"./vendors/claude-web"
+			);
+			return createClaudeWebProviderModule(config, context);
+		}
+		case "gemini-web": {
+			const { createGeminiWebProviderModule } = await import(
+				"./vendors/gemini-web"
+			);
+			return createGeminiWebProviderModule(config, context);
+		}
 	}
 }
 
@@ -1384,3 +1396,5 @@ export const createDeepSeekWebV2Provider =
 	createAiSdkProvider("deepseek-web-v2");
 export const createQwenWebProvider = createAiSdkProvider("qwen-web");
 export const createChatGPTWebProvider = createAiSdkProvider("chatgpt-web");
+export const createClaudeWebProvider = createAiSdkProvider("claude-web");
+export const createGeminiWebProvider = createAiSdkProvider("gemini-web");

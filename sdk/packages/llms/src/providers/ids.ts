@@ -33,6 +33,8 @@ export enum BUILT_IN_PROVIDER {
 	DEEPSEEK_WEB_V2 = "deepseek-web-v2",
 	QWEN_WEB = "qwen-web",
 	CHATGPT_WEB = "chatgpt-web",
+	GEMINI_WEB = "gemini-web",
+	CLAUDE_WEB = "claude-web",
 	// OpenAI-compatible
 	DEEPSEEK = "deepseek",
 	XAI = "xai",

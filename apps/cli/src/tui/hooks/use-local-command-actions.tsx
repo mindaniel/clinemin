@@ -1,15 +1,99 @@
 import {
+	type ChatGPTWebChatEntry,
+	type ClaudeWebChatEntry,
+	DEFAULT_CONTINUATION_NOTE,
 	type DeepSeekWebV2ChatEntry,
-	listDeepSeekWebV2Chats,
-	openDeepSeekWebV2Chat,
+	deleteChatGPTChatSession,
 	deleteChatSession,
-	resolveDeepSeekWebV2Config,
-	type QwenWebChatEntry,
-	listQwenWebChats,
-	openQwenWebChat,
+	deleteClaudeChatSession,
+	deleteGeminiChatSession,
 	deleteQwenChatSession,
+	type GeminiWebChatEntry,
+	getContinuationNote,
+	listChatGPTWebChats,
+	listClaudeWebChats,
+	listDeepSeekWebV2Chats,
+	listGeminiWebChats,
+	listQwenWebChats,
+	openChatGPTWebChat,
+	openClaudeWebChat,
+	openDeepSeekWebV2Chat,
+	openGeminiWebChat,
+	openQwenWebChat,
+	type QwenWebChatEntry,
+	resolveChatGPTWebV2Config,
+	resolveClaudeWebV2Config,
+	resolveDeepSeekWebV2Config,
+	resolveGeminiWebV2Config,
 	resolveQwenWebV2Config,
+	setContinuationNote,
+	setPendingInjectedReply,
 } from "@cline/llms";
+import { readClipboardText } from "../../utils/clipboard";
+import { writeProjectContinuationNote } from "../../utils/continuation-note";
+
+export type WebChatEntry =
+	| DeepSeekWebV2ChatEntry
+	| QwenWebChatEntry
+	| ChatGPTWebChatEntry
+	| ClaudeWebChatEntry
+	| GeminiWebChatEntry;
+
+interface WebProviderConfig {
+	name: string;
+	listChats: () => WebChatEntry[];
+	openChat: (sessionId: string) => Promise<{ sessionId: string; url: string }>;
+	deleteChat: (chatKey: string) => void;
+}
+
+const webProviderConfigs: Record<string, WebProviderConfig> = {
+	"deepseek-web-v2": {
+		name: "DeepSeek Web v2",
+		listChats: listDeepSeekWebV2Chats,
+		openChat: openDeepSeekWebV2Chat,
+		deleteChat: (chatKey: string) => {
+			const config = resolveDeepSeekWebV2Config();
+			deleteChatSession(config.chatsFile, chatKey);
+		},
+	},
+	"qwen-web": {
+		name: "Qwen Web",
+		listChats: listQwenWebChats,
+		openChat: openQwenWebChat,
+		deleteChat: (chatKey: string) => {
+			const config = resolveQwenWebV2Config();
+			deleteQwenChatSession(config.chatsFile, chatKey);
+		},
+	},
+	"chatgpt-web": {
+		name: "ChatGPT Web",
+		listChats: listChatGPTWebChats,
+		openChat: openChatGPTWebChat,
+		deleteChat: (chatKey: string) => {
+			const config = resolveChatGPTWebV2Config();
+			deleteChatGPTChatSession(config.chatsFile, chatKey);
+		},
+	},
+	"claude-web": {
+		name: "Claude Web",
+		listChats: listClaudeWebChats,
+		openChat: openClaudeWebChat,
+		deleteChat: (chatKey: string) => {
+			const config = resolveClaudeWebV2Config();
+			deleteClaudeChatSession(config.chatsFile, chatKey);
+		},
+	},
+	"gemini-web": {
+		name: "Gemini Web",
+		listChats: listGeminiWebChats,
+		openChat: openGeminiWebChat,
+		deleteChat: (chatKey: string) => {
+			const config = resolveGeminiWebV2Config();
+			deleteGeminiChatSession(config.chatsFile, chatKey);
+		},
+	},
+};
+
 import { useTerminalDimensions } from "@opentui/react";
 import type { ChoiceContext } from "@opentui-ui/dialog";
 import { useDialog } from "@opentui-ui/dialog/react";
@@ -49,6 +133,10 @@ export function useLocalCommandActions(input: {
 	onUndo: () => Promise<void>;
 	onExit: TuiProps["onExit"];
 	providerId: string;
+	/** Project directory the continuation note (`/note`) is stored against. */
+	cwd: string;
+	/** Submit text as if the user typed it (used by `/paste` to start a turn). */
+	submitText: (text: string) => void;
 }) {
 	const dialog = useDialog();
 	const session = useSession();
@@ -73,6 +161,8 @@ export function useLocalCommandActions(input: {
 		onUndo,
 		onExit,
 		providerId,
+		cwd,
+		submitText,
 	} = input;
 
 	const openHistory = useCallback(async () => {
@@ -280,53 +370,33 @@ export function useLocalCommandActions(input: {
 	}, [canForkSession, dialog, onFork, refocusTextarea, session]);
 
 	// `/findchat` — recall a Web chat in the SAME Chrome the provider drives.
-	// Automatically detects the active provider (qwen-web or deepseek-web-v2).
+	// Automatically detects the active provider and uses its specific configuration.
 	const findChat = useCallback(async (): Promise<boolean> => {
-		let chats: (DeepSeekWebV2ChatEntry | QwenWebChatEntry)[];
-		let providerName = "";
-		let onDeleteFn: (chatKey: string) => void;
-		let openChatFn: (sessionId: string) => Promise<{ sessionId: string; url: string }>;
+		const providerConfig = webProviderConfigs[providerId];
 
-		if (providerId === "qwen-web") {
-			providerName = "Qwen Web";
-			try {
-				chats = listQwenWebChats();
-			} catch (error) {
-				session.appendEntry({
-					kind: "error",
-					text: `/findchat: could not read Qwen Web chat history: ${error instanceof Error ? error.message : String(error)}`,
-				});
-				return true;
-			}
-			onDeleteFn = (chatKey: string) => {
-				const config = resolveQwenWebV2Config();
-				deleteQwenChatSession(config.chatsFile, chatKey);
-				session.appendEntry({ kind: "status", text: `Deleted chat ${chatKey}` });
-			};
-			openChatFn = openQwenWebChat;
-		} else {
-			providerName = "DeepSeek Web v2";
-			try {
-				chats = listDeepSeekWebV2Chats();
-			} catch (error) {
-				session.appendEntry({
-					kind: "error",
-					text: `/findchat: could not read DeepSeek Web v2 chat history: ${error instanceof Error ? error.message : String(error)}`,
-				});
-				return true;
-			}
-			onDeleteFn = (chatKey: string) => {
-				const config = resolveDeepSeekWebV2Config();
-				deleteChatSession(config.chatsFile, chatKey);
-				session.appendEntry({ kind: "status", text: `Deleted chat ${chatKey}` });
-			};
-			openChatFn = openDeepSeekWebV2Chat;
+		if (!providerConfig) {
+			session.appendEntry({
+				kind: "error",
+				text: `/findchat: provider "${providerId}" is not a supported web provider for chat recall.`,
+			});
+			return true;
+		}
+
+		let chats: WebChatEntry[];
+		try {
+			chats = providerConfig.listChats();
+		} catch (error) {
+			session.appendEntry({
+				kind: "error",
+				text: `/findchat: could not read ${providerConfig.name} chat history: ${error instanceof Error ? error.message : String(error)}`,
+			});
+			return true;
 		}
 
 		if (chats.length === 0) {
 			session.appendEntry({
 				kind: "status",
-				text: `/findchat: no persisted ${providerName} chats yet (run a turn with the provider first).`,
+				text: `/findchat: no persisted ${providerConfig.name} chats yet (run a turn with the provider first).`,
 			});
 			return true;
 		}
@@ -335,7 +405,12 @@ export function useLocalCommandActions(input: {
 			size: "large",
 			style: { maxHeight: termHeight - 2 },
 			content: (ctx: ChoiceContext<string>) => (
-				<FindChatDialogContent {...ctx} chats={chats} onDelete={onDeleteFn} providerName={providerName} />
+				<FindChatDialogContent
+					{...ctx}
+					chats={chats}
+					onDelete={providerConfig.deleteChat}
+					providerName={providerConfig.name}
+				/>
 			),
 		});
 		refocusTextarea();
@@ -343,13 +418,15 @@ export function useLocalCommandActions(input: {
 
 		session.appendEntry({
 			kind: "status",
-			text: `Opening ${providerName} chat ${dialogChoice}...`,
+			text: `Opening ${providerConfig.name} chat ${dialogChoice}...`,
 		});
 		try {
-			await withLoadingDialog(dialog, "Opening chat...", () => openChatFn(dialogChoice));
+			await withLoadingDialog(dialog, "Opening chat...", () =>
+				providerConfig.openChat(dialogChoice),
+			);
 			session.updateLastEntry(() => ({
 				kind: "status",
-				text: `Opened ${providerName} chat ${dialogChoice}.`,
+				text: `Opened ${providerConfig.name} chat ${dialogChoice}.`,
 			}));
 		} catch (error) {
 			session.updateLastEntry(() => ({
@@ -359,6 +436,86 @@ export function useLocalCommandActions(input: {
 		}
 		return true;
 	}, [dialog, providerId, refocusTextarea, session, termHeight]);
+
+	/**
+	 * `/paste`: recover a web-provider turn whose reply was lost to a network
+	 * error. The reply is still readable in the browser, so the user copies it
+	 * and we queue it as the answer for the next model request — which then
+	 * parses `<tool>` calls, runs approvals, and feeds tool results back exactly
+	 * as if we had captured the reply ourselves.
+	 */
+	const pasteReply = useCallback(async (): Promise<boolean> => {
+		if (!webProviderConfigs[providerId]) {
+			session.appendEntry({
+				kind: "error",
+				text: `/paste: provider "${providerId}" is not a web provider; nothing to recover.`,
+			});
+			return true;
+		}
+
+		const clipboard = await readClipboardText();
+		if (!clipboard) {
+			session.appendEntry({
+				kind: "error",
+				text: "/paste: clipboard is empty. Copy the model's reply from the browser first.",
+			});
+			return true;
+		}
+
+		setPendingInjectedReply(clipboard);
+		session.appendEntry({
+			kind: "status",
+			text: `/paste: queued ${clipboard.length} chars from the clipboard as the model's reply.`,
+		});
+		submitText("(recovering a reply that was pasted in manually)");
+		return true;
+	}, [providerId, session, submitText]);
+
+	/**
+	 * `/note` — show or set the note the runtime appends after each round of
+	 * tool execution. Stored per project, so a repo keeps its own marching
+	 * orders across sessions.
+	 */
+	const setNote = useCallback(
+		(arg: string): boolean => {
+			if (!arg) {
+				const active = getContinuationNote();
+				const isDefault = active === DEFAULT_CONTINUATION_NOTE;
+				session.appendEntry({
+					kind: "status",
+					text:
+						`/note: ${isDefault ? "default" : "custom"} note for this project:
+` +
+						`  ${active}
+` +
+						"  Set with /note <text>, restore the default with /note reset.",
+				});
+				return true;
+			}
+
+			const lowered = arg.toLowerCase();
+			if (lowered === "reset" || lowered === "default") {
+				writeProjectContinuationNote(cwd, undefined);
+				setContinuationNote(undefined);
+				session.appendEntry({
+					kind: "status",
+					text: `/note: restored the default note:
+  ${DEFAULT_CONTINUATION_NOTE}`,
+				});
+				return true;
+			}
+
+			writeProjectContinuationNote(cwd, arg);
+			setContinuationNote(arg);
+			session.appendEntry({
+				kind: "status",
+				text: `/note: this project's note is now:
+  ${arg}`,
+			});
+			return true;
+		},
+		[cwd, session],
+	);
 
 	const handleSlashCommand = useCallback(
 		(command: string, invocation?: LocalSlashCommandInvocation) => {
@@ -384,6 +541,8 @@ export function useLocalCommandActions(input: {
 				openHistory,
 				exitCline: onExit,
 				findChat,
+				pasteReply,
+				setNote,
 			});
 		},
 		[
@@ -401,6 +560,8 @@ export function useLocalCommandActions(input: {
 			runAutocompact,
 			runFork,
 			findChat,
+			pasteReply,
+			setNote,
 			session.isRunning,
 			slashCommandRegistry,
 		],

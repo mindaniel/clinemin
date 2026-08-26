@@ -14,10 +14,13 @@ import type {
 import {
 	createAnthropicProvider,
 	createBedrockProvider,
+	createChatGPTWebProvider,
 	createClaudeCodeProvider,
+	createClaudeWebProvider,
 	createDeepSeekWebProvider,
 	createDeepSeekWebV2Provider,
 	createDifyProvider,
+	createGeminiWebProvider,
 	createGoogleProvider,
 	createMistralProvider,
 	createOllamaProvider,
@@ -25,7 +28,6 @@ import {
 	createOpenAICompatibleProvider,
 	createOpenAIProvider,
 	createOpenCodeProvider,
-	createChatGPTWebProvider,
 	createQwenWebProvider,
 	createSapAiCoreProvider,
 	createVertexProvider,
@@ -179,6 +181,11 @@ function resolveFactory(
 			return createQwenWebProvider;
 		case "chatgpt-web":
 			return createChatGPTWebProvider;
+		case "claude-web":
+			return createClaudeWebProvider;
+
+		case "gemini-web":
+			return createGeminiWebProvider;
 		default:
 			return createOpenAICompatibleProvider;
 	}

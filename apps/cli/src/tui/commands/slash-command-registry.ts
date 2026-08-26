@@ -25,6 +25,8 @@ export type LocalSlashCommandName =
 	| "clear"
 	| "history"
 	| "findchat"
+	| "paste"
+	| "note"
 	| "quit"
 	| "help";
 
@@ -111,6 +113,14 @@ const TUI_LOCAL_COMMANDS: Array<{
 		description: "Find and reopen a DeepSeek Web v2 chat (web provider)",
 	},
 	{
+		name: "paste",
+		description: "Use the clipboard as the model reply (web provider recovery)",
+	},
+	{
+		name: "note",
+		description: "Show or set this project's post-tool continuation note",
+	},
+	{
 		name: "help",
 		description: "Show help",
 	},
@@ -135,6 +145,8 @@ const SYSTEM_COMMAND_ORDER = [
 	"team",
 	"history",
 	"findchat",
+	"paste",
+	"note",
 	"help",
 	"quit",
 ] satisfies ReadonlyArray<LocalSlashCommandName | "team">;

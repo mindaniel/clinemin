@@ -1,4 +1,8 @@
-import { createGateway, type GatewayProviderSettings } from "@cline/llms";
+import {
+	createGateway,
+	type GatewayProviderSettings,
+	getContinuationNote,
+} from "@cline/llms";
 import type {
 	AgentAfterToolResult,
 	AgentBeforeModelResult,
@@ -678,7 +682,9 @@ export class AgentRuntime {
 				if (!autoContinued && this.isThinkingOnlyMessage(message)) {
 					autoContinued = true;
 					const continuationPrompt = "Continue and send outside thinking mode";
-					const userMessage = createMessage("user", [{ type: "text", text: continuationPrompt }]);
+					const userMessage = createMessage("user", [
+						{ type: "text", text: continuationPrompt },
+					]);
 					this.state.messages.push(userMessage);
 					await this.emit({
 						type: "message-added",
@@ -687,7 +693,6 @@ export class AgentRuntime {
 					});
 					continue;
 				}
-
 
 				if (finishReason === "max-tokens" && toolCalls.length === 0) {
 					throw new Error(MAX_TOKENS_INCOMPLETE_TURN_MESSAGE);
@@ -703,7 +708,6 @@ export class AgentRuntime {
 						snapshot: this.snapshot(),
 						iteration: this.state.iteration,
 						toolCallCount: 0,
-
 					});
 					const completionReminderMessages =
 						this.getCompletionReminderMessages();
@@ -734,11 +738,13 @@ export class AgentRuntime {
 					});
 				}
 				// Add a user message after tool execution to prevent the model from hanging.
+				// The text is per project and customisable via the CLI `/note`
+				// command; see llms' `tool-pipeline/continuation-note.ts`.
 				if (toolMessages.length > 0) {
 					const continuationMessage: AgentMessage = {
 						id: `cont-${Date.now()}`,
 						role: "user",
-						content: [{ type: "text", text: "Use tool to continue the task or if finish, then tell 'finish'." }],
+						content: [{ type: "text", text: getContinuationNote() }],
 						createdAt: Date.now(),
 					};
 					this.state.messages.push(continuationMessage);
@@ -843,17 +849,17 @@ export class AgentRuntime {
 		}
 	}
 
-    /**
-     * Check if an assistant message contains only thinking/reasoning content
-     * (no text, no tool calls). This indicates the model is stuck in thinking mode.
-     */
-    private isThinkingOnlyMessage(message: AgentMessage): boolean {
-        const parts = message.content;
-        const hasText = parts.some((part) => part.type === "text");
-        const hasToolCalls = parts.some((part) => part.type === "tool-call");
-        const hasReasoning = parts.some((part) => part.type === "reasoning");
-        return !hasText && !hasToolCalls && hasReasoning;
-    }
+	/**
+	 * Check if an assistant message contains only thinking/reasoning content
+	 * (no text, no tool calls). This indicates the model is stuck in thinking mode.
+	 */
+	private isThinkingOnlyMessage(message: AgentMessage): boolean {
+		const parts = message.content;
+		const hasText = parts.some((part) => part.type === "text");
+		const hasToolCalls = parts.some((part) => part.type === "tool-call");
+		const hasReasoning = parts.some((part) => part.type === "reasoning");
+		return !hasText && !hasToolCalls && hasReasoning;
+	}
 
 	private async generateAssistantMessage(): Promise<{
 		message: AgentMessage;

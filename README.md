@@ -12,24 +12,40 @@ bun run build:sdk
 
 ### No admin rights (no Node/npm installed at all)
 
-If you can't install Node.js system-wide (no admin, locked-down machine), get both tools as portable, per-user installs — no admin, no npm needed.
+If you can't install Node.js system-wide (no admin, locked-down machine), get both tools as portable, per-user installs. No winget, no separate npm download — npm ships inside the Node zip, you just need it on your `PATH`.
 
-**bun** — official installer, installs to `%USERPROFILE%\.bun` and adds itself to your user `PATH` automatically:
+**1. Install bun** (installer puts it in `%USERPROFILE%\.bun` and adds that to your user `PATH` on its own):
 
 ```powershell
 irm bun.sh/install.ps1 | iex
 ```
 
-**Node.js** — download the portable zip (not the `.msi` installer, which needs admin) from [nodejs.org](https://nodejs.org/en/download) ("Windows Binary (.zip)", 64-bit), extract it somewhere in your user folder (e.g. `C:\Users\<you>\node`), then add it to your user `PATH`:
+**2. Download the Node.js zip** — not the `.msi`/`.exe` installer, that one needs admin to run. Check [nodejs.org/en/download](https://nodejs.org/en/download) for the current LTS version number, then either click the "Windows Binary (.zip)" (64-bit) link there, or download it from PowerShell (replace the version below with whatever's current):
 
 ```powershell
-[Environment]::SetEnvironmentVariable("Path", "$env:Path;C:\Users\<you>\node", "User")
+Invoke-WebRequest -Uri "https://nodejs.org/dist/v22.14.0/node-v22.14.0-win-x64.zip" -OutFile "$env:TEMP\node.zip"
 ```
 
-Open a new terminal so both `PATH` changes take effect, then verify:
+**3. Extract it into your user profile.** The zip unpacks into a versioned folder name (`node-v22.14.0-win-x64`) — unzip it, then rename that folder to something stable so your `PATH` entry never has to change on a Node upgrade:
+
+```powershell
+Expand-Archive -Path "$env:TEMP\node.zip" -DestinationPath "$env:USERPROFILE" -Force
+Rename-Item "$env:USERPROFILE\node-v22.14.0-win-x64" "$env:USERPROFILE\node"
+```
+
+The `node` folder now has `node.exe`, `npm.cmd`, and `npx.cmd` sitting right in it — that's the whole Node+npm install, nothing else to run.
+
+**4. Add that folder to your user `PATH`** (this only touches your own account's environment, no admin prompt):
+
+```powershell
+[Environment]::SetEnvironmentVariable("Path", "$env:Path;$env:USERPROFILE\node", "User")
+```
+
+**5. Close the terminal and open a new one** (PATH changes only apply to new terminals), then verify all three:
 
 ```powershell
 node -v
+npm -v
 bun -v
 ```
 

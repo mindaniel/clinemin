@@ -754,9 +754,18 @@ export function createInteractiveSessionRuntime(input: {
 		// Restart the same session so the compaction state projects the summary
 		// as the new first user message on the next turn (for deepseek-web-v2 this
 		// opens a fresh web chat seeded with system prompt + summary).
-		await restartWithMessages([], undefined, result.compactionState, {
-			preserveSessionId: true,
-		});
+		// Restart with the FULL canonical transcript, not an empty list: the
+		// compaction state projects onto its source messages, and projection
+		// bails out unless at least `source_message_count` of them are present.
+		// Restarting empty made every projection fail, silently dropping the
+		// summary — the fresh chat then opened with only the system prompt and
+		// the user's next message, and the model had no idea what came before.
+		await restartWithMessages(
+			result.canonicalMessages,
+			undefined,
+			result.compactionState,
+			{ preserveSessionId: true },
+		);
 		return {
 			messagesBefore,
 			messagesAfter: result.canonicalMessages.length,

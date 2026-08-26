@@ -19,9 +19,20 @@ export type WebChatEntry = DeepSeekWebV2ChatEntry | QwenWebChatEntry;
  * Delete: press 'd' to mark a chat for deletion, then 'y' to confirm or 'n' to cancel.
  */
 export function FindChatDialogContent(
-	props: ChoiceContext<string> & { chats: WebChatEntry[]; onDelete: (chatKey: string) => Promise<void> | void; providerName: string },
+	props: ChoiceContext<string> & {
+		chats: WebChatEntry[];
+		onDelete: (chatKey: string) => Promise<void> | void;
+		providerName: string;
+	},
 ) {
-	const { resolve, dismiss, dialogId, chats: initialChats, onDelete, providerName } = props;
+	const {
+		resolve,
+		dismiss,
+		dialogId,
+		chats: initialChats,
+		onDelete,
+		providerName,
+	} = props;
 	const [chats, setChats] = useState(initialChats);
 	const [confirmDelete, setConfirmDelete] = useState<string | null>(null);
 
@@ -72,6 +83,10 @@ export function FindChatDialogContent(
 				const chatEntry = chats.find((c) => c.sessionId === selected.key);
 				if (chatEntry) {
 					setConfirmDelete(chatEntry.chatKey);
+					// The same keypress that arms delete would otherwise also land in
+					// the (about to be hidden) search input, leaving a stray character
+					// that re-filters the list once the confirm prompt closes.
+					list.setSearch("");
 				}
 			}
 			return;
@@ -94,16 +109,24 @@ export function FindChatDialogContent(
 
 	return (
 		<box flexDirection="column" gap={1}>
-			<text>Find a {providerName} chat ({chats.length} found)</text>
+			<text>
+				Find a {providerName} chat ({chats.length} found)
+			</text>
 
-			<box border borderStyle="rounded" borderColor="gray" paddingX={1}>
-				<input
-					onInput={list.setSearch}
-					placeholder="Search chats... (Enter to open, Esc to cancel)"
-					flexGrow={1}
-					focused
-				/>
-			</box>
+			{confirmDelete ? (
+				<box border borderStyle="rounded" borderColor="red" paddingX={1}>
+					<text fg="red">Delete chat {confirmDelete}? (y/n)</text>
+				</box>
+			) : (
+				<box border borderStyle="rounded" borderColor="gray" paddingX={1}>
+					<input
+						onInput={list.setSearch}
+						placeholder="Search chats... (Enter to open, Esc to cancel)"
+						flexGrow={1}
+						focused
+					/>
+				</box>
+			)}
 
 			{list.filtered.length === 0 ? (
 				<text fg="gray">No chats match</text>

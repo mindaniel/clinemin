@@ -109,6 +109,20 @@ export {
 	type ResolveProviderRequestHeadersInput,
 	resolveProviderRequestHeaders,
 } from "./providers/request-headers";
+export {
+	type ChatGPTWebChatEntry,
+	deleteChatGPTChatSession,
+	listChatGPTWebChats,
+	openChatGPTWebChat,
+	resolveChatGPTWebV2Config,
+} from "./providers/vendors/chatgpt-web";
+export {
+	type ClaudeWebChatEntry,
+	deleteClaudeChatSession,
+	listClaudeWebChats,
+	openClaudeWebChat,
+	resolveClaudeWebV2Config,
+} from "./providers/vendors/claude-web";
 // Web chat-session helpers (used by the CLI `/findchat` command).
 export {
 	type DeepSeekWebV2ChatEntry,
@@ -118,23 +132,45 @@ export {
 	resolveDeepSeekWebV2Config,
 } from "./providers/vendors/deepseek-web-v2";
 export {
-	type QwenWebChatEntry,
-	deleteQwenChatSession,
-	listQwenWebChats,
-	openQwenWebChat,
-	resolveQwenWebV2Config,
-} from "./providers/vendors/qwen-web";
-export {
-	type ChatGPTWebChatEntry,
-	deleteChatGPTChatSession,
-	listChatGPTWebChats,
-	openChatGPTWebChat,
-	resolveChatGPTWebV2Config,
-} from "./providers/vendors/chatgpt-web";
+	deleteGeminiChatSession,
+	type GeminiWebChatEntry,
+	listGeminiWebChats,
+	openGeminiWebChat,
+	resolveGeminiWebV2Config,
+} from "./providers/vendors/gemini-web";
 export {
 	defaultModelsDir as llamaCppDefaultModelsDir,
 	ensureLlamaCppRunning,
 	readGgufContextLength,
 	scanLocalModels as scanLlamaCppModels,
 } from "./providers/vendors/llamacpp-runtime";
+export {
+	deleteQwenChatSession,
+	listQwenWebChats,
+	openQwenWebChat,
+	type QwenWebChatEntry,
+	resolveQwenWebV2Config,
+} from "./providers/vendors/qwen-web";
+// Explicit chat routing (used by compaction to send its summarize request
+// into the web chat that actually holds the conversation).
+export {
+	clearChatKeyOverride,
+	useLastChatForNextCall,
+} from "./providers/vendors/tool-pipeline/chat-target";
+// Post-tool continuation note (the agent runtime appends it; the CLI `/note`
+// command customises it per project).
+export {
+	DEFAULT_CONTINUATION_NOTE,
+	getContinuationNote,
+	isContinuationNoteText,
+	resetContinuationNote,
+	setContinuationNote,
+} from "./providers/vendors/tool-pipeline/continuation-note";
+// Manual reply injection (used by the CLI `/paste` command to recover a web
+// provider turn whose reply was lost to a network error).
+export {
+	clearPendingInjectedReply,
+	hasPendingInjectedReply,
+	setPendingInjectedReply,
+} from "./providers/vendors/tool-pipeline/injected-reply";
 export { disposeLangfuseTelemetry } from "./services/langfuse-telemetry";
