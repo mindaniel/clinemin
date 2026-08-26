@@ -1,19 +1,3 @@
-<p align="center">
-  <img src="assets/icons/icon.png" width="80" alt="Cline" />
-</p>
-
-<h1 align="center">Cline (CLI fork)</h1>
-
-<p align="center">
-Personal fork of <a href="https://github.com/cline/cline">Cline</a>, CLI-only.
-</p>
-
-This fork drops the VS Code extension, JetBrains plugin, and Kanban board — only `apps/cli`, the SDK, and the Hub dashboard remain. If you want those, use [upstream](https://github.com/cline/cline).
-
-## What's different from upstream
-
-- Adds a `llamacpp` provider (local, via `llama-server`). Pick it from the provider list. Config via env vars.
-
 ## Install (no admin required)
 
 Needs Node.js 22+ and [bun](https://bun.sh) (this repo's package manager/runtime — Node alone won't run it). If you already have both, skip to `git clone`.
