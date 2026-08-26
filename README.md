@@ -16,7 +16,7 @@ This fork drops the VS Code extension, JetBrains plugin, and Kanban board — on
 
 ## Install (no admin required)
 
-Needs Node.js and [bun](https://bun.sh) (this repo's package manager/runtime — Node alone won't run it). If you already have Node from another project, skip to bun.
+Needs Node.js 22+ and [bun](https://bun.sh) (this repo's package manager/runtime — Node alone won't run it). If you already have both, skip to `git clone`.
 
 ```powershell
 npm install -g bun
@@ -25,6 +25,31 @@ cd clinemin
 bun install
 bun run build:sdk
 ```
+
+### No admin rights (no Node/npm installed at all)
+
+If you can't install Node.js system-wide (no admin, locked-down machine), get both tools as portable, per-user installs — no admin, no npm needed.
+
+**bun** — official installer, installs to `%USERPROFILE%\.bun` and adds itself to your user `PATH` automatically:
+
+```powershell
+irm bun.sh/install.ps1 | iex
+```
+
+**Node.js** — download the portable zip (not the `.msi` installer, which needs admin) from [nodejs.org](https://nodejs.org/en/download) ("Windows Binary (.zip)", 64-bit), extract it somewhere in your user folder (e.g. `C:\Users\<you>\node`), then add it to your user `PATH`:
+
+```powershell
+[Environment]::SetEnvironmentVariable("Path", "$env:Path;C:\Users\<you>\node", "User")
+```
+
+Open a new terminal so both `PATH` changes take effect, then verify:
+
+```powershell
+node -v
+bun -v
+```
+
+Continue with `git clone` above.
 
 `bun install` also adds `cline` and `clinemin` commands to your PowerShell profile (`$PROFILE`) automatically — open a new terminal and run either one from any project folder:
 
