@@ -460,7 +460,7 @@ export function createShellTool(
 		shell?: string | (() => string);
 	} = {},
 ): AgentTool<unknown, ToolOperationResult[]> {
-	const timeoutMs = config.bashTimeoutMs ?? 30000;
+	const timeoutMs = config.bashTimeoutMs ?? 60000;
 	const timeoutSource =
 		config.bashTimeoutMs === undefined
 			? "default_setting"
