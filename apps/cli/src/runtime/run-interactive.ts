@@ -7,6 +7,7 @@ import {
 	setToolAutoApproveGlobally,
 	type UserInstructionConfigService,
 } from "@cline/core";
+import { setContinuationNote, shutdownLaunchedBrowsers } from "@cline/llms";
 import { formatModeSwitchNotice } from "@cline/shared";
 import type { CliMigrationNotice } from "../kanban-migration/notice";
 import { logCliError } from "../logging/errors";
@@ -31,6 +32,7 @@ import { disableOpenTuiGraphicsProbe } from "../tui/opentui-env";
 import type { QueuedPromptItem, TuiStartupTarget } from "../tui/types";
 import { type ChatCommandState, chatCommandHost } from "../utils/chat-commands";
 import { applyCliCompactionMode } from "../utils/compaction-mode";
+import { readProjectContinuationNote } from "../utils/continuation-note";
 import {
 	shouldZeroClineFreeModelCost,
 	zeroCliAgentEventCost,
@@ -188,6 +190,10 @@ export async function runInteractive(
 	},
 ): Promise<void> {
 	assertInteractivePreflight(config);
+
+	// Apply this project's post-tool continuation note before any turn runs. The
+	// runtime appends it after each round of tool execution; `/note` changes it.
+	setContinuationNote(readProjectContinuationNote(config.cwd));
 
 	const initialRepoStatus = await readRepoStatus(config.cwd);
 	const workflowSlashCommands = listInteractiveSlashCommands(
@@ -388,6 +394,14 @@ export async function runInteractive(
 					// Best effort cleanup for plugin command discovery sandbox.
 				});
 				pluginChatCommandHostShutdown = undefined;
+				// Close the Chrome instances the web providers launched. They are
+				// spawned detached so a mid-turn crash doesn't take the logged-in
+				// session with it, which also means they outlive a clean exit and
+				// keep holding their --remote-debugging-port. Only browsers we
+				// spawned ourselves are registered, and local model runtimes
+				// (llamacpp) are deliberately left running — see
+				// llms' tool-pipeline/browser-processes.ts.
+				await shutdownLaunchedBrowsers().catch(() => []);
 				setActiveRuntimeAbort(undefined);
 				setActiveRuntimeCleanup(undefined);
 			}
@@ -826,6 +840,7 @@ export async function runInteractive(
 			);
 			return (await deleteSession(sessionId)).deleted;
 		},
+		getSessionId: () => sessionRuntime.getActiveSessionId() || undefined,
 		onCompact: async () => {
 			await sessionRuntime.ensureReady();
 			return await sessionRuntime.compactCurrentSession();

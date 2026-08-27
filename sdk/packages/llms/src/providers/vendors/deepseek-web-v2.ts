@@ -23,7 +23,7 @@ import {
 	messagesToPrompt,
 	parseDeepSeekToolCalls,
 	parseLooseDeepSeekToolCalls,
-resolveModelOptions,
+	resolveModelOptions,
 } from "./deepseek-web";
 
 /**
@@ -36,10 +36,28 @@ function detectMalformedToolTag(text: string): string | null {
 	const match = /<tool\s+\{/i.exec(text);
 	if (match) {
 		console.log("[deepseek-web-v2] malformed tag detected in:", text);
-		return "Malformed tool tag: missing '>' after '<tool'. Expected format: <tool>{\"name\":\"...\",\"arguments\":{...}}</tool>.";
+		return 'Malformed tool tag: missing \'>\' after \'<tool\'. Expected format: <tool>{"name":"...","arguments":{...}}</tool>.';
 	}
 	return null;
 }
+
+import {
+	browserNotFoundMessage,
+	findChromePath,
+} from "./tool-pipeline/browser-path";
+import { registerLaunchedBrowser } from "./tool-pipeline/browser-processes";
+import { resolveChatKey } from "./tool-pipeline/chat-target";
+import { isContinuationNoteText } from "./tool-pipeline/continuation-note";
+import { consumePendingInjectedReply } from "./tool-pipeline/injected-reply";
+import { parseInvokeStyleToolCalls } from "./tool-pipeline/invoke-parser";
+import {
+	realUserMessageKey,
+	stripPreviousUserBlock,
+} from "./tool-pipeline/previous-user-dedupe";
+import {
+	isToolCallStuckInThinking,
+	THINKING_MODE_NUDGE,
+} from "./tool-pipeline/thinking-mode";
 import { validateToolCalls } from "./tool-pipeline/tool-dispatcher";
 import type { ProviderFactoryResult } from "./types";
 
@@ -108,7 +126,7 @@ const CONFIG_DIR = path.join(os.homedir(), ".cline", "deepseek-web-v2");
 const CONFIG_FILE = path.join(CONFIG_DIR, "config.json");
 const DEFAULT_DEBUG_PORT = 9222;
 const DEFAULT_LAUNCH_TIMEOUT_MS = 20_000;
-const DEFAULT_RESPONSE_TIMEOUT_MS = 120_000;
+const DEFAULT_RESPONSE_TIMEOUT_MS = 1_200_000; // 1200s (20 mins) to prevent premature timeout on long thinking/tool calls
 const DEFAULT_LOGIN_TIMEOUT_MS = 120_000;
 const DEFAULT_TOOL_PROMPT_THRESHOLD_CHARS = 20_000;
 /**
@@ -334,34 +352,7 @@ export function isRateLimitText(text: string): boolean {
 	return RATE_LIMIT_TEXT_RE.test(text);
 }
 
-/** Locate an installed Chrome/Chromium binary (same candidate list as the reference browser.py). */
-export function findChromePath(): string | undefined {
-	const programFiles = process.env.PROGRAMFILES;
-	const programFilesX86 = process.env["PROGRAMFILES(X86)"];
-	const localAppData = process.env.LOCALAPPDATA;
-	const candidates = [
-		programFiles
-			? path.join(programFiles, "Google", "Chrome", "Application", "chrome.exe")
-			: undefined,
-		programFilesX86
-			? path.join(
-					programFilesX86,
-					"Google",
-					"Chrome",
-					"Application",
-					"chrome.exe",
-				)
-			: undefined,
-		localAppData
-			? path.join(localAppData, "Google", "Chrome", "Application", "chrome.exe")
-			: undefined,
-		"/Applications/Google Chrome.app/Contents/MacOS/Google Chrome",
-		"/usr/bin/google-chrome",
-		"/usr/bin/chromium",
-		"/usr/bin/chromium-browser",
-	];
-	return candidates.find((p) => p !== undefined && fs.existsSync(p));
-}
+export { findChromePath } from "./tool-pipeline/browser-path";
 
 /**
  * Derive a stable key for a CLI conversation from its first user message. All
@@ -457,10 +448,7 @@ export function recordChatSession(
 	writeChatRegistry(chatsFile, registry);
 }
 
-export function deleteChatSession(
-	chatsFile: string,
-	chatKey: string,
-): void {
+export function deleteChatSession(chatsFile: string, chatKey: string): void {
 	const registry = readChatRegistry(chatsFile);
 	if (registry[chatKey]) {
 		delete registry[chatKey];
@@ -894,7 +882,10 @@ async function connectBrowser(
 	const executablePath = config.chromePath ?? findChromePath();
 	if (!executablePath) {
 		throw new Error(
-			"Could not find Chrome. Set chromePath in ~/.cline/deepseek-web-v2/config.json or DEEPSEEK_WEB_V2_CHROME_PATH.",
+			browserNotFoundMessage(
+				"~/.cline/deepseek-web-v2/config.json",
+				"DEEPSEEK_WEB_V2_CHROME_PATH",
+			),
 		);
 	}
 	const profileDir = config.profileDir ?? path.join(CONFIG_DIR, "profile");
@@ -915,6 +906,15 @@ async function connectBrowser(
 		stdio: "ignore",
 	});
 	child.unref();
+	// We own this browser, so the CLI can close it on exit instead of leaving
+	// it holding the debug port. See tool-pipeline/browser-processes.ts.
+	if (child.pid) {
+		registerLaunchedBrowser({
+			providerId: "deepseek-web-v2",
+			pid: child.pid,
+			debugPort: config.debugPort,
+		});
+	}
 
 	try {
 		await waitForEndpoint(config.debugPort, config.launchTimeoutMs);
@@ -1019,8 +1019,24 @@ async function navigateDeepSeekChat(
 	// Read the current location first; if we're already on the destination, skip
 	// the navigation entirely (no page reload) — unless we are recovering from a
 	// throttle, which requires a real reload to clear the blocked page.
-	const currentUrl = (await readPageUrl(cdp, cdpSessionId)) || "";
-	const alreadyThere = isSameChatLocation(currentUrl, destination);
+	//
+	// Retry this check briefly: a call that lands right after the previous
+	// turn just finished (e.g. compaction firing immediately after a
+	// response, with no human typing delay in between) can race the SPA's
+	// client-side router still updating `window.location` to the session
+	// URL. A single instantaneous read can catch that in-between state and
+	// wrongly conclude we're not there yet, triggering a needless reload —
+	// which then requires re-fetching and re-rendering history before the
+	// composer is safe to type into. Re-checking a few times avoids that
+	// reload path entirely for what is really just the next message in the
+	// same, already-open chat.
+	let currentUrl = (await readPageUrl(cdp, cdpSessionId)) || "";
+	let alreadyThere = isSameChatLocation(currentUrl, destination);
+	for (let attempt = 0; !alreadyThere && attempt < 4; attempt += 1) {
+		await sleep(150);
+		currentUrl = (await readPageUrl(cdp, cdpSessionId)) || "";
+		alreadyThere = isSameChatLocation(currentUrl, destination);
+	}
 	const reloadAnyway = forceReload;
 
 	if (alreadyThere && !reloadAnyway) {
@@ -1219,7 +1235,6 @@ async function withTimeout<T>(
 		);
 	});
 }
-
 
 // ── Completion capture (Network domain — mirrors browser.py page.on("response")) ─
 
@@ -1421,17 +1436,16 @@ async function streamCompletionFromPage(input: {
 	return result;
 }
 
-
 /**
  * Edit the last user message on the page by appending a period "." to the text.
  * Returns true if successful, false otherwise.
  */
 async function editLastUserMessage(
-    cdp: CdpClient,
-    sessionId: string,
-    logger?: BasicLogger,
+	cdp: CdpClient,
+	sessionId: string,
+	logger?: BasicLogger,
 ): Promise<boolean> {
-    const script = `
+	const script = `
         (async () => {
             // Find all user messages (exclude assistant/thinking blocks)
             const userMessages = Array.from(document.querySelectorAll('.ds-message')).filter(msg => {
@@ -1568,27 +1582,33 @@ async function editLastUserMessage(
         })();
     `;
 
-    try {
-        const result = await cdp.send(
-            "Runtime.evaluate",
-            {
-                expression: script,
-                returnByValue: true,
-                awaitPromise: true,
-            },
-            sessionId,
-        );
-        const success = result.result?.value === true;
-        if (success) {
-            logger?.debug?.("[deepseek-web-v2] Edited last user message (appended ' .')");
-        } else {
-            logger?.log("[deepseek-web-v2] Failed to edit last user message", { severity: "warn" });
-        }
-        return success;
-    } catch (err) {
-        logger?.log(`[deepseek-web-v2] Error editing last user message: ${err}`, { severity: "warn" });
-        return false;
-    }
+	try {
+		const result = await cdp.send(
+			"Runtime.evaluate",
+			{
+				expression: script,
+				returnByValue: true,
+				awaitPromise: true,
+			},
+			sessionId,
+		);
+		const success = result.result?.value === true;
+		if (success) {
+			logger?.debug?.(
+				"[deepseek-web-v2] Edited last user message (appended ' .')",
+			);
+		} else {
+			logger?.log("[deepseek-web-v2] Failed to edit last user message", {
+				severity: "warn",
+			});
+		}
+		return success;
+	} catch (err) {
+		logger?.log(`[deepseek-web-v2] Error editing last user message: ${err}`, {
+			severity: "warn",
+		});
+		return false;
+	}
 }
 
 async function runCompletion(input: {
@@ -1664,7 +1684,8 @@ async function runCompletion(input: {
 	let attempt = 0;
 	const maxAttempts = 2;
 	let lastError: Error | null = null;
-	let result: Awaited<ReturnType<typeof streamCompletionFromPage>> | null = null;
+	let result: Awaited<ReturnType<typeof streamCompletionFromPage>> | null =
+		null;
 
 	while (attempt < maxAttempts) {
 		attempt++;
@@ -1687,10 +1708,15 @@ async function runCompletion(input: {
 			// Check if the response is empty (no text and no reasoning)
 			if (!result.text && !result.reasoning) {
 				if (attempt < maxAttempts) {
-					logger?.log("[deepseek-web-v2] Empty response detected, attempting retry...", { severity: "warn" });
+					logger?.log(
+						"[deepseek-web-v2] Empty response detected, attempting retry...",
+						{ severity: "warn" },
+					);
 					const edited = await editLastUserMessage(cdp, sessionId, logger);
 					if (!edited) {
-						logger?.log("[deepseek-web-v2] Failed to edit message for retry", { severity: "warn" });
+						logger?.log("[deepseek-web-v2] Failed to edit message for retry", {
+							severity: "warn",
+						});
 						break;
 					}
 					await sleep(2000);
@@ -1702,10 +1728,15 @@ async function runCompletion(input: {
 		} catch (err) {
 			lastError = err instanceof Error ? err : new Error(String(err));
 			if (attempt < maxAttempts) {
-				logger?.log(`[deepseek-web-v2] Error during completion (attempt ${attempt}/${maxAttempts}): ${lastError.message}`, { severity: "warn" });
+				logger?.log(
+					`[deepseek-web-v2] Error during completion (attempt ${attempt}/${maxAttempts}): ${lastError.message}`,
+					{ severity: "warn" },
+				);
 				const edited = await editLastUserMessage(cdp, sessionId, logger);
 				if (!edited) {
-					logger?.log("[deepseek-web-v2] Failed to edit message for retry", { severity: "warn" });
+					logger?.log("[deepseek-web-v2] Failed to edit message for retry", {
+						severity: "warn",
+					});
 					break;
 				}
 				await sleep(2000);
@@ -1953,6 +1984,50 @@ function hasLeadingCompactionSummary(prompt: LanguageModelV2Prompt): boolean {
  *    state) is re-seeded with what was compacted. The summary is kept alongside
  *    the current user prompt and any trailing tool results.
  */
+// The agent runtime's synthetic "keep going" nudge appended after every round
+// of tool execution (see `agent-runtime.ts`'s `continuationMessage`) is never
+// something the user typed, so it must never be echoed back to the model
+// labeled as "Previous user message". Its text is per project and set at
+// runtime by the CLI `/note` command, so match it through the shared helper
+// rather than against a literal here — see `tool-pipeline/continuation-note.ts`.
+
+function messageText(message: LanguageModelV2Prompt[number]): string {
+	const content = Array.isArray(message.content)
+		? message.content
+				.map((block) => ("text" in block ? block.text : ""))
+				.join("\n")
+		: message.content;
+	return typeof content === "string" ? content.trim() : "";
+}
+
+/** True for the runtime's synthetic post-tool continuation message. */
+function isToolContinuationMessage(
+	message: LanguageModelV2Prompt[number],
+): boolean {
+	return (
+		message.role === "user" && isContinuationNoteText(messageText(message))
+	);
+}
+
+/**
+ * Walk backward from (but not including) `beforeIndex` for the nearest user
+ * message that is NOT a synthetic continuation placeholder. A multi-round
+ * tool loop appends one such placeholder per round, so the "user message
+ * right before this one" can itself be an earlier placeholder rather than
+ * anything the user actually typed.
+ */
+function findPriorRealUserIndex(
+	nonSystem: LanguageModelV2Prompt,
+	beforeIndex: number,
+): number {
+	for (let i = beforeIndex - 1; i >= 0; i--) {
+		if (nonSystem[i].role !== "user") continue;
+		if (isToolContinuationMessage(nonSystem[i])) continue;
+		return i;
+	}
+	return -1;
+}
+
 export function buildLeanConversation(
 	prompt: LanguageModelV2Prompt,
 	preserveCompactionContext = false,
@@ -2002,7 +2077,18 @@ export function buildLeanConversation(
 		kept.push(nonSystem[firstUserIndex]);
 	}
 	if (isContinuationTurn && prevUserIndex >= 0) {
-		kept.push(nonSystem[prevUserIndex]);
+		// On a multi-round tool loop, `prevUserIndex` may itself be an earlier
+		// synthetic continuation placeholder that was already sent to the chat
+		// in a prior real turn — not something the user typed. Re-anchor to
+		// the nearest REAL user message so "Previous user message" never
+		// echoes our own placeholder text back at the model. The tool-result
+		// window below still starts right after `prevUserIndex` (unaffected),
+		// so only the CURRENT round's results are included, not the whole
+		// history the placeholder skip may reach past.
+		const anchorIndex = isToolContinuationMessage(nonSystem[prevUserIndex])
+			? findPriorRealUserIndex(nonSystem, prevUserIndex)
+			: prevUserIndex;
+		if (anchorIndex >= 0) kept.push(nonSystem[anchorIndex]);
 		for (let i = prevUserIndex + 1; i < nonSystem.length; i++) {
 			if (nonSystem[i].role === "tool") kept.push(nonSystem[i]);
 		}
@@ -2100,6 +2186,90 @@ export function continuationLabel(
 	return "Note";
 }
 
+/**
+ * Turn a raw reply body into a completion result, running the same tool
+ * recovery ladder a live capture goes through: strict `<tool>` blocks, then
+ * loose ones, then the plain-prose fallback. Usage is zero — nothing was sent.
+ */
+function buildCompletionFromText(
+	text: string,
+	options: LanguageModelV2CallOptions,
+	functionTools: LanguageModelV2FunctionTool[],
+): {
+	text: string;
+	reasoning: string;
+	toolCalls: ParsedToolCall[];
+	usage: DeepSeekWebUsageEstimate;
+} {
+	const usage: DeepSeekWebUsageEstimate = {
+		inputTokens: 0,
+		outputTokens: 0,
+		totalTokens: 0,
+	};
+	const toolNames = functionTools.map((tool) => tool.name);
+	if (toolNames.length === 0) {
+		return { text, reasoning: "", toolCalls: [], usage };
+	}
+
+	const { cleanedContent, toolCalls } = parseDeepSeekToolCalls(text, toolNames);
+	const looseCalls =
+		toolCalls.length === 0
+			? parseLooseDeepSeekToolCalls(text, toolNames)
+			: toolCalls;
+	if (looseCalls.length > 0) {
+		const { tools: validatedLoose, retryPrompt } =
+			validateToolCalls(looseCalls);
+		return {
+			text: retryPrompt
+				? `${cleanedContent}\n\n${retryPrompt}`.trim()
+				: cleanedContent,
+			reasoning: "",
+			toolCalls: validatedLoose,
+			usage,
+		};
+	}
+
+	// Anthropic-style `<invoke>` bodies (see tool-pipeline/invoke-parser.ts).
+	// Before the malformed-tag hint, which would fire on the `<tool>` wrapper
+	// the model opened around the invoke block.
+	const invoked = parseInvokeStyleToolCalls(text, toolNames);
+	if (invoked.toolCalls.length > 0) {
+		const { tools: validatedInvoked, retryPrompt } = validateToolCalls(
+			invoked.toolCalls,
+		);
+		return {
+			text: retryPrompt
+				? `${invoked.cleanedContent}\n\n${retryPrompt}`.trim()
+				: invoked.cleanedContent,
+			reasoning: "",
+			toolCalls: validatedInvoked,
+			usage,
+		};
+	}
+
+	const malformedError = detectMalformedToolTag(text);
+	if (malformedError) {
+		return {
+			text: `${text}\n\n${malformedError}`,
+			reasoning: "",
+			toolCalls: [],
+			usage,
+		};
+	}
+
+	const fallback = parseFallbackToolUses(
+		cleanedContent,
+		lastUserText(options.prompt),
+		toolNames,
+	);
+	return {
+		text: fallback.cleanedText,
+		reasoning: "",
+		toolCalls: fallback.toolUses,
+		usage,
+	};
+}
+
 function finishReasonFor(
 	text: string,
 	toolCalls: ParsedToolCall[],
@@ -2135,12 +2305,36 @@ function createDeepSeekWebV2Model(
 		const functionTools = (options.tools ?? []).filter(
 			(tool): tool is LanguageModelV2FunctionTool => tool.type === "function",
 		);
+
+		// A reply the user pasted back with `/paste` after a network error ate
+		// the real one. Short-circuit before touching the browser: the text is
+		// already the model's answer, it just needs the same tool parsing a
+		// captured reply gets. No retry loop — a paste is a fixed string, so
+		// resending a correction into the chat would be meaningless here.
+		const injectedReply = consumePendingInjectedReply();
+		if (injectedReply) {
+			return buildCompletionFromText(injectedReply, options, functionTools);
+		}
+
 		// The CLI conversation is keyed by its first user message. A fresh key
 		// (no mapped DeepSeek chat yet) means this call opens a brand-new web
 		// chat — e.g. right after a compaction, where the newly-generated
 		// `compaction_summary` becomes the first user message and the compacted
 		// context moves into a fresh DeepSeek chat.
-		const chatKey = chatKeyFromPrompt(options.prompt);
+		// Which web chat does this call go to?
+		//
+		// Normally: hash the conversation's first user message. Same
+		// conversation, same key, same chat.
+		//
+		// During compaction: the summarize request is standalone text that would
+		// hash to a chat of its own (an empty one, where the model would answer
+		// that it has nothing to summarize), so compaction instead routes
+		// explicitly to the chat the last ordinary turn used. See
+		// `tool-pipeline/chat-target.ts` for the full three-stage /compact
+		// hand-off and for how to wire another web provider into it.
+		const chatKey = resolveChatKey("deepseek-web-v2", () =>
+			chatKeyFromPrompt(options.prompt),
+		);
 		const isNewChat =
 			lookupChatSession(resolveDeepSeekWebV2Config().chatsFile, chatKey) ===
 			undefined;
@@ -2170,22 +2364,39 @@ function createDeepSeekWebV2Model(
 		// hasn't typed anything new), drop the stale `Previous user message:`
 		// block so it isn't re-sent over and over. Fresh tool results from this
 		// turn are still included because they change each iteration.
-		const currentUserText = lastUserText(options.prompt);
+		// Key on the last message the USER actually typed, not the last user
+		// message: on an iteration turn that is the runtime's synthetic
+		// continuation note, which would flip the key and let the instruction
+		// go out one extra time. See `tool-pipeline/previous-user-dedupe.ts`.
+		const currentUserText = realUserMessageKey(options.prompt);
 		let dedupedPrompt = prompt;
 		if (currentUserText && currentUserText === lastSentUserMessage) {
-			// Remove the leading `Previous user message:` block, whether it is
-			// the whole prompt (no tool results yet) or followed by fresh
-			// tool-result/assistant context.
-			dedupedPrompt = prompt.replace(
-				/^Previous user message:[\s\S]*?(?=\n\nTool result:|\n\nAssistant:|$)/,
-				"",
-			);
+			dedupedPrompt = stripPreviousUserBlock(prompt);
 		}
 		lastSentUserMessage = currentUserText;
-		const { text, reasoning, accumulatedTokenUsage, rateLimited } =
-			await runCompletion({
+
+		// Bounded retry: when EVERY tool call in a reply gets rejected (e.g.
+		// invalid Python in an `editor` call), the rejection note is OUR
+		// commentary on what the model typed — DeepSeek never sees it just
+		// because we computed it locally, since it isn't part of its
+		// server-side chat history. Resend it as a real follow-up message in
+		// the SAME chat so the model actually sees the rejection and can
+		// self-correct, capped so a persistently broken model can't loop
+		// forever.
+		const MAX_TOOL_REJECTION_RETRIES = 2;
+		const toolNames = functionTools.map((t) => t.name);
+		let sendPrompt = dedupedPrompt;
+		let text = "";
+		let reasoning = "";
+		let accumulatedTokenUsage: number | undefined;
+		let rateLimited: boolean | undefined;
+		let finalText = "";
+		let finalToolCalls: ParsedToolCall[] = [];
+
+		for (let attempt = 0; ; attempt++) {
+			const result = await runCompletion({
 				modelId,
-				prompt: dedupedPrompt,
+				prompt: sendPrompt,
 				chatKey,
 				// This turn requests tool calls when function tools are wired up —
 				// so it is exactly the rapid-fire pattern that needs extra pacing.
@@ -2195,6 +2406,100 @@ function createDeepSeekWebV2Model(
 				signal: options.abortSignal,
 				logger,
 			});
+			text = result.text;
+			reasoning = result.reasoning;
+			accumulatedTokenUsage = result.accumulatedTokenUsage;
+			rateLimited = result.rateLimited;
+
+			if (functionTools.length === 0) {
+				finalText = text;
+				finalToolCalls = [];
+				break;
+			}
+
+			// The model worked the tool call out while thinking and never
+			// repeated it in the answer. Reasoning is a scratchpad, not output,
+			// so we can't execute what's in there — ask for it for real instead.
+			if (
+				attempt < MAX_TOOL_REJECTION_RETRIES &&
+				isToolCallStuckInThinking({ text, reasoning, toolNames })
+			) {
+				logger?.log(
+					`[deepseek-web-v2] tool call left in thinking stream, nudging for a real one (attempt ${attempt + 1}/${MAX_TOOL_REJECTION_RETRIES})`,
+					{ severity: "warn" },
+				);
+				sendPrompt = THINKING_MODE_NUDGE;
+				continue;
+			}
+
+			const { cleanedContent, toolCalls } = parseDeepSeekToolCalls(
+				text,
+				toolNames,
+			);
+			// Recover "wrong" tool-call shapes the strict regex missed before
+			// falling back to plain-text heuristics.
+			const looseCalls =
+				toolCalls.length === 0
+					? parseLooseDeepSeekToolCalls(text, toolNames)
+					: toolCalls;
+			if (looseCalls.length > 0) {
+				const { tools: validatedLoose, retryPrompt: looseRetry } =
+					validateToolCalls(looseCalls);
+				if (
+					validatedLoose.length === 0 &&
+					looseRetry &&
+					attempt < MAX_TOOL_REJECTION_RETRIES
+				) {
+					logger?.log(
+						`[deepseek-web-v2] all tool calls rejected, resending correction into chat (attempt ${attempt + 1}/${MAX_TOOL_REJECTION_RETRIES})`,
+						{ severity: "warn" },
+					);
+					sendPrompt = looseRetry;
+					continue;
+				}
+				finalText = looseRetry
+					? `${cleanedContent}\n\n${looseRetry}`.trim()
+					: cleanedContent;
+				finalToolCalls = validatedLoose;
+				break;
+			}
+			// Anthropic-style `<invoke name="...">` bodies: right tool, right
+			// arguments, wrong envelope. Must come before the malformed-tag
+			// hint below, which would otherwise fire on the (usually unclosed)
+			// `<tool>` wrapper the model opened around it.
+			const invoked = parseInvokeStyleToolCalls(text, toolNames);
+			if (invoked.toolCalls.length > 0) {
+				const { tools: validatedInvoked, retryPrompt: invokedRetry } =
+					validateToolCalls(invoked.toolCalls);
+				finalText = invokedRetry
+					? `${invoked.cleanedContent}\n\n${invokedRetry}`.trim()
+					: invoked.cleanedContent;
+				finalToolCalls = validatedInvoked;
+				break;
+			}
+			// Both parsers above already repair a `<tool` tag whose `>` was
+			// dropped before the JSON body — only surface the malformed-tag
+			// hint when that repair still couldn't recover a call (e.g. the
+			// JSON body itself is broken too).
+			const malformedError = detectMalformedToolTag(text);
+			if (malformedError) {
+				finalText = text + "\n\n" + malformedError;
+				finalToolCalls = [];
+				break;
+			}
+			// The web model often ignores the <tool> contract and answers with
+			// plain text (a plan, code fences, install commands). If no
+			// structured call came back, convert the visible reply into real
+			// tool calls so the agent actually executes them.
+			const fallback = parseFallbackToolUses(
+				cleanedContent,
+				lastUserText(options.prompt),
+				toolNames,
+			);
+			finalText = fallback.cleanedText;
+			finalToolCalls = fallback.toolUses;
+			break;
+		}
 		// Track the context strictly monotonically. DeepSeek's reported
 		// `accumulated_token_usage` can DROP when it rejects/rolls back a
 		// rate-limited message (the user-visible "tokens reset to lower"). If we
@@ -2232,52 +2537,7 @@ function createDeepSeekWebV2Model(
 					}
 				: estimated;
 
-		if (functionTools.length > 0) {
-			const toolNames = functionTools.map((t) => t.name);
-
-			const { cleanedContent, toolCalls } = parseDeepSeekToolCalls(
-				text,
-				toolNames,
-			);
-			// Recover "wrong" tool-call shapes the strict regex missed before
-			// falling back to plain-text heuristics.
-			const looseCalls =
-				toolCalls.length === 0
-					? parseLooseDeepSeekToolCalls(text, toolNames)
-					: toolCalls;
-			if (looseCalls.length > 0) {
-				const { tools: validatedLoose, retryPrompt: looseRetry } =
-					validateToolCalls(looseCalls);
-				const looseText = looseRetry
-					? `${cleanedContent}\n\n${looseRetry}`.trim()
-					: cleanedContent;
-				return { text: looseText, reasoning, toolCalls: validatedLoose, usage };
-			}
-			// Both parsers above already repair a `<tool` tag whose `>` was
-			// dropped before the JSON body — only surface the malformed-tag
-			// hint when that repair still couldn't recover a call (e.g. the
-			// JSON body itself is broken too).
-			const malformedError = detectMalformedToolTag(text);
-			if (malformedError) {
-				return {
-					text: text + "\n\n" + malformedError,
-					reasoning,
-					toolCalls: [],
-					usage,
-				};
-			}
-			// The web model often ignores the <tool> contract and answers with
-			// plain text (a plan, code fences, install commands). If no
-			// structured call came back, convert the visible reply into real
-			// tool calls so the agent actually executes them.
-			const fallback = parseFallbackToolUses(
-				cleanedContent,
-				lastUserText(options.prompt),
-				toolNames,
-			);
-			return { text: fallback.cleanedText, reasoning, toolCalls: fallback.toolUses, usage };
-		}
-		return { text, reasoning, toolCalls: [], usage };
+		return { text: finalText, reasoning, toolCalls: finalToolCalls, usage };
 	};
 
 	return {
@@ -2353,15 +2613,28 @@ function createDeepSeekWebV2Model(
 							functionTools.map((t) => t.name),
 						)
 					: toolCalls;
+			// Last recovery rung: Anthropic-style `<invoke>` bodies, which neither
+			// parser above understands (see tool-pipeline/invoke-parser.ts).
+			const invoked =
+				streamToolCalls.length === 0 && functionTools.length > 0
+					? parseInvokeStyleToolCalls(
+							rawText,
+							functionTools.map((t) => t.name),
+						)
+					: { cleanedContent, toolCalls: [] };
+			const recoveredCalls =
+				invoked.toolCalls.length > 0 ? invoked.toolCalls : streamToolCalls;
+			const recoveredContent =
+				invoked.toolCalls.length > 0 ? invoked.cleanedContent : cleanedContent;
 			// Python-validation gate (same as doCompletion's non-streaming path):
 			// drop editor calls with malformed `new_text` and surface the retry
 			// prompt as text so the correction feeds back to the model instead of
 			// executing bad code.
 			const { tools: validatedCalls, retryPrompt } =
-				validateToolCalls(streamToolCalls);
+				validateToolCalls(recoveredCalls);
 			const displayText = retryPrompt
-				? `${cleanedContent}\n\n${retryPrompt}`.trim()
-				: cleanedContent;
+				? `${recoveredContent}\n\n${retryPrompt}`.trim()
+				: recoveredContent;
 
 			const parts: LanguageModelV2StreamPart[] = [
 				{ type: "stream-start", warnings: [] },

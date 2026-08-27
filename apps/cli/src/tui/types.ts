@@ -205,6 +205,12 @@ export interface TuiProps {
 	) => Promise<string>;
 	onDeleteHistorySession: (sessionId: string) => Promise<boolean>;
 	onCompact: () => Promise<InteractiveCompactionResult>;
+	/**
+	 * Id of the CLI session currently running. Changes on resume/fork/compact, so
+	 * read it at the moment you need it rather than caching. Used by `/findchat`
+	 * to pin this session to a web chat.
+	 */
+	getSessionId: () => string | undefined;
 	onAutocompact: (tokens: number) => Promise<void>;
 	onFork: () => Promise<
 		| {

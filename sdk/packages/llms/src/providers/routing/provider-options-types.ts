@@ -20,6 +20,8 @@ export type AiSdkProviderOptionsTarget =
 	| "ollama"
 	| "qwen-web"
 	| "chatgpt-web"
+	| "claude-web"
+	| "gemini-web"
 	| "sapaicore"
 	| "deepseek-web"
 	| "deepseek-web-v2";
@@ -101,6 +103,11 @@ export function inferProviderOptionsTarget(
 			return "qwen-web";
 		case "chatgpt-web":
 			return "chatgpt-web";
+		case "claude-web":
+			return "claude-web";
+		case "gemini-web":
+			return "gemini-web";
+
 		default:
 			return "openai-compatible";
 	}

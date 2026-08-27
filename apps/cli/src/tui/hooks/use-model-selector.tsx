@@ -679,7 +679,7 @@ export function useModelSelector(opts: {
 						const browseModel = modelOptions.find(
 							(m: ModelOption) => m.key === browseResult,
 						);
-						if (browseModel?.supportsReasoning && config.providerId !== "deepseek-web-v2") {
+						if (browseModel?.supportsReasoning) {
 							const lvl: ThinkingLevel = config.reasoningEffort
 								? (config.reasoningEffort as ThinkingLevel)
 								: config.thinking
@@ -777,7 +777,14 @@ export function useModelSelector(opts: {
 				const selectedModel = modelOptions.find(
 					(m: ModelOption) => m.key === selectedKey,
 				);
-				if (!selectedModel?.supportsReasoning) {
+				// The browser-driven web providers pick thinking by MODEL (e.g.
+				// "DeepSeek Reasoner (Deep Thinking)" vs "DeepSeek Chat"), not by a
+				// reasoning-effort value we send, so the thinking-level prompt has
+				// nothing to set there.
+				if (
+					!selectedModel?.supportsReasoning ||
+					config.providerId === "deepseek-web-v2"
+				) {
 					clearReasoningConfig(config);
 					pickingModel = false;
 					break;

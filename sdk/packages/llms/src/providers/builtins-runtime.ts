@@ -87,6 +87,14 @@ async function loadFamilyFactory(
 				const module = await import("./ai-sdk");
 				return module.createChatGPTWebProvider;
 			}
+			case "claude-web": {
+				const module = await import("./ai-sdk");
+				return module.createClaudeWebProvider;
+			}
+			case "gemini-web": {
+				const module = await import("./ai-sdk");
+				return module.createGeminiWebProvider;
+			}
 			default: {
 				throw new Error(`Unsupported provider family: ${family}`);
 			}

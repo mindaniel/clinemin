@@ -1,7 +1,7 @@
 /**
- * Qwen Web ("qwen-web") provider.
+ * Gemini Web ("gemini-web") provider.
  *
- * Drives the real Qwen web client (chat.qwen.ai) through your installed Chrome
+ * Drives the real Gemini web client (gemini.google.com) through your installed Chrome
  * via the DevTools Protocol — no API key needed.
  */
 
@@ -24,11 +24,14 @@ import type {
 	GatewayProviderContext,
 	GatewayResolvedProviderConfig,
 } from "@cline/shared";
+import { estimateTokens } from "@cline/shared";
 
 import {
 	messagesToPrompt,
+	normalizeToolName,
 	parseDeepSeekToolCalls,
 	parseLooseDeepSeekToolCalls,
+	parseRepairedToolJson,
 } from "./deepseek-web";
 import {
 	buildLeanConversation,
@@ -44,7 +47,6 @@ import {
 } from "./tool-pipeline/browser-path";
 import { registerLaunchedBrowser } from "./tool-pipeline/browser-processes";
 import { resolveChatKey } from "./tool-pipeline/chat-target";
-import { consumePendingInjectedReply } from "./tool-pipeline/injected-reply";
 import {
 	realUserMessageKey,
 	stripPreviousUserBlock,
@@ -52,13 +54,13 @@ import {
 import { validateToolCalls } from "./tool-pipeline/tool-dispatcher";
 import type { ProviderFactoryResult } from "./types";
 
-const CONFIG_DIR = path.join(os.homedir(), ".cline", "qwen-web");
+const CONFIG_DIR = path.join(os.homedir(), ".cline", "gemini-web");
 const CONFIG_FILE = path.join(CONFIG_DIR, "config.json");
 const DEFAULT_CHATS_FILE = path.join(CONFIG_DIR, "chats.json");
-const QWEN_WEB_URL = "https://chat.qwen.ai/";
-const QWEN_API_ENDPOINT = "/api/v2/chat/completions";
+const GEMINI_WEB_URL = "https://gemini.google.com/";
+const GEMINI_API_ENDPOINT = "/StreamGenerate";
 
-const DEFAULT_DEBUG_PORT = 9223;
+const DEFAULT_DEBUG_PORT = 9226;
 const DEFAULT_LAUNCH_TIMEOUT_MS = 30000;
 const DEFAULT_RESPONSE_TIMEOUT_MS = 1200000; // Increased to 1200s (20 mins) to prevent premature timeout on long thinking/tool calls
 const DEFAULT_LOGIN_TIMEOUT_MS = 120000;
@@ -72,23 +74,23 @@ const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
 /**
  * One-shot "recover from a throttle/block" signal, mirroring deepseek-web-v2's
  * own flag (kept separate — this provider drives an unrelated tab/profile, so
- * the two must never share recovery state). When Qwen rate-limits a turn, the
+ * the two must never share recovery state). When Gemini rate-limits a turn, the
  * page can be left blocked; the next `runCompletion` forces a full reload even
  * if the URL already matches to clear it. Consumed (reset) after one reload.
  */
-let qwenRecoverFromThrottle = false;
+let geminiRecoverFromThrottle = false;
 
-function requestQwenThrottleRecoveryReload(): void {
-	qwenRecoverFromThrottle = true;
+function requestGeminiThrottleRecoveryReload(): void {
+	geminiRecoverFromThrottle = true;
 }
 
-function consumeQwenThrottleRecoveryReload(): boolean {
-	const shouldReload = qwenRecoverFromThrottle;
-	qwenRecoverFromThrottle = false;
+function consumeGeminiThrottleRecoveryReload(): boolean {
+	const shouldReload = geminiRecoverFromThrottle;
+	geminiRecoverFromThrottle = false;
 	return shouldReload;
 }
 
-export interface QwenWebV2RuntimeConfig {
+export interface GeminiWebV2RuntimeConfig {
 	chromePath?: string;
 	profileDir?: string;
 	debugPort: number;
@@ -112,14 +114,14 @@ interface ChatSessionRecord {
 	last_active: string;
 }
 
-export interface QwenWebChatEntry {
+export interface GeminiWebChatEntry {
 	chatKey: string;
 	sessionId: string;
 	firstSeen: string;
 	lastActive: string;
 }
 
-function readConfigFile(): Partial<QwenWebV2RuntimeConfig> {
+function readConfigFile(): Partial<GeminiWebV2RuntimeConfig> {
 	try {
 		return JSON.parse(fs.readFileSync(CONFIG_FILE, "utf-8"));
 	} catch {
@@ -127,56 +129,56 @@ function readConfigFile(): Partial<QwenWebV2RuntimeConfig> {
 	}
 }
 
-export function resolveQwenWebV2Config(): QwenWebV2RuntimeConfig {
+export function resolveGeminiWebV2Config(): GeminiWebV2RuntimeConfig {
 	const fileConfig = readConfigFile();
 	const port =
-		Number(process.env.QWEN_WEB_DEBUG_PORT ?? fileConfig.debugPort) ||
+		Number(process.env.GEMINI_WEB_DEBUG_PORT ?? fileConfig.debugPort) ||
 		DEFAULT_DEBUG_PORT;
 	return {
-		chromePath: process.env.QWEN_WEB_CHROME_PATH || fileConfig.chromePath,
-		profileDir: process.env.QWEN_WEB_PROFILE_DIR || fileConfig.profileDir,
+		chromePath: process.env.GEMINI_WEB_CHROME_PATH || fileConfig.chromePath,
+		profileDir: process.env.GEMINI_WEB_PROFILE_DIR || fileConfig.profileDir,
 		debugPort: port,
 		headless:
-			process.env.QWEN_WEB_HEADLESS !== undefined
-				? process.env.QWEN_WEB_HEADLESS !== "false"
+			process.env.GEMINI_WEB_HEADLESS !== undefined
+				? process.env.GEMINI_WEB_HEADLESS !== "false"
 				: (fileConfig.headless ?? false),
 		debug:
-			process.env.QWEN_WEB_DEBUG !== undefined
-				? process.env.QWEN_WEB_DEBUG !== "false"
+			process.env.GEMINI_WEB_DEBUG !== undefined
+				? process.env.GEMINI_WEB_DEBUG !== "false"
 				: (fileConfig.debug ?? false),
 		launchTimeoutMs:
 			Number(
-				process.env.QWEN_WEB_LAUNCH_TIMEOUT_MS ?? fileConfig.launchTimeoutMs,
+				process.env.GEMINI_WEB_LAUNCH_TIMEOUT_MS ?? fileConfig.launchTimeoutMs,
 			) || DEFAULT_LAUNCH_TIMEOUT_MS,
 		responseTimeoutMs:
 			Number(
-				process.env.QWEN_WEB_RESPONSE_TIMEOUT_MS ??
+				process.env.GEMINI_WEB_RESPONSE_TIMEOUT_MS ??
 					fileConfig.responseTimeoutMs,
 			) || DEFAULT_RESPONSE_TIMEOUT_MS,
 		loginTimeoutMs:
 			Number(
-				process.env.QWEN_WEB_LOGIN_TIMEOUT_MS ?? fileConfig.loginTimeoutMs,
+				process.env.GEMINI_WEB_LOGIN_TIMEOUT_MS ?? fileConfig.loginTimeoutMs,
 			) || DEFAULT_LOGIN_TIMEOUT_MS,
 		chatsFile:
-			process.env.QWEN_WEB_CHATS_FILE ||
+			process.env.GEMINI_WEB_CHATS_FILE ||
 			fileConfig.chatsFile ||
 			DEFAULT_CHATS_FILE,
 		minSendDelayMs:
 			Number(
-				process.env.QWEN_WEB_MIN_SEND_DELAY_MS ?? fileConfig.minSendDelayMs,
+				process.env.GEMINI_WEB_MIN_SEND_DELAY_MS ?? fileConfig.minSendDelayMs,
 			) || DEFAULT_MIN_SEND_DELAY_MS,
 		maxSendDelayMs:
 			Number(
-				process.env.QWEN_WEB_MAX_SEND_DELAY_MS ?? fileConfig.maxSendDelayMs,
+				process.env.GEMINI_WEB_MAX_SEND_DELAY_MS ?? fileConfig.maxSendDelayMs,
 			) || DEFAULT_MAX_SEND_DELAY_MS,
 		toolTurnExtraMinMs:
 			Number(
-				process.env.QWEN_WEB_TOOL_TURN_EXTRA_MIN_MS ??
+				process.env.GEMINI_WEB_TOOL_TURN_EXTRA_MIN_MS ??
 					fileConfig.toolTurnExtraMinMs,
 			) || DEFAULT_TOOL_TURN_EXTRA_MIN_MS,
 		toolTurnExtraMaxMs:
 			Number(
-				process.env.QWEN_WEB_TOOL_TURN_EXTRA_MAX_MS ??
+				process.env.GEMINI_WEB_TOOL_TURN_EXTRA_MAX_MS ??
 					fileConfig.toolTurnExtraMaxMs,
 			) || DEFAULT_TOOL_TURN_EXTRA_MAX_MS,
 	};
@@ -297,6 +299,16 @@ class CdpClient {
 let activeCdp: CdpClient | null = null;
 let activeCdpKey: string | null = null;
 
+// Cache the attached page target + its CDP session so consecutive turns reuse
+// the SAME session instead of re-attaching (and re-toggling the Network
+// domain) on every message — the same flakiness fix applied to chatgpt-web.
+let activeGeminiTargetId: string | null = null;
+let activeGeminiCdpSessionId: string | null = null;
+
+// Sessions whose Network domain is already enabled. Enable once and leave it
+// on for the session's lifetime; toggling it per turn made capture flaky.
+const geminiNetworkEnabledSessions = new Set<string>();
+
 async function connectCdp(port: number, timeoutMs: number): Promise<CdpClient> {
 	const endpoint = `http://127.0.0.1:${port}`;
 	const deadline = Date.now() + timeoutMs;
@@ -339,7 +351,7 @@ async function waitForEndpoint(port: number, timeoutMs: number): Promise<void> {
 }
 
 async function connectBrowser(
-	config: QwenWebV2RuntimeConfig,
+	config: GeminiWebV2RuntimeConfig,
 ): Promise<CdpClient> {
 	const key = `${config.debugPort}`;
 	if (activeCdp && activeCdpKey === key && activeCdp.isOpen()) {
@@ -358,8 +370,8 @@ async function connectBrowser(
 	if (!executablePath) {
 		throw new Error(
 			browserNotFoundMessage(
-				"~/.cline/qwen-web/config.json",
-				"QWEN_WEB_CHROME_PATH",
+				"~/.cline/gemini-web/config.json",
+				"GEMINI_WEB_CHROME_PATH",
 			),
 		);
 	}
@@ -372,7 +384,7 @@ async function connectBrowser(
 		"--no-first-run",
 		"--no-default-browser-check",
 		"--remote-allow-origins=*",
-		QWEN_WEB_URL,
+		GEMINI_WEB_URL,
 	];
 	if (config.headless) args.push("--headless=new");
 
@@ -385,7 +397,7 @@ async function connectBrowser(
 	// it holding the debug port. See tool-pipeline/browser-processes.ts.
 	if (child.pid) {
 		registerLaunchedBrowser({
-			providerId: "qwen-web",
+			providerId: "gemini-web",
 			pid: child.pid,
 			debugPort: config.debugPort,
 		});
@@ -395,8 +407,8 @@ async function connectBrowser(
 		await waitForEndpoint(config.debugPort, config.launchTimeoutMs);
 	} catch (err) {
 		throw new Error(
-			`Failed to launch Chrome for Qwen Web: ${(err as Error).message}. ` +
-				"If Chrome is already running with this profile, close it or set a different QWEN_WEB_PROFILE_DIR.",
+			`Failed to launch Chrome for Gemini Web: ${(err as Error).message}. ` +
+				"If Chrome is already running with this profile, close it or set a different GEMINI_WEB_PROFILE_DIR.",
 		);
 	}
 	activeCdp = await connectCdp(config.debugPort, connectTimeoutMs);
@@ -404,203 +416,167 @@ async function connectBrowser(
 	return activeCdp;
 }
 
-// ── Enhanced Qwen send script (from send_qwen.txt) ──────────────────────────
+// ── Enhanced Gemini send script (from send_gemini.txt) ──────────────────────────
 const SEND_MESSAGE_SOURCE = `
-// ---------- Helper: Select thinking mode ----------
-async function selectThinkingMode(mode) {
-    // mode: 'auto' | 'fast' | 'thinking'
-    // Find the thinking mode toggle/button
-    const selectors = [
-        'button[aria-label*="Think" i]',
-        'button[aria-label*="思考" i]',
-        '[role="button"][aria-label*="Think" i]',
-        '.thinking-toggle',
-        '.deep-thinking-toggle'
-    ];
-    let btn = null;
-    for (const sel of selectors) {
-        btn = document.querySelector(sel);
-        if (btn) break;
-    }
-    if (!btn) {
-        console.warn('⚠️ Thinking mode toggle not found');
+// ---------- 0. Select model (Flash, Pro, Flash-Lite, etc.) ----------
+async function selectGeminiModel(modelName) {
+    if (!modelName) return true;
+    const modelBtn = document.querySelector('[data-test-id="bard-mode-menu-button"]');
+    if (!modelBtn) {
+        console.warn('Model selector button not found');
         return false;
     }
-    // Click to toggle to desired mode (simple toggle: if mode is 'thinking' and not active, click; if mode is 'fast' and active, click)
-    const isActive = btn.classList.contains('active') || btn.getAttribute('aria-pressed') === 'true';
-    const targetActive = mode === 'thinking';
-    if (isActive !== targetActive) {
-        btn.click();
-        console.log('🔄 Toggled thinking mode to', mode);
-        await new Promise(resolve => setTimeout(resolve, 300));
+
+    modelBtn.click();
+
+    let menuItems = null;
+    for (let attempt = 0; attempt < 5; attempt++) {
+        await new Promise(resolve => setTimeout(resolve, 500 + attempt * 200));
+        menuItems = document.querySelectorAll('gem-menu-item[role="menuitem"]');
+        if (menuItems.length > 0) break;
+    }
+    if (!menuItems || menuItems.length === 0) {
+        console.warn('No model menu items found');
+        return false;
+    }
+
+    const target = modelName.toLowerCase().trim();
+    let exactMatch = null;
+    let partialMatch = null;
+
+    for (const item of menuItems) {
+        const labelEl = item.querySelector('.label');
+        if (!labelEl) continue;
+        let label = (labelEl.textContent || '').trim();
+        let cleaned = label.replace(/^\\d+\\.\\s*/, '').trim();
+        let cleanedLower = cleaned.toLowerCase();
+        if (cleanedLower === target) {
+            exactMatch = item;
+            break;
+        }
+        if (cleanedLower.includes(target)) {
+            partialMatch = item;
+        }
+    }
+
+    const targetItem = exactMatch || partialMatch;
+    if (!targetItem) {
+        console.warn('Model "' + modelName + '" not found in menu');
+        return false;
+    }
+
+    targetItem.click();
+    await new Promise(resolve => setTimeout(resolve, 500));
+    return true;
+}
+
+// ---------- 1. Set text in Quill editor ----------
+async function setGeminiInput(message) {
+    const editor = document.querySelector('.ql-editor.textarea.new-input-ui') ||
+                   document.querySelector('[data-test-id="textarea-inner"] .ql-editor') ||
+                   document.querySelector('[contenteditable="true"][role="textbox"]');
+    if (!editor) {
+        console.error('Input editor not found');
+        return false;
+    }
+
+    editor.focus();
+    const selection = window.getSelection();
+    const range = document.createRange();
+    range.selectNodeContents(editor);
+    selection.removeAllRanges();
+    selection.addRange(range);
+
+    try {
+        document.execCommand('insertText', false, message);
+    } catch (e) {
+        editor.innerHTML = '<p>' + message + '</p>';
+    }
+
+    editor.dispatchEvent(new InputEvent('input', {
+        bubbles: true,
+        inputType: 'insertText',
+        data: message
+    }));
+
+    await new Promise(resolve => setTimeout(resolve, 300));
+    return true;
+}
+
+// ---------- 2. Click the send button ----------
+async function waitForSendButton(timeout) {
+    timeout = timeout || 4000;
+    const start = Date.now();
+    while (Date.now() - start < timeout) {
+        const selectors = [
+            '[data-test-id="send-button"]',
+            'button[aria-label*="Send"]',
+            'button[class*="send"]',
+            'button[type="submit"]'
+        ];
+        for (const sel of selectors) {
+            const btn = document.querySelector(sel);
+            if (btn && !btn.disabled) return btn;
+        }
+        await new Promise(resolve => setTimeout(resolve, 200));
+    }
+    return null;
+}
+
+async function clickGeminiSend() {
+    const sendBtn = await waitForSendButton();
+    if (sendBtn) {
+        sendBtn.dispatchEvent(new MouseEvent('mousedown', { bubbles: true }));
+        sendBtn.dispatchEvent(new MouseEvent('mouseup', { bubbles: true }));
+        sendBtn.click();
+    } else {
+        const editor = document.querySelector('.ql-editor.textarea.new-input-ui') ||
+                       document.querySelector('[contenteditable="true"][role="textbox"]');
+        if (editor) {
+            editor.dispatchEvent(new KeyboardEvent('keydown', {
+                key: 'Enter',
+                code: 'Enter',
+                keyCode: 13,
+                which: 13,
+                bubbles: true
+            }));
+        }
     }
     return true;
 }
 
-// ---------- Helper: Select model ----------
-async function selectModel(modelName) {
-    if (!modelName) return true;
-    
-    // Find the model selector button
-    const modelBtn = document.querySelector('button[aria-label*="Model" i], button[aria-label*="模型" i], .model-selector, [role="button"][aria-label*="Model"], .chat-header-model');
-    if (!modelBtn) {
-        console.warn('⚠️ Model selector button not found');
-        return false;
-    }
-    
-    // Normalize strings for robust comparison (remove hyphens, spaces, underscores)
-    const normalize = (str) => str.toLowerCase().replace(/[-_s]/g, '');
-    const targetModel = normalize(modelName);
-    
-    // Check text content, aria-label, title, and common data attributes
-    const currentText = normalize(modelBtn.textContent || '');
-    const currentLabel = normalize(modelBtn.getAttribute('aria-label') || modelBtn.getAttribute('title') || '');
-    const dataModel = normalize(modelBtn.getAttribute('data-model') || modelBtn.getAttribute('data-value') || '');
-    
-    // Avoid false positives from generic words like "model" or "模型"
-    const genericWords = ['model', '模型', 'choose', 'select'];
-    const isGeneric = genericWords.some(w => currentText === normalize(w));
-    
-    // Check if the target model is already reflected in the UI
-    const isMatch = 
-        currentText.includes(targetModel) || 
-        (currentText.length > 2 && targetModel.includes(currentText)) ||
-        currentLabel.includes(targetModel) ||
-        dataModel.includes(targetModel);
-        
-    if (!isGeneric && isMatch) {
-        console.log('✅ Model already selected:', modelName, '(UI shows:', modelBtn.textContent.trim(), ')');
-        return true;
-    }
-    
-    modelBtn.click();
-    await new Promise(resolve => setTimeout(resolve, 400));
-    
-    // Find the model option in dropdown
-    const options = document.querySelectorAll('[role="option"], .model-option, li');
-    for (const opt of options) {
-        if (normalize(opt.textContent || '').includes(targetModel) || targetModel.includes(normalize(opt.textContent || ''))) {
-            opt.click();
-            console.log('✅ Selected model:', modelName);
-            await new Promise(resolve => setTimeout(resolve, 300));
-            return true;
-        }
-    }
-    
-    console.warn('⚠️ Model not found in dropdown:', modelName);
-    // Close dropdown
-    document.body.click();
-    return false;
-}
-
-// ---------- Robust Send Button Clicker ----------
-async function clickSendButton(timeout) {
-    timeout = timeout || 3000;
-    const start = Date.now();
-    while (Date.now() - start < timeout) {
-        const selectors = [
-            'button[type="submit"]',
-            'button[aria-label*="Send" i]',
-            'button[aria-label*="发送" i]',
-            'button[class*="send"]',
-            'button[class*="send-btn"]',
-            '.ant-btn-primary',
-            'button[class*="ant-btn-primary"]',
-            '[role="button"][aria-label*="Send" i]',
-            '[role="button"][aria-label*="发送" i]'
-        ];
-        for (const sel of selectors) {
-            const btn = document.querySelector(sel);
-            if (btn && !btn.disabled && btn.offsetWidth > 0) {
-                btn.dispatchEvent(new MouseEvent('mousedown', { bubbles: true }));
-                btn.dispatchEvent(new MouseEvent('mouseup', { bubbles: true }));
-                btn.click();
-                console.log('🖱️ Clicked send button:', sel);
-                return true;
-            }
-        }
-        // Check for button with icon arrow up
-        const arrowButton = document.querySelector('button svg[class*="send"]')?.closest('button');
-        if (arrowButton && arrowButton.offsetWidth > 0) {
-            arrowButton.click();
-            console.log('🖱️ Clicked send button (icon)');
-            return true;
-        }
-        await new Promise(resolve => setTimeout(resolve, 200));
-    }
-    console.warn('⚠️ Send button not found, falling back to Enter');
-    return false;
-}
-
-// ---------- Main send function ----------
-async function sendMessageToQwen(message, options) {
+// ---------- 3. Main function ----------
+async function sendMessageToGemini(message, options) {
     options = options || {};
-    const { thinkingMode, model } = options;
 
-    // Apply thinking mode if specified
-    if (thinkingMode) {
-        await selectThinkingMode(thinkingMode);
-        await new Promise(resolve => setTimeout(resolve, 500));
-    }
-
-    // Model selection disabled on purpose: sending a message should not touch
-    // the model picker. Whatever model the Qwen web UI already has selected is
-    // the one we use.
-    // if (model) {
-    //     await selectModel(model);
-    //     await new Promise(resolve => setTimeout(resolve, 500));
-    // }
-    void model;
-
-    // Find input field
-    const inputField = document.querySelector('textarea[placeholder*="消息" i], textarea[placeholder*="Message" i], textarea, [contenteditable="true"]');
-    if (!inputField) {
-        console.error('❌ Input field not found');
-        return false;
-    }
-
-    // Focus and set text
-    inputField.focus();
-    if (inputField.tagName === 'TEXTAREA') {
-        const nativeSetter = Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, 'value').set;
-        if (nativeSetter) {
-            nativeSetter.call(inputField, message);
-        } else {
-            inputField.value = message;
+    // Mirror the reference automation: pick the requested model (Pro, Flash,
+    // Flash-Lite, etc.) before typing, but only when the caller asked for a
+    // specific one — otherwise leave Gemini on its current selection.
+    var model = options.model || null;
+    if (model) {
+        var ok = await selectGeminiModel(model);
+        if (!ok) {
+            console.warn('Model selection failed, continuing with current model');
         }
-        inputField.dispatchEvent(new Event('input', { bubbles: true }));
-        inputField.dispatchEvent(new Event('change', { bubbles: true }));
-    } else if (inputField.isContentEditable) {
-        inputField.textContent = message;
-        inputField.dispatchEvent(new Event('input', { bubbles: true }));
     }
 
-    // Wait for React state update
-    await new Promise(resolve => setTimeout(resolve, 300));
-
-    // Attempt to click send button
-    const sendSuccess = await clickSendButton();
-    if (sendSuccess) {
-        console.log('✅ Sent:', message);
-        return true;
-    }
-
-    // Fallback: try pressing Enter
-    const enterEvent = new KeyboardEvent('keydown', { key: 'Enter', code: 'Enter', keyCode: 13, which: 13, bubbles: true });
-    inputField.dispatchEvent(enterEvent);
-    console.log('✅ Sent with Enter:', message);
+    const inputSuccess = await setGeminiInput(message);
+    if (!inputSuccess) return false;
+    await new Promise(resolve => setTimeout(resolve, 500));
+    await clickGeminiSend();
+    console.log('Message sent');
     return true;
 }
 `;
 
 function buildSendScript(
 	prompt: string,
-	options?: { model?: string; thinkingMode?: string },
+	options?: { think?: boolean; model?: string | null },
 ): string {
 	const opts = options || {};
 	return `(async () => {
         ${SEND_MESSAGE_SOURCE}
-        await sendMessageToQwen(${JSON.stringify(prompt)}, ${JSON.stringify(opts)});
+        await sendMessageToGemini(${JSON.stringify(prompt)}, ${JSON.stringify(opts)});
     })(); true;`;
 }
 
@@ -624,18 +600,18 @@ function writeChatRegistry(
 		fs.mkdirSync(path.dirname(chatsFile), { recursive: true });
 		fs.writeFileSync(chatsFile, JSON.stringify(registry, null, 2), "utf-8");
 	} catch (error) {
-		console.warn(`[qwen-web] failed to persist chat registry: ${error}`);
+		console.warn(`[gemini-web] failed to persist chat registry: ${error}`);
 	}
 }
 
-export function lookupQwenChatSession(
+export function lookupGeminiChatSession(
 	chatsFile: string,
 	chatKey: string,
 ): string | undefined {
 	return readChatRegistry(chatsFile)[chatKey]?.session_id;
 }
 
-export function recordQwenChatSession(
+export function recordGeminiChatSession(
 	chatsFile: string,
 	chatKey: string,
 	sessionId: string,
@@ -650,7 +626,7 @@ export function recordQwenChatSession(
 	writeChatRegistry(chatsFile, registry);
 }
 
-export function deleteQwenChatSession(
+export function deleteGeminiChatSession(
 	chatsFile: string,
 	chatKey: string,
 ): void {
@@ -692,13 +668,13 @@ function lastUserText(prompt: LanguageModelV2Prompt): string {
 	return "";
 }
 
-export function extractQwenSessionId(url: string): string | undefined {
-	const match = /\/c\/([a-f0-9-]+)/.exec(url);
+export function extractGeminiSessionId(url: string): string | undefined {
+	const match = /\/app\/([a-f0-9]+)/.exec(url);
 	return match?.[1] ?? undefined;
 }
 
-export function listQwenWebChats(): QwenWebChatEntry[] {
-	const config = resolveQwenWebV2Config();
+export function listGeminiWebChats(): GeminiWebChatEntry[] {
+	const config = resolveGeminiWebV2Config();
 	const registry = readChatRegistry(config.chatsFile);
 	return Object.entries(registry)
 		.map(([chatKey, record]) => ({
@@ -711,27 +687,30 @@ export function listQwenWebChats(): QwenWebChatEntry[] {
 }
 
 /**
- * Opens an existing Qwen Web chat in the browser driven by this provider.
+ * Opens an existing Gemini Web chat in the browser driven by this provider.
  * This is what the CLI `/findchat` command calls after you pick a chat.
  */
-export async function openQwenWebChat(
+export async function openGeminiWebChat(
 	sessionId: string,
 ): Promise<{ sessionId: string; url: string }> {
-	const config = resolveQwenWebV2Config();
+	const config = resolveGeminiWebV2Config();
 	const cdp = await connectBrowser(config);
 	const targets = await cdp.send("Target.getTargets");
 	let pageTarget = targets.targetInfos?.find(
-		(t: any) => t.type === "page" && t.url?.startsWith("https://chat.qwen.ai"),
+		(t: any) =>
+			t.type === "page" && t.url?.startsWith("https://gemini.google.com"),
 	);
 	if (!pageTarget) {
-		const result = await cdp.send("Target.createTarget", { url: QWEN_WEB_URL });
+		const result = await cdp.send("Target.createTarget", {
+			url: GEMINI_WEB_URL,
+		});
 		await sleep(2000);
 		const newTargets = await cdp.send("Target.getTargets");
 		pageTarget = newTargets.targetInfos?.find(
 			(t: any) => t.targetId === result.targetId,
 		);
 		if (!pageTarget) {
-			throw new Error("Failed to create Qwen page");
+			throw new Error("Failed to create Gemini page");
 		}
 	}
 	const attachResult = await cdp.send("Target.attachToTarget", {
@@ -739,97 +718,77 @@ export async function openQwenWebChat(
 		flatten: true,
 	});
 	const cdpSessionId = attachResult.sessionId;
-	await navigateQwenChat(cdp, cdpSessionId, { fresh: false, sessionId });
+	await navigateGeminiChat(cdp, cdpSessionId, { fresh: false, sessionId });
 	return {
 		sessionId,
-		url: `https://chat.qwen.ai/c/${sessionId}`,
+		url: `https://gemini.google.com/app/${sessionId}`,
 	};
 }
 
-// ── SSE parser for Qwen ──────────────────────────────────────────────────────
+// ── SSE parser for Gemini ──────────────────────────────────────────────────────
 
-function consumeQwenSse(
+function consumeGeminiSse(
 	body: string,
 	onChunk: (text: string) => void,
 	onDone: () => void,
 	onError: (err: Error) => void,
-	onUsage?: (usage: {
-		inputTokens: number;
-		outputTokens: number;
-		totalTokens: number;
-	}) => void,
 ): void {
 	try {
-		// Thinking-enabled replies tag each delta with `phase` ("think" vs
-		// "answer"); prefer the answer-phase text, but also collect every
-		// delta regardless of phase as a fallback for replies that never set
-		// `phase` at all (thinking disabled, or a differently-shaped
-		// response) — matching a known-working reference capture that reads
-		// `delta.content` unconditionally instead of gating on `phase`.
-		let answerText = "";
-		let anyText = "";
+		// Gemini returns length-prefixed JSON (each line starts with "[").
+		// Assistant text lives in arrays whose first element is an "rc_"
+		// string; the following element holds the list of text parts.
+		const extractText = (obj: any): string | null => {
+			if (typeof obj === "string") {
+				const s = obj.trim();
+				if (s.startsWith("[") || s.startsWith("{")) {
+					try {
+						return extractText(JSON.parse(s));
+					} catch {
+						return null;
+					}
+				}
+				return null;
+			}
+			if (Array.isArray(obj)) {
+				if (
+					obj.length > 1 &&
+					typeof obj[0] === "string" &&
+					obj[0].startsWith("rc_") &&
+					Array.isArray(obj[1])
+				) {
+					const parts = obj[1].filter((p: unknown) => typeof p === "string");
+					if (parts.length) return parts.join("");
+				}
+				for (const item of obj) {
+					const t = extractText(item);
+					if (t) return t;
+				}
+				return null;
+			}
+			if (obj && typeof obj === "object") {
+				for (const value of Object.values(obj)) {
+					const t = extractText(value);
+					if (t) return t;
+				}
+			}
+			return null;
+		};
 
+		let bestText = "";
 		for (const rawLine of body.split("\n")) {
 			const line = rawLine.trim();
-			if (!line.startsWith("data:")) continue;
-			const data = line.slice(5).trim();
-			if (!data) continue;
-			if (data === "[DONE]") break;
-
-			let parsed: any;
+			if (!line || !line.startsWith("[")) continue;
+			let data: any;
 			try {
-				parsed = JSON.parse(data);
+				data = JSON.parse(line);
 			} catch {
 				continue;
 			}
-
-			for (const choice of Array.isArray(parsed.choices)
-				? parsed.choices
-				: []) {
-				const delta = choice?.delta;
-				const deltaContent =
-					typeof delta?.content === "string" ? delta.content : "";
-				if (deltaContent) {
-					anyText += deltaContent;
-					if (delta.phase === "answer" || delta.phase === undefined) {
-						answerText += deltaContent;
-					}
-				}
-				const messageContent =
-					typeof choice?.message?.content === "string"
-						? choice.message.content
-						: "";
-				if (messageContent) {
-					anyText += messageContent;
-					answerText += messageContent;
-				}
-			}
-
-			if (typeof parsed.content === "string" && parsed.content) {
-				anyText += parsed.content;
-				answerText += parsed.content;
-			}
-			if (typeof parsed.output === "string" && parsed.output) {
-				anyText += parsed.output;
-				answerText += parsed.output;
-			} else if (
-				typeof parsed.output?.content === "string" &&
-				parsed.output.content
-			) {
-				anyText += parsed.output.content;
-				answerText += parsed.output.content;
-			}
-
-			if (parsed.usage && onUsage) {
-				onUsage({
-					inputTokens: parsed.usage.input_tokens || 0,
-					outputTokens: parsed.usage.output_tokens || 0,
-					totalTokens: parsed.usage.total_tokens || 0,
-				});
-			}
+			const text = extractText(data);
+			if (text && text.length > bestText.length) bestText = text;
 		}
 
-		const finalText = answerText || anyText;
+		const finalText = bestText.trim();
 		if (finalText) onChunk(finalText);
 		onDone();
 	} catch (err) {
@@ -842,12 +801,12 @@ function consumeQwenSse(
 async function waitForComposerReady(
 	cdp: CdpClient,
 	sessionId: string,
-	config: QwenWebV2RuntimeConfig,
+	config: GeminiWebV2RuntimeConfig,
 	logger?: BasicLogger,
 ): Promise<void> {
 	const pageFullyLoaded = `(() => {
         if (document.readyState !== 'complete') return false;
-        var ta = document.querySelector('textarea, input[type="text"], .chat-input');
+        var ta = document.querySelector('.ql-editor.textarea.new-input-ui, [data-test-id="textarea-inner"] .ql-editor, [contenteditable="true"][role="textbox"]');
         if (!ta || ta.disabled) return false;
         var s = window.getComputedStyle(ta);
         if (s.display === 'none' || s.visibility === 'hidden') return false;
@@ -874,7 +833,7 @@ async function waitForComposerReady(
 		}
 
 		if (ready) {
-			if (config.debug) logger?.debug("[qwen-web] page fully loaded");
+			if (config.debug) logger?.debug("[gemini-web] page fully loaded");
 			await sleep(1500);
 			return;
 		}
@@ -882,16 +841,16 @@ async function waitForComposerReady(
 		if (!hintLogged) {
 			hintLogged = true;
 			logger?.log(
-				"Qwen Web: waiting for the chat.qwen.ai page to finish loading " +
+				"Gemini Web: waiting for the gemini.google.com page to finish loading " +
 					`(up to ${Math.round(config.loginTimeoutMs / 1000)}s). If the Chrome window shows a login page, log in now.`,
-				{ severity: "info", providerId: "qwen-web" },
+				{ severity: "info", providerId: "gemini-web" },
 			);
 		}
 
 		if (Date.now() >= deadline) {
 			throw new Error(
-				"Qwen Web: chat.qwen.ai did not finish loading within " +
-					`${Math.round(config.loginTimeoutMs / 1000)}s. Please log in to chat.qwen.ai in the Chrome window.`,
+				"Gemini Web: gemini.google.com did not finish loading within " +
+					`${Math.round(config.loginTimeoutMs / 1000)}s. Please log in to gemini.google.com in the Chrome window.`,
 			);
 		}
 		await sleep(500);
@@ -918,14 +877,14 @@ async function readPageUrl(
 }
 
 /**
- * Point the Qwen tab at a specific chat (load an old conversation) or at a
+ * Point the Gemini tab at a specific chat (load an old conversation) or at a
  * fresh composer (new chat). Skips navigating when the tab is already on the
  * destination — that is what avoids a needless full page reload on every
  * follow-up turn of the same conversation. `forceReload` skips that shortcut
  * to recover from a rate-limit block, where the page needs a real refresh to
  * accept messages again even though the URL is unchanged.
  */
-async function navigateQwenChat(
+async function navigateGeminiChat(
 	cdp: CdpClient,
 	cdpSessionId: string,
 	target: { sessionId?: string; fresh: boolean },
@@ -933,10 +892,10 @@ async function navigateQwenChat(
 	forceReload = false,
 ): Promise<void> {
 	const destination = target.fresh
-		? QWEN_WEB_URL
+		? GEMINI_WEB_URL
 		: target.sessionId
-			? `https://chat.qwen.ai/c/${target.sessionId}`
-			: QWEN_WEB_URL;
+			? `https://gemini.google.com/app/${target.sessionId}`
+			: GEMINI_WEB_URL;
 
 	const currentUrl = (await readPageUrl(cdp, cdpSessionId)) || "";
 	const alreadyThere = isSameChatLocation(currentUrl, destination);
@@ -960,7 +919,7 @@ async function navigateQwenChat(
 
 	if (alreadyThere && !forceReload) {
 		logger?.debug?.(
-			`[qwen-web] already on ${destination} — skipping navigation (no reload)`,
+			`[gemini-web] already on ${destination} — skipping navigation (no reload)`,
 		);
 		if (target.fresh) {
 			await cdp.send(
@@ -974,7 +933,7 @@ async function navigateQwenChat(
 	}
 
 	logger?.debug?.(
-		`[qwen-web] ${target.fresh ? "opening a new Qwen chat" : `loading Qwen chat ${target.sessionId}`}`,
+		`[gemini-web] ${target.fresh ? "opening a new Gemini chat" : `loading Gemini chat ${target.sessionId}`}`,
 	);
 	await cdp.send(
 		"Runtime.evaluate",
@@ -1012,9 +971,9 @@ async function sendAndCapture(
 	cdp: CdpClient,
 	cdpSessionId: string,
 	prompt: string,
-	config: QwenWebV2RuntimeConfig,
+	config: GeminiWebV2RuntimeConfig,
 	logger?: BasicLogger,
-	sendOptions?: { model?: string; thinkingMode?: string },
+	sendOptions?: { think?: boolean; model?: string | null },
 	isToolTurn = false,
 ): Promise<{
 	text: string;
@@ -1023,7 +982,7 @@ async function sendAndCapture(
 	rateLimited?: boolean;
 }> {
 	const debugLog = (msg: string) => {
-		if (config.debug) logger?.debug(`[qwen-web] ${msg}`);
+		if (config.debug) logger?.debug(`[gemini-web] ${msg}`);
 	};
 
 	let completionRequestId: string | undefined;
@@ -1036,7 +995,7 @@ async function sendAndCapture(
 	const onResponseReceived = (event: any, eventSessionId?: string) => {
 		if (eventSessionId !== cdpSessionId) return;
 		const url: string = event.response?.url ?? "";
-		if (!url.includes(QWEN_API_ENDPOINT)) return;
+		if (!url.toLowerCase().includes(GEMINI_API_ENDPOINT.toLowerCase())) return;
 		if (event.response?.status !== 200) return;
 		completionRequestId = event.requestId;
 		debugLog(`completion response received (${url})`);
@@ -1057,7 +1016,7 @@ async function sendAndCapture(
 			debugLog(`completion body captured (${capturedBody.length} chars)`);
 		} catch (err) {
 			logger?.error?.(
-				`[qwen-web] failed to read response body: ${err instanceof Error ? err.message : String(err)}`,
+				`[gemini-web] failed to read response body: ${err instanceof Error ? err.message : String(err)}`,
 			);
 		} finally {
 			bodyResolve?.();
@@ -1068,11 +1027,20 @@ async function sendAndCapture(
 	cdp.on("Network.loadingFinished", onLoadingFinished);
 
 	try {
-		await cdp.send("Network.enable", {}, cdpSessionId);
+		// Enable the Network domain ONCE per CDP session and leave it on for
+		// the session's lifetime. The old code re-enabled here and re-disabled
+		// in `finally` every turn — that toggle churn (plus re-attaching) could
+		// drop a completion response and surface as "Model returned empty
+		// response". Keeping the domain enabled is stable and harmless: the
+		// listeners are still scoped/unregistered per turn.
+		if (!geminiNetworkEnabledSessions.has(cdpSessionId)) {
+			await cdp.send("Network.enable", {}, cdpSessionId);
+			geminiNetworkEnabledSessions.add(cdpSessionId);
+		}
 
 		// Randomized human-like pacing before sending, plus an extra random
 		// amount on tool-request turns (the fastest back-to-back pattern in an
-		// agent run) — dodges chat.qwen.ai's own anti-abuse frequency throttle
+		// agent run) — dodges gemini.google.com's own anti-abuse frequency throttle
 		// the same way deepseek-web-v2 dodges DeepSeek's.
 		const sendDelay = computeSendDelay(config, { isToolTurn });
 		debugLog(
@@ -1096,68 +1064,83 @@ async function sendAndCapture(
 		await Promise.race([bodyCaptured, timeoutPromise]);
 
 		if (!capturedBody) {
-			return {
-				text: "",
-				finishReason: "stop",
-				usage: { inputTokens: 0, outputTokens: 0, totalTokens: 0 },
-			};
+			// Distinguish a real timeout (the body never arrived) from a
+			// listener gap. An empty captured body after the wait is exactly the
+			// condition that used to be returned as empty text and then bubbled
+			// up as the opaque "Model returned empty response".
+			throw new Error(
+				`[gemini-web] no completion response captured for the last message. ` +
+					`${completionRequestId ? "A response was seen but its body could not be read." : "No Gemini completion response was observed."} ` +
+					"Check that gemini.google.com is logged in and not rate-limited in the browser profile.",
+			);
 		}
 
 		let fullText = "";
 		const finishReason: LanguageModelV2FinishReason = "stop";
-		let usage = { inputTokens: 0, outputTokens: 0, totalTokens: 0 };
-		consumeQwenSse(
+		consumeGeminiSse(
 			capturedBody,
 			(chunk) => {
 				fullText += chunk;
 			},
 			() => {},
 			(err) => {
-				logger?.error?.(`[qwen-web] SSE parse error: ${err.message}`);
-			},
-			(nextUsage) => {
-				usage = nextUsage;
+				logger?.error?.(`[gemini-web] SSE parse error: ${err.message}`);
 			},
 		);
+
+		// The web endpoint does not report token counts, so estimate them from
+		// the exact prompt sent and the buffered reply, mirroring the Python
+		// reference automation (which estimates tokens from captured text) and
+		// deepseek-web-v2's `estimateDeepSeekWebUsage`. Use the repo-wide
+		// `estimateTokens` (chars / 3) so the context bar, per-turn metrics, and
+		// session totals show real numbers instead of zeros.
+		const usage = {
+			inputTokens: estimateTokens(prompt.length),
+			outputTokens: estimateTokens(fullText.length),
+			totalTokens: 0,
+		};
+		usage.totalTokens = usage.inputTokens + usage.outputTokens;
 
 		// Flag a throttled reply so the caller can back off / report it, and
 		// arm a one-shot recovery reload so the next turn forces a page
 		// refresh to clear the temporarily-blocked composer.
 		const rateLimited = isRateLimitText(fullText);
 		if (rateLimited) {
-			requestQwenThrottleRecoveryReload();
+			requestGeminiThrottleRecoveryReload();
 			logger?.log?.(
-				"[qwen-web] Qwen throttled the request (rate-limit reply detected). " +
+				"[gemini-web] Gemini throttled the request (rate-limit reply detected). " +
 					"Next message will reload the page to recover, and sending is paced. " +
-					"Consider raising QWEN_WEB_MIN/MAX_SEND_DELAY_MS.",
+					"Consider raising GEMINI_WEB_MIN/MAX_SEND_DELAY_MS.",
 			);
 		}
 		return { text: fullText, finishReason, usage, rateLimited };
 	} finally {
+		// Unregister only this turn's listeners. Leave the Network domain
+		// enabled for the session — disabling it here was the other half of the
+		// per-turn toggle that made capture flaky.
 		cdp.off("Network.responseReceived", onResponseReceived);
 		cdp.off("Network.loadingFinished", onLoadingFinished);
-		await cdp.send("Network.disable", {}, cdpSessionId).catch(() => {});
 	}
 }
 
 // ── Main provider ─────────────────────────────────────────────────────────────
 
-interface QwenCompletionResult {
+interface GeminiCompletionResult {
 	text: string;
 	toolCalls: { name: string; arguments: Record<string, unknown> }[];
 	usage: { inputTokens: number; outputTokens: number; totalTokens: number };
 }
 
 /**
- * Build the flat prompt sent to chat.qwen.ai, mirroring deepseek-web-v2's
+ * Build the flat prompt sent to gemini.google.com, mirroring deepseek-web-v2's
  * `buildPrompt`: the real web client keeps its own server-side conversation
  * state, so the system prompt is sent verbatim on the conversation's first
  * turn (via `buildLeanConversation`'s own first-turn passthrough) and dropped
- * on every follow-up turn in the SAME Qwen chat — re-added only when
- * `reInjectSystem` is true (a brand-new Qwen chat, e.g. right after a
+ * on every follow-up turn in the SAME Gemini chat — re-added only when
+ * `reInjectSystem` is true (a brand-new Gemini chat, e.g. right after a
  * compaction opens a fresh one).
  */
-function buildQwenPrompt(
+function buildGeminiPrompt(
 	prompt: LanguageModelV2Prompt,
 	reInjectSystem: boolean,
 	preserveCompactionContext: boolean,
@@ -1182,14 +1165,121 @@ function buildQwenPrompt(
 	return messagesToPrompt(conversation, promptOptions);
 }
 
-function createQwenWebModel(
+/**
+ * Map the provider `modelId` (e.g. "gemini-2.5-pro", "gemini-flash-latest",
+ * "gemini-3.1-flash-lite") to the Gemini web UI tier name ("Pro", "Flash",
+ * "Flash-Lite"). The web client picks models from a menu whose labels are the
+ * tier name with a leading version number ("3.6 Flash"), and
+ * `selectGeminiModel` strips that number before matching. "auto"/unknown ids
+ * return null so the browser is left on whatever model it's currently using,
+ * matching the reference automation's `send <msg>` (no `model=` suffix).
+ */
+function modelIdToGeminiUiModel(modelId: string): string | null {
+	const id = modelId.toLowerCase();
+	if (id.includes("auto")) return null;
+	if (id.includes("flash-lite")) return "Flash-Lite";
+	if (id.includes("pro")) return "Pro";
+	if (id.includes("flash")) return "Flash";
+	return null;
+}
+
+/**
+ * Parse Gemini's native tool-call format — a JSON array (or single object) of
+ * `{"name": "...", "args": {...}}` entries, usually wrapped in a ```json code
+ * fence. Gemini does not emit the `<tool>` tag contract the DeepSeek parsers
+ * expect; left to `parseFallbackToolUses`, that ```json fence is misread as
+ * "code to write to a file", turning a `read_files` call into a destructive
+ * `editor` call. This parser runs before the fallback so a real tool call wins.
+ */
+function parseGeminiToolCalls(
+	content: string,
+	toolNames: string[],
+): {
+	cleanedContent: string;
+	toolCalls: { name: string; arguments: Record<string, unknown> }[];
+} {
+	const accepted = new Set(toolNames.map((name) => normalizeToolName(name)));
+	const toolCalls: { name: string; arguments: Record<string, unknown> }[] = [];
+	const cleanedParts: string[] = [];
+	let cursor = 0;
+
+	// Find ```json ... ``` fences AND bare JSON arrays/objects. The fence is the
+	// common Gemini shape; a bare array is a fallback for unfenced output.
+	const fenceRe = /```(?:json)?\s*([\s\S]*?)```/gi;
+	let match: RegExpExecArray | null;
+	while ((match = fenceRe.exec(content)) !== null) {
+		const body = match[1].trim();
+		const parsed = parseRepairedToolJson(body);
+		cleanedParts.push(content.slice(cursor, match.index));
+		cursor = match.index + match[0].length;
+		if (parsed === undefined) continue;
+
+		for (const call of asToolCallList(parsed)) {
+			if (call && accepted.has(normalizeToolName(call.name))) {
+				toolCalls.push(call);
+			}
+		}
+	}
+	cleanedParts.push(content.slice(cursor));
+
+	// No fence matched — try the whole text as a bare JSON array/object.
+	if (toolCalls.length === 0) {
+		const parsed = parseRepairedToolJson(content);
+		if (parsed !== undefined) {
+			for (const call of asToolCallList(parsed)) {
+				if (call && accepted.has(normalizeToolName(call.name))) {
+					toolCalls.push(call);
+				}
+			}
+			if (toolCalls.length > 0) {
+				return { cleanedContent: "", toolCalls };
+			}
+		}
+	}
+
+	return { cleanedContent: cleanedParts.join("").trim(), toolCalls };
+}
+
+/** Normalize a parsed tool-call value into `{name, arguments}` entries. */
+function asToolCallList(
+	parsed: unknown,
+): { name: string; arguments: Record<string, unknown> }[] {
+	const items: unknown[] = Array.isArray(parsed) ? parsed : [parsed];
+	const out: { name: string; arguments: Record<string, unknown> }[] = [];
+	for (const item of items) {
+		if (!item || typeof item !== "object") continue;
+		const record = item as Record<string, unknown>;
+		const name =
+			typeof record.name === "string"
+				? record.name
+				: typeof record.type === "string"
+					? record.type
+					: "";
+		if (!name) continue;
+		let args: unknown = record.args ?? record.arguments ?? record.params;
+		if (args === undefined && record.arguments_json !== undefined) {
+			try {
+				args = JSON.parse(String(record.arguments_json));
+			} catch {
+				args = undefined;
+			}
+		}
+		if (args === undefined) args = {};
+		if (args && typeof args === "object" && !Array.isArray(args)) {
+			out.push({ name, arguments: args as Record<string, unknown> });
+		}
+	}
+	return out;
+}
+
+function createGeminiWebModel(
 	modelId: string,
 	logger?: BasicLogger,
 ): LanguageModelV2 {
-	const runtimeConfig = resolveQwenWebV2Config();
+	const runtimeConfig = resolveGeminiWebV2Config();
 
 	const debugLog = (msg: string) => {
-		if (runtimeConfig.debug) logger?.debug(`[qwen-web] ${msg}`);
+		if (runtimeConfig.debug) logger?.debug(`[gemini-web] ${msg}`);
 	};
 
 	// De-dup: if the last user-authored message is identical to the one
@@ -1198,6 +1288,12 @@ function createQwenWebModel(
 	// block so it isn't re-sent every turn. Mirrors deepseek-web-v2.
 	let lastSentUserMessage = "";
 
+	// The Gemini UI keeps its model selection across sends, so re-clicking the
+	// model picker every turn (or on every tool-result follow-up) is an
+	// unnecessary loop. Track the model we've already applied to this model
+	// instance and only tell the page to select a model when it changes.
+	let lastAppliedGeminiUiModel: string | null = null;
+
 	// Shared by doGenerate/doStream (mirrors deepseek-web-v2's doCompletion):
 	// drives the CDP session, sends the prompt, captures + parses the SSE
 	// body, and recovers `<tool>` calls the model emitted — one code path so
@@ -1205,31 +1301,20 @@ function createQwenWebModel(
 	// divergent wrapper around doGenerate.
 	async function runCompletion(
 		options: LanguageModelV2CallOptions,
-	): Promise<QwenCompletionResult> {
+	): Promise<GeminiCompletionResult> {
 		debugLog("runCompletion called");
-
-		// A reply the user pasted back with `/paste` after a network error ate
-		// the real one. Short-circuit before touching the browser: the text is
-		// already the model's answer, it just needs the same tool parsing a
-		// captured reply gets. No retry loop — a paste is a fixed string, so
-		// re-sending a correction into the chat would be meaningless here.
-		const injected = consumePendingInjectedReply();
-		if (injected) {
-			debugLog(`Using pasted reply (${injected.length} chars)`);
-			return buildCompletionFromText(injected, options);
-		}
 
 		const cdp = await connectBrowser(runtimeConfig);
 
 		const targets = await cdp.send("Target.getTargets");
 		let pageTarget = targets.targetInfos?.find(
 			(t: any) =>
-				t.type === "page" && t.url?.startsWith("https://chat.qwen.ai"),
+				t.type === "page" && t.url?.startsWith("https://gemini.google.com"),
 		);
 
 		if (!pageTarget) {
 			const result = await cdp.send("Target.createTarget", {
-				url: QWEN_WEB_URL,
+				url: GEMINI_WEB_URL,
 			});
 			await sleep(2000);
 			const newTargets = await cdp.send("Target.getTargets");
@@ -1237,18 +1322,40 @@ function createQwenWebModel(
 				(t: any) => t.targetId === result.targetId,
 			);
 			if (!pageTarget) {
-				throw new Error("Failed to create Qwen page");
+				throw new Error("Failed to create Gemini page");
 			}
 		}
 
-		const attachResult = await cdp.send("Target.attachToTarget", {
-			targetId: pageTarget.targetId,
-			flatten: true,
-		});
-		const cdpSessionId = attachResult.sessionId;
+		// Reuse the already-attached session for this page target when we can:
+		// the page target + its CDP session stay alive across turns, so
+		// re-attaching every turn (and re-enabling the Network domain) was a
+		// source of capture flakiness. Only (re-)attach when the target changed
+		// or we don't have a cached session for it yet.
+		let cdpSessionId: string | null = activeGeminiCdpSessionId;
+		if (
+			!cdpSessionId ||
+			activeGeminiTargetId !== pageTarget.targetId ||
+			!cdp.isOpen()
+		) {
+			const attachResult = await cdp.send("Target.attachToTarget", {
+				targetId: pageTarget.targetId,
+				flatten: true,
+			});
+			const newSessionId = attachResult.sessionId as string;
+			cdpSessionId = newSessionId;
+			activeGeminiTargetId = pageTarget.targetId;
+			activeGeminiCdpSessionId = newSessionId;
+			// A brand-new session needs the Network domain enabled fresh.
+			geminiNetworkEnabledSessions.delete(newSessionId);
+		}
+		if (!cdpSessionId) {
+			throw new Error(
+				"[gemini-web] failed to attach a CDP session to the Gemini page",
+			);
+		}
 
 		// Chat continuity: this CLI conversation is keyed by its first user
-		// message. A fresh key (no mapped Qwen chat yet) means this call opens
+		// message. A fresh key (no mapped Gemini chat yet) means this call opens
 		// a brand-new web chat, e.g. right after a compaction where the
 		// compaction summary becomes the first user message.
 		// Which web chat does this call go to? Normally the hash of the
@@ -1256,21 +1363,21 @@ function createQwenWebModel(
 		// last ordinary turn used, because the standalone summarize request
 		// would otherwise hash to an empty chat of its own. See
 		// `tool-pipeline/chat-target.ts` for the full /compact hand-off.
-		const chatKey = resolveChatKey("qwen-web", () =>
+		const chatKey = resolveChatKey("gemini-web", () =>
 			chatKeyFromPrompt(options.prompt),
 		);
-		const existingQwenSession = lookupQwenChatSession(
+		const existingGeminiSession = lookupGeminiChatSession(
 			runtimeConfig.chatsFile,
 			chatKey,
 		);
-		const isNewChat = existingQwenSession === undefined;
+		const isNewChat = existingGeminiSession === undefined;
 
-		const forceReload = consumeQwenThrottleRecoveryReload();
-		await navigateQwenChat(
+		const forceReload = consumeGeminiThrottleRecoveryReload();
+		await navigateGeminiChat(
 			cdp,
 			cdpSessionId,
-			existingQwenSession
-				? { sessionId: existingQwenSession, fresh: false }
+			existingGeminiSession
+				? { sessionId: existingGeminiSession, fresh: false }
 				: { fresh: true },
 			logger,
 			forceReload,
@@ -1279,12 +1386,12 @@ function createQwenWebModel(
 		await waitForComposerReady(cdp, cdpSessionId, runtimeConfig, logger);
 
 		// Re-inject the system prompt only when this turn opens a brand-new
-		// Qwen chat — every other turn in the SAME chat sends no system
+		// Gemini chat — every other turn in the SAME chat sends no system
 		// prompt at all, since the web client already has it server-side.
 		// (Unlike deepseek-web-v2 this has no token-threshold re-injection:
-		// Qwen's SSE responses don't expose an equivalent cumulative
+		// Gemini's SSE responses don't expose an equivalent cumulative
 		// accumulated-context figure to gate that on.)
-		let promptText = buildQwenPrompt(options.prompt, isNewChat, isNewChat);
+		let promptText = buildGeminiPrompt(options.prompt, isNewChat, isNewChat);
 
 		// Key on the last message the USER actually typed, not the last user
 		// message: on an iteration turn that is the runtime's synthetic
@@ -1296,166 +1403,113 @@ function createQwenWebModel(
 		}
 		lastSentUserMessage = currentUserText;
 
-		const thinkingMode =
-			(options as any).thinking === true
-				? "thinking"
-				: modelId.includes("thinking") || modelId.includes("think")
-					? "thinking"
-					: "auto";
-		const modelName = modelId;
 		const functionTools = (options.tools ?? []).filter(
 			(tool): tool is LanguageModelV2FunctionTool => tool.type === "function",
 		);
 
-		debugLog(
-			`Sending prompt (${promptText.length} chars) with model=${modelName}, thinking=${thinkingMode}`,
+		debugLog(`Sending prompt (${promptText.length} chars)`);
+
+		// Only re-select the model in the web UI when it actually changes.
+		// Gemini keeps its selection across sends, so re-clicking the picker on
+		// every message (or tool-result follow-up) is an unneeded loop. When
+		// the model is unchanged, pass `model: null` so the page script leaves
+		// the picker alone.
+		const geminiUiModel = modelIdToGeminiUiModel(modelId);
+		const shouldSelectModel = geminiUiModel !== lastAppliedGeminiUiModel;
+		if (shouldSelectModel) {
+			lastAppliedGeminiUiModel = geminiUiModel;
+		}
+		const result = await sendAndCapture(
+			cdp,
+			cdpSessionId,
+			promptText,
+			runtimeConfig,
+			logger,
+			{ model: shouldSelectModel ? geminiUiModel : null },
+			functionTools.length > 0,
 		);
 
-		// Bounded retry: when EVERY tool call in a reply gets rejected (e.g.
-		// invalid Python in an `editor` call), the rejection note is OUR
-		// commentary on what the model typed — Qwen never sees it just because
-		// we computed it locally, since it isn't part of its server-side chat
-		// history. Resend it as a real follow-up message in the SAME chat so
-		// the model actually sees the rejection and can self-correct, capped
-		// so a persistently broken model can't loop forever.
-		const MAX_TOOL_REJECTION_RETRIES = 2;
-		const toolNames = functionTools.map((t) => t.name);
-		let sendPrompt = promptText;
-		let result: Awaited<ReturnType<typeof sendAndCapture>> | undefined;
-		let finalText = "";
-		let finalToolCalls: QwenCompletionResult["toolCalls"] = [];
-
-		for (let attempt = 0; ; attempt++) {
-			result = await sendAndCapture(
-				cdp,
-				cdpSessionId,
-				sendPrompt,
-				runtimeConfig,
-				logger,
-				{ model: modelName, thinkingMode: thinkingMode },
-				functionTools.length > 0,
-			);
-
-			debugLog(`Received response (${result.text.length} chars)`);
-
-			if (functionTools.length === 0) {
-				finalText = result.text;
-				finalToolCalls = [];
-				break;
-			}
-
-			const { cleanedContent, toolCalls } = parseDeepSeekToolCalls(
-				result.text,
-				toolNames,
-			);
-			const looseCalls =
-				toolCalls.length === 0
-					? parseLooseDeepSeekToolCalls(result.text, toolNames)
-					: toolCalls;
-			if (looseCalls.length > 0) {
-				const { tools: validatedCalls, retryPrompt } =
-					validateToolCalls(looseCalls);
-				if (
-					validatedCalls.length === 0 &&
-					retryPrompt &&
-					attempt < MAX_TOOL_REJECTION_RETRIES
-				) {
-					logger?.log(
-						`[qwen-web] all tool calls rejected, resending correction into chat (attempt ${attempt + 1}/${MAX_TOOL_REJECTION_RETRIES})`,
-						{ severity: "warn" },
-					);
-					sendPrompt = retryPrompt;
-					continue;
-				}
-				finalText = retryPrompt
-					? `${cleanedContent}\n\n${retryPrompt}`.trim()
-					: cleanedContent;
-				finalToolCalls = validatedCalls;
-				break;
-			}
-
-			// The web model often ignores the `<tool>` contract and answers with
-			// plain text (a plan, code fences, install commands). Convert the
-			// visible structure of the reply into real tool calls so the agent
-			// actually executes them, same as deepseek-web-v2's fallback.
-			const fallback = parseFallbackToolUses(
-				cleanedContent,
-				lastUserText(options.prompt),
-				toolNames,
-			);
-			finalText = fallback.cleanedText;
-			finalToolCalls = fallback.toolUses;
-			break;
-		}
+		debugLog(`Received response (${result.text.length} chars)`);
 
 		// After sending, the SPA routes to `/c/<id>`; capture it so the next
-		// turn (or a resume) can reopen this same Qwen chat.
+		// turn (or a resume) can reopen this same Gemini chat.
 		const pageUrl = await readPageUrl(cdp, cdpSessionId);
-		const qwenSession = extractQwenSessionId(pageUrl);
-		if (qwenSession) {
-			recordQwenChatSession(runtimeConfig.chatsFile, chatKey, qwenSession);
+		const geminiSession = extractGeminiSessionId(pageUrl);
+		if (geminiSession) {
+			recordGeminiChatSession(runtimeConfig.chatsFile, chatKey, geminiSession);
 		}
 
-		return { text: finalText, toolCalls: finalToolCalls, usage: result.usage };
-	}
-
-	/**
-	 * Turn a raw reply body into a completion result, running the same tool
-	 * recovery ladder a live capture goes through: strict `<tool>` blocks,
-	 * then loose ones, then the plain-prose fallback.
-	 */
-	function buildCompletionFromText(
-		text: string,
-		options: LanguageModelV2CallOptions,
-	): QwenCompletionResult {
-		const usage = { inputTokens: 0, outputTokens: 0, totalTokens: 0 };
-		const toolNames = (options.tools ?? [])
-			.filter(
-				(tool): tool is LanguageModelV2FunctionTool => tool.type === "function",
-			)
-			.map((tool) => tool.name);
-		if (toolNames.length === 0) {
-			return { text, toolCalls: [], usage };
+		if (functionTools.length === 0) {
+			return { text: result.text, toolCalls: [], usage: result.usage };
 		}
 
+		const toolNames = functionTools.map((t) => t.name);
 		const { cleanedContent, toolCalls } = parseDeepSeekToolCalls(
-			text,
+			result.text,
 			toolNames,
 		);
 		const looseCalls =
 			toolCalls.length === 0
-				? parseLooseDeepSeekToolCalls(text, toolNames)
+				? parseLooseDeepSeekToolCalls(result.text, toolNames)
 				: toolCalls;
 		if (looseCalls.length > 0) {
 			const { tools: validatedCalls, retryPrompt } =
 				validateToolCalls(looseCalls);
+			const displayText = retryPrompt
+				? `${cleanedContent}\n\n${retryPrompt}`.trim()
+				: cleanedContent;
 			return {
-				text: retryPrompt
-					? `${cleanedContent}\n\n${retryPrompt}`.trim()
-					: cleanedContent,
+				text: displayText,
 				toolCalls: validatedCalls,
-				usage,
+				usage: result.usage,
 			};
 		}
 
+		// Gemini emits native JSON tool calls (usually wrapped in a ```json
+		// fence) rather than the `<tool>` tag contract. Parse those BEFORE the
+		// fallback so a `read_files` JSON call is not misread as an `editor`
+		// write through the code-fence heuristic.
+		const geminiCallParse = parseGeminiToolCalls(cleanedContent, toolNames);
+		if (geminiCallParse.toolCalls.length > 0) {
+			const { tools: validatedCalls, retryPrompt } = validateToolCalls(
+				geminiCallParse.toolCalls,
+			);
+			const displayText = retryPrompt
+				? `${geminiCallParse.cleanedContent}\n\n${retryPrompt}`.trim()
+				: geminiCallParse.cleanedContent;
+			return {
+				text: displayText,
+				toolCalls: validatedCalls,
+				usage: result.usage,
+			};
+		}
+
+		// The web model often ignores the `<tool>` contract and answers with
+		// plain text (a plan, code fences, install commands). Convert the
+		// visible structure of the reply into real tool calls so the agent
+		// actually executes them, same as deepseek-web-v2's fallback.
 		const fallback = parseFallbackToolUses(
 			cleanedContent,
 			lastUserText(options.prompt),
 			toolNames,
 		);
-		return { text: fallback.cleanedText, toolCalls: fallback.toolUses, usage };
+		return {
+			text: fallback.cleanedText,
+			toolCalls: fallback.toolUses,
+			usage: result.usage,
+		};
 	}
 
 	function finishReasonFor(
 		text: string,
-		toolCalls: QwenCompletionResult["toolCalls"],
+		toolCalls: GeminiCompletionResult["toolCalls"],
 	): LanguageModelV2FinishReason {
 		return toolCalls.length > 0 ? "tool-calls" : text ? "stop" : "unknown";
 	}
 
 	const provider: LanguageModelV2 = {
 		specificationVersion: "v2",
-		provider: "qwen-web",
+		provider: "gemini-web",
 		modelId,
 		supportedUrls: {} as Record<string, RegExp[]>,
 
@@ -1482,14 +1536,14 @@ function createQwenWebModel(
 				};
 			} catch (error) {
 				const err = error instanceof Error ? error : new Error(String(error));
-				logger?.error?.(`[qwen-web] doGenerate error: ${err.message}`);
+				logger?.error?.(`[gemini-web] doGenerate error: ${err.message}`);
 				throw err;
 			}
 		},
 
 		async doStream(options: LanguageModelV2CallOptions) {
 			const { text, toolCalls, usage } = await runCompletion(options);
-			const id = `qwen-web-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+			const id = `gemini-web-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
 
 			const parts: LanguageModelV2StreamPart[] = [
 				{ type: "stream-start", warnings: [] },
@@ -1537,25 +1591,25 @@ function createQwenWebModel(
 
 // ── Provider factory ──────────────────────────────────────────────────────────
 
-export function createQwenWebProvider(
+export function createGeminiWebProvider(
 	_config: GatewayResolvedProviderConfig,
 	context?: GatewayProviderContext,
 ): ProviderFactoryResult {
 	const logger = context?.logger;
 	return {
-		model: (modelId: string) => createQwenWebModel(modelId, logger),
+		model: (modelId: string) => createGeminiWebModel(modelId, logger),
 	};
 }
 
-export function createQwenWebProviderFactory() {
-	return { id: "qwen-web", create: createQwenWebProvider };
+export function createGeminiWebProviderFactory() {
+	return { id: "gemini-web", create: createGeminiWebProvider };
 }
 
 // ── Module factory (used by ai-sdk.ts) ────────────────────────────────────────
 
-export function createQwenWebProviderModule(
+export function createGeminiWebProviderModule(
 	config: GatewayResolvedProviderConfig,
 	context?: GatewayProviderContext,
 ): ProviderFactoryResult {
-	return createQwenWebProvider(config, context);
+	return createGeminiWebProvider(config, context);
 }

@@ -23,6 +23,29 @@ export interface LocalSlashCommandActionInput {
 	 * Web v2). Provider-specific; no-ops / returns false for non-web providers.
 	 */
 	findChat: () => Promise<boolean>;
+	/**
+	 * Manual reply recovery for web providers: queue the clipboard as the
+	 * model's reply for the next turn. No-ops for non-web providers.
+	 */
+	pasteReply: () => Promise<boolean>;
+	/**
+	 * Show or set this project's post-tool continuation note. `arg` is the raw
+	 * text after `/note`: empty shows the current note, "reset"/"default"
+	 * restores the built-in one, anything else becomes the new note.
+	 */
+	setNote: (arg: string) => boolean;
+}
+
+/**
+ * Everything after the command word, verbatim. Unlike `/autocompact` the note
+ * is free text, so it is neither split nor lower-cased — only the leading
+ * command token is removed.
+ */
+function commandArgument(text: string | undefined): string {
+	if (!text) return "";
+	const trimmed = text.trim();
+	const firstSpace = trimmed.search(/\s/);
+	return firstSpace === -1 ? "" : trimmed.slice(firstSpace + 1).trim();
 }
 
 /**
@@ -106,6 +129,12 @@ export function runLocalSlashCommandAction(
 	}
 	if (normalized === "findchat") {
 		return input.findChat();
+	}
+	if (normalized === "paste") {
+		return input.pasteReply();
+	}
+	if (normalized === "note") {
+		return input.setNote(commandArgument(input.invocation?.text));
 	}
 	if (normalized === "quit") {
 		setTimeout(input.exitCline, 0);

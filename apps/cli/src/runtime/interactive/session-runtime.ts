@@ -15,9 +15,11 @@ import {
 	type ToolApprovalResult,
 	type UserInstructionConfigService,
 } from "@cline/core";
+import { bindChatKey, clearChatKeyBinding } from "@cline/llms";
 import type { Message } from "@cline/shared";
 import { createCliCore } from "../../session/session";
 import { submitAndExitInTerminal } from "../../utils/approval";
+import { clearChatBinding, readChatBinding } from "../../utils/chat-binding";
 import type {
 	ChatCommandState,
 	ForkSessionResult,
@@ -129,6 +131,9 @@ export function createInteractiveSessionRuntime(input: {
 	const clearActiveSession = (): void => {
 		activeSessionId = "";
 		setActiveCliSession(undefined);
+		// Live half only — the persisted record stays, so restarting this same
+		// session id re-pins it below.
+		clearChatKeyBinding(input.config.providerId);
 	};
 
 	const applyStartedSession = (started: StartedSession): void => {
@@ -136,6 +141,15 @@ export function createInteractiveSessionRuntime(input: {
 			manifest: started.manifest,
 		});
 		activeSessionId = started.sessionId;
+		// Re-apply this session's `/findchat` pin, so a session resumed from
+		// `/history` keeps talking to the web chat it was bound to instead of
+		// falling back to the prompt hash. See utils/chat-binding.ts.
+		const binding = readChatBinding(started.sessionId);
+		if (binding && binding.providerId === input.config.providerId) {
+			bindChatKey(binding.providerId, binding.chatKey);
+		} else {
+			clearChatKeyBinding(input.config.providerId);
+		}
 	};
 
 	const ensureSessionManager = async (): Promise<CliCore> => {
@@ -751,12 +765,28 @@ export function createInteractiveSessionRuntime(input: {
 		if (!updated.updated) {
 			throw new Error("Compaction could not be saved. Try again.");
 		}
+		// Compaction deliberately moves the conversation into a FRESH web chat, so
+		// any `/findchat` pin on this session is now pointing at the chat we just
+		// left behind. Drop it (persisted record included, since the restart keeps
+		// the same session id and would otherwise re-apply it). Run `/findchat`
+		// again to pin the compacted session to a chat.
+		clearChatBinding(sourceSessionId);
+
 		// Restart the same session so the compaction state projects the summary
 		// as the new first user message on the next turn (for deepseek-web-v2 this
 		// opens a fresh web chat seeded with system prompt + summary).
-		await restartWithMessages([], undefined, result.compactionState, {
-			preserveSessionId: true,
-		});
+		// Restart with the FULL canonical transcript, not an empty list: the
+		// compaction state projects onto its source messages, and projection
+		// bails out unless at least `source_message_count` of them are present.
+		// Restarting empty made every projection fail, silently dropping the
+		// summary — the fresh chat then opened with only the system prompt and
+		// the user's next message, and the model had no idea what came before.
+		await restartWithMessages(
+			result.canonicalMessages,
+			undefined,
+			result.compactionState,
+			{ preserveSessionId: true },
+		);
 		return {
 			messagesBefore,
 			messagesAfter: result.canonicalMessages.length,

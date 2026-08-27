@@ -1,5 +1,5 @@
-import { createHandlerAsync } from "@cline/llms";
-import type { BasicLogger } from "@cline/shared";
+import { createHandlerAsync, useLastChatForNextCall } from "@cline/llms";
+import type { BasicLogger, Message } from "@cline/shared";
 import { countUserRunMessages } from "../../session/user-run-messages";
 import type {
 	CoreCompactionContext,
@@ -18,10 +18,12 @@ import {
 	ensureFilesSection,
 	estimateTokens,
 	extractFileOps,
+	type FileOperationSummary,
 	findCutIndex,
 	findLatestSummaryIndex,
 	getCompactionSummaryMetadata,
 	isLeanSummaryProvider,
+	isStatefulWebChatProvider,
 	resolveEffectiveMaxInputTokens,
 	resolveSummarizerConfig,
 	serializeConversation,
@@ -63,14 +65,25 @@ export function buildAgenticSummaryInputBudget(options: {
 async function generateSummary(options: {
 	providerConfig: ProviderConfig;
 	request: string;
+	/**
+	 * Send this request into the chat the last ordinary turn used, rather than
+	 * letting the provider derive a chat from the request's own text. Only
+	 * meaningful for stateful web-chat providers, where the history lives in
+	 * the browser chat and a request routed anywhere else sees nothing to
+	 * summarize.
+	 */
+	reuseActiveChat?: boolean;
 	logger?: BasicLogger;
 }): Promise<string> {
 	const handler = await createHandlerAsync(options.providerConfig);
+	const messages: Message[] = [{ role: "user", content: options.request }];
+	if (options.reuseActiveChat) {
+		useLastChatForNextCall();
+	}
 	let text = "";
-	for await (const chunk of handler.createMessage(
-		"Summarize and provide a detailed prompt to continue in next message with current task progress. Tell what to do and not to do so the next message can catch up precisely.",
-		[{ role: "user", content: options.request }],
-	)) {
+	// The request itself already carries the summarize instruction; a system
+	// prompt repeating it just makes the model read the same ask twice.
+	for await (const chunk of handler.createMessage("", messages)) {
 		if (chunk.type === "text") {
 			text += chunk.text;
 			continue;
@@ -83,6 +96,7 @@ async function generateSummary(options: {
 		outputChars: text.length,
 		modelId: options.providerConfig.modelId,
 		providerId: options.providerConfig.providerId,
+		reusedActiveChat: options.reuseActiveChat === true,
 	});
 	return text.trim();
 }
@@ -93,6 +107,90 @@ function safeJsonSize(value: unknown): number {
 	} catch {
 		return String(value).length;
 	}
+}
+
+/**
+ * Compaction path for providers whose web chat keeps its own server-side
+ * conversation state (`isStatefulWebChatProvider`). Instead of reconstructing
+ * the transcript and sending it to a fresh, unrelated chat, this asks for a
+ * summary INSIDE the chat that already holds the real history: the request
+ * carries only the summarize instruction, and `reuseActiveChat` tells the
+ * provider to send it to the chat the last ordinary turn used rather than
+ * deriving one from the request's own text.
+ *
+ * This is stage 1 of three. The CLI then stores the returned summary as a
+ * `compaction_summary` message, and the next real turn opens a fresh chat
+ * seeded with the system prompt + that summary. All three stages, and what to
+ * do when adding another web provider, are documented in
+ * `@cline/llms` -> providers/vendors/tool-pipeline/chat-target.ts.
+ */
+async function runStatefulWebChatCompaction(options: {
+	messages: CoreCompactionContext["messages"];
+	messagesToSummarize: CoreCompactionContext["messages"];
+	cutIndex: number;
+	fileOps: FileOperationSummary;
+	summarizerProviderConfig: ProviderConfig;
+	estimateMessageTokens: EstimateMessageTokens;
+	logger?: BasicLogger;
+}): Promise<CoreCompactionResult | undefined> {
+	const summaryRequest = buildSummaryRequest({
+		conversationText: "",
+		fileOps: options.fileOps,
+		style: "session",
+	});
+	options.logger?.debug(
+		"Agentic compaction summarizer diagnostics (stateful web chat)",
+		{
+			messagesToSummarize: options.messagesToSummarize.length,
+			summarizerProviderId: options.summarizerProviderConfig.providerId,
+			summarizerModelId: options.summarizerProviderConfig.modelId,
+		},
+	);
+	const rawSummary = await generateSummary({
+		providerConfig: options.summarizerProviderConfig,
+		request: summaryRequest,
+		reuseActiveChat: true,
+		logger: options.logger,
+	});
+	if (!rawSummary.trim()) {
+		return undefined;
+	}
+
+	const summary = ensureFilesSection(rawSummary, options.fileOps);
+	const tokensBefore = options.messages.reduce(
+		(total, message) => total + options.estimateMessageTokens(message),
+		0,
+	);
+	const resultMessages = [
+		buildSummaryMessage({
+			summary,
+			fileOps: options.fileOps,
+			tokensBefore,
+			userRunSpan: countUserRunMessages(options.messagesToSummarize),
+		}),
+		...options.messages.slice(options.cutIndex),
+	];
+	const tokensAfter = resultMessages.reduce(
+		(total, message) => total + options.estimateMessageTokens(message),
+		0,
+	);
+	options.logger?.debug("Performed agentic compaction (stateful web chat)", {
+		messagesBefore: options.messages.length,
+		messagesAfter: resultMessages.length,
+		messagesSummarized: options.cutIndex,
+		messagesPreserved: options.messages.length - options.cutIndex,
+		tokensBefore,
+		tokensAfter,
+	});
+	return {
+		messages: resultMessages,
+		budget: {
+			policyIntent: "agentic_summary",
+			actionCount: 0,
+			warningCount: 0,
+			liveTailHandling: "included_verbatim",
+		},
+	};
 }
 
 export async function runAgenticCompaction(options: {
@@ -137,6 +235,19 @@ export async function runAgenticCompaction(options: {
 		activeProviderConfig: options.providerConfig,
 		summarizer: options.summarizer,
 	});
+
+	if (isStatefulWebChatProvider(summarizerProviderConfig.providerId)) {
+		return runStatefulWebChatCompaction({
+			messages,
+			messagesToSummarize,
+			cutIndex,
+			fileOps: preProjectionFileOps,
+			summarizerProviderConfig,
+			estimateMessageTokens: options.estimateMessageTokens,
+			logger: options.logger,
+		});
+	}
+
 	const resolvedSummarizerInputLimit = resolveProviderMaxInputTokens(
 		summarizerProviderConfig,
 	);

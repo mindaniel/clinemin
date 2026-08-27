@@ -531,6 +531,8 @@ function inferClient(spec: BuiltinSpec): ProviderClient {
 		case "ollama":
 		case "qwen-web":
 		case "chatgpt-web":
+		case "claude-web":
+		case "gemini-web":
 		case "sap-ai-core":
 		case "deepseek-web":
 		case "deepseek-web-v2":
@@ -646,6 +648,7 @@ const clinePass = createClineLikeSpec({
  * runtime or product policy. Providers fully described by models.dev must not
  * be duplicated here.
  */
+
 const OPENAI_COMPATIBLE_SPEC_OVERRIDES: BuiltinSpecOverride[] = [
 	{
 		id: "openai-compatible",
@@ -1275,6 +1278,63 @@ const BUILTIN_SPEC_OVERRIDES: BuiltinSpecOverride[] = [
 			"gpt-auto": {
 				id: "gpt-auto",
 				name: "GPT Auto",
+				capabilities: ["streaming"],
+				contextWindow: 1_000_000,
+			},
+		}),
+		metadata: { usageCostDisplay: "hide" },
+	},
+
+	{
+		id: "claude-web",
+		name: "Claude (Web — Browser)",
+		description:
+			"Claude via your real Chrome browser session (CDP) — no API key needed. Log in to claude.ai once in the browser profile. Options (headless, debug, chromePath, profileDir, debugPort) in ~/.cline/claude-web/config.json or CLAUDE_WEB_* env vars",
+		family: "claude-web",
+		popular: 25,
+		capabilities: ["local-auth", "tools", "streaming"],
+		defaultModelId: "claude-auto",
+		modelsFactory: () => ({
+			"claude-auto": {
+				id: "claude-auto",
+				name: "Claude Auto",
+				capabilities: ["streaming"],
+				contextWindow: 1_000_000,
+			},
+		}),
+		metadata: { usageCostDisplay: "hide" },
+	},
+	{
+		id: "gemini-web",
+		name: "Gemini (Web — Browser)",
+		description:
+			"Gemini via your real Chrome browser session (CDP) — no API key needed. Log in to gemini.google.com once in the browser profile. Options (headless, debug, chromePath, profileDir, debugPort) in ~/.cline/gemini-web/config.json or GEMINI_WEB_* env vars",
+		family: "gemini-web",
+		popular: 25,
+		capabilities: ["local-auth", "tools", "streaming"],
+		defaultModelId: "gemini-auto",
+		modelsFactory: () => ({
+			"gemini-auto": {
+				id: "gemini-auto",
+				name: "Gemini Auto",
+				capabilities: ["streaming"],
+				contextWindow: 1_000_000,
+			},
+			"gemini-pro": {
+				id: "gemini-pro",
+				name: "Gemini Pro",
+				capabilities: ["streaming"],
+				contextWindow: 1_000_000,
+			},
+			"gemini-flash": {
+				id: "gemini-flash",
+				name: "Gemini Flash",
+				capabilities: ["streaming"],
+				contextWindow: 1_000_000,
+			},
+			"gemini-flash-lite": {
+				id: "gemini-flash-lite",
+				name: "Gemini Flash-Lite",
 				capabilities: ["streaming"],
 				contextWindow: 1_000_000,
 			},

@@ -25,6 +25,8 @@ export type ProviderFamily =
 	| "ollama"
 	| "qwen-web"
 	| "chatgpt-web"
+	| "claude-web"
+	| "gemini-web"
 	| "sap-ai-core"
 	| "deepseek-web"
 	| "deepseek-web-v2";

@@ -40,7 +40,7 @@ export interface ShellExecutorOptions {
 
 	/**
 	 * Timeout for command execution in milliseconds
-	 * @default 30000 (30 seconds)
+	 * @default 60000 (60 seconds)
 	 */
 	timeoutMs?: number;
 
@@ -312,7 +312,7 @@ export function createShellExecutor(
 ): ShellExecutor {
 	const {
 		shell = getDefaultShell(process.platform),
-		timeoutMs = 30000,
+		timeoutMs = 60000,
 		env = {},
 		combineOutput = true,
 	} = options;

@@ -661,6 +661,9 @@ export function isLeanSummaryProvider(providerId: string): boolean {
 	if (
 		providerId === "deepseek-web" ||
 		providerId === "deepseek-web-v2" ||
+		providerId === "qwen-web" ||
+		providerId === "claude-web" ||
+		providerId === "chatgpt-web" ||
 		providerId.startsWith("llamacpp") ||
 		providerId === "ollama" ||
 		providerId === "lmstudio"
@@ -668,6 +671,35 @@ export function isLeanSummaryProvider(providerId: string): boolean {
 		return true;
 	}
 	return false;
+}
+
+/**
+ * Provider ids whose web chat keeps its own server-side conversation state,
+ * mapped to one browser tab per CLI conversation via `chatKeyFromPrompt` (see
+ * `chatKeyFromPrompt`/`isNewChat` in deepseek-web-v2.ts, reused as-is by
+ * qwen-web/claude-web/chatgpt-web). Their compaction summary request must run
+ * INSIDE that same chat rather than opening an unrelated new one, and needs no
+ * reconstructed transcript in the request text — the chat already has the
+ * real conversation history server-side.
+ */
+/*
+ * Adding a provider here is only half the wiring. A provider on this list also
+ * has to route its compaction request explicitly (`consumeChatKeyOverride` /
+ * `recordActiveChatKey`) and keep the leading `Context summary:` message when
+ * opening a fresh chat. Listing one WITHOUT that wiring is worse than leaving
+ * it off: its summarize request lands in a brand-new empty chat, the model
+ * replies that it has nothing to summarize, and that reply is stored as the
+ * summary. The full three-stage hand-off is documented in
+ * `@cline/llms` -> providers/vendors/tool-pipeline/chat-target.ts.
+ */
+export function isStatefulWebChatProvider(providerId: string): boolean {
+	return (
+		providerId === "deepseek-web-v2" ||
+		providerId === "qwen-web" ||
+		providerId === "claude-web" ||
+		providerId === "chatgpt-web" ||
+		providerId === "gemini-web"
+	);
 }
 
 /**
@@ -681,8 +713,15 @@ export function buildSummaryRequest(options: {
 	previousSummary?: string;
 	conversationText: string;
 	fileOps: FileOperationSummary;
-	style?: "full" | "lean";
+	style?: "full" | "lean" | "session";
 }): string {
+	if (options.style === "session") {
+		// The chat this request lands in already holds the real transcript
+		// server-side (see `isStatefulWebChatProvider`), so no reconstructed
+		// conversation text is attached — asking would just duplicate what the
+		// chat already has.
+		return "Summarize our conversation so far and give me a detailed prompt to continue in the next message with current task progress. Tell me what to do and not to do so the next message can catch up precisely.";
+	}
 	if (options.style === "lean") {
 		return `Summarize the conversation below and provide a detailed prompt to continue.\n\n${options.conversationText || "(empty)"}`;
 	}

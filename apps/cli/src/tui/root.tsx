@@ -144,6 +144,9 @@ function App(props: TuiProps) {
 
 	const refocusTextareaRef = useRef<() => void>(() => {});
 	const populateInputRef = useRef<(value: string) => void>(() => {});
+	// Assigned once the prompt controller exists below; local commands are wired
+	// up before it, so they reach submission through this ref.
+	const submitTextRef = useRef<(text: string) => void>(() => {});
 	const insertSkillCommandRef = useRef<
 		(command: string, invocation?: LocalSlashCommandInvocation) => void
 	>(() => {});
@@ -655,6 +658,9 @@ function App(props: TuiProps) {
 		onUndo: openCheckpointRestore,
 		onExit: exitCline,
 		providerId: props.config.providerId,
+		cwd: props.config.cwd,
+		getSessionId: props.getSessionId,
+		submitText: (text: string) => submitTextRef.current(text),
 	});
 
 	const startupActionsRef = useRef({ openConfig, openHistory });
@@ -760,6 +766,7 @@ function App(props: TuiProps) {
 	const focusPromptTextarea = promptInput.focusTextarea;
 	const submitInitialPrompt = promptInput.submitInitialPrompt;
 	refocusTextareaRef.current = promptInput.refocusTextarea;
+	submitTextRef.current = promptInput.submitText;
 	populateInputRef.current = (value: string) => {
 		promptInput.populateInput(value);
 	};

@@ -24,6 +24,8 @@ function makeActions(
 		openHistory: vi.fn(),
 		exitCline: vi.fn(),
 		findChat: vi.fn(async () => true),
+		pasteReply: vi.fn(async () => true),
+		setNote: vi.fn(() => true),
 		...overrides,
 	};
 }
