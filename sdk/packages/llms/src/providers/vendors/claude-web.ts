@@ -38,6 +38,10 @@ import {
 	isSameChatLocation,
 	parseFallbackToolUses,
 } from "./deepseek-web-v2";
+import {
+	browserNotFoundMessage,
+	findChromePath,
+} from "./tool-pipeline/browser-path";
 import { registerLaunchedBrowser } from "./tool-pipeline/browser-processes";
 import { resolveChatKey } from "./tool-pipeline/chat-target";
 import {
@@ -175,33 +179,6 @@ export function resolveClaudeWebV2Config(): ClaudeWebV2RuntimeConfig {
 					fileConfig.toolTurnExtraMaxMs,
 			) || DEFAULT_TOOL_TURN_EXTRA_MAX_MS,
 	};
-}
-
-function findChromePath(): string | undefined {
-	const programFiles = process.env.PROGRAMFILES;
-	const programFilesX86 = process.env["PROGRAMFILES(X86)"];
-	const localAppData = process.env.LOCALAPPDATA;
-	const candidates = [
-		programFiles
-			? path.join(programFiles, "Google", "Chrome", "Application", "chrome.exe")
-			: undefined,
-		programFilesX86
-			? path.join(
-					programFilesX86,
-					"Google",
-					"Chrome",
-					"Application",
-					"chrome.exe",
-				)
-			: undefined,
-		localAppData
-			? path.join(localAppData, "Google", "Chrome", "Application", "chrome.exe")
-			: undefined,
-		"/Applications/Google Chrome.app/Contents/MacOS/Google Chrome",
-		"/usr/bin/google-chrome",
-		"/usr/bin/chromium",
-	];
-	return candidates.find((p) => p !== undefined && fs.existsSync(p));
 }
 
 async function isEndpointUp(port: number): Promise<boolean> {
@@ -379,7 +356,10 @@ async function connectBrowser(
 	const executablePath = config.chromePath ?? findChromePath();
 	if (!executablePath) {
 		throw new Error(
-			"Could not find Chrome. Set chromePath in ~/.cline/claude-web/config.json or CLAUDE_WEB_CHROME_PATH.",
+			browserNotFoundMessage(
+				"~/.cline/claude-web/config.json",
+				"CLAUDE_WEB_CHROME_PATH",
+			),
 		);
 	}
 	const profileDir = config.profileDir ?? path.join(CONFIG_DIR, "profile");

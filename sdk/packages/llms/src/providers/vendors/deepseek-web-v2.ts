@@ -41,6 +41,10 @@ function detectMalformedToolTag(text: string): string | null {
 	return null;
 }
 
+import {
+	browserNotFoundMessage,
+	findChromePath,
+} from "./tool-pipeline/browser-path";
 import { registerLaunchedBrowser } from "./tool-pipeline/browser-processes";
 import { resolveChatKey } from "./tool-pipeline/chat-target";
 import { isContinuationNoteText } from "./tool-pipeline/continuation-note";
@@ -348,34 +352,7 @@ export function isRateLimitText(text: string): boolean {
 	return RATE_LIMIT_TEXT_RE.test(text);
 }
 
-/** Locate an installed Chrome/Chromium binary (same candidate list as the reference browser.py). */
-export function findChromePath(): string | undefined {
-	const programFiles = process.env.PROGRAMFILES;
-	const programFilesX86 = process.env["PROGRAMFILES(X86)"];
-	const localAppData = process.env.LOCALAPPDATA;
-	const candidates = [
-		programFiles
-			? path.join(programFiles, "Google", "Chrome", "Application", "chrome.exe")
-			: undefined,
-		programFilesX86
-			? path.join(
-					programFilesX86,
-					"Google",
-					"Chrome",
-					"Application",
-					"chrome.exe",
-				)
-			: undefined,
-		localAppData
-			? path.join(localAppData, "Google", "Chrome", "Application", "chrome.exe")
-			: undefined,
-		"/Applications/Google Chrome.app/Contents/MacOS/Google Chrome",
-		"/usr/bin/google-chrome",
-		"/usr/bin/chromium",
-		"/usr/bin/chromium-browser",
-	];
-	return candidates.find((p) => p !== undefined && fs.existsSync(p));
-}
+export { findChromePath } from "./tool-pipeline/browser-path";
 
 /**
  * Derive a stable key for a CLI conversation from its first user message. All
@@ -905,7 +882,10 @@ async function connectBrowser(
 	const executablePath = config.chromePath ?? findChromePath();
 	if (!executablePath) {
 		throw new Error(
-			"Could not find Chrome. Set chromePath in ~/.cline/deepseek-web-v2/config.json or DEEPSEEK_WEB_V2_CHROME_PATH.",
+			browserNotFoundMessage(
+				"~/.cline/deepseek-web-v2/config.json",
+				"DEEPSEEK_WEB_V2_CHROME_PATH",
+			),
 		);
 	}
 	const profileDir = config.profileDir ?? path.join(CONFIG_DIR, "profile");
