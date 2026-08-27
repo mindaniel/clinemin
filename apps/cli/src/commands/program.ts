@@ -1,5 +1,5 @@
 import { Command, CommanderError, Option } from "commander";
-import { version } from "../../package.json";
+import { getCliDisplayVersion } from "../utils/common";
 import {
 	CLI_COMPACTION_MODE_OPTION_DESCRIPTION,
 	parseCliCompactionMode,
@@ -107,7 +107,7 @@ export function addRootOptions(cmd: Command): Command {
 export function createProgram(): Command {
 	const program = new Command("cline")
 		.description("Cline CLI - AI coding assistant in your terminal")
-		.version(version, "-V, --version", "Output the version number")
+		.version(getCliDisplayVersion(), "-V, --version", "Output the version number")
 		.exitOverride() // don't call process.exit
 		.configureOutput({
 			writeOut: () => {}, // suppress by default; main.ts re-enables for routing

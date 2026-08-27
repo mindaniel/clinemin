@@ -21,7 +21,7 @@ import { Command } from "commander";
 import open from "open";
 import { version as cliVersion } from "../../package.json";
 import { isProcessRunning } from "../connectors/common";
-import { getCliBuildInfo } from "../utils/common";
+import { getCliBuildInfo, resolveBuildFingerprint } from "../utils/common";
 import { c, writeln } from "../utils/output";
 import { stopAllConnectors } from "./connect";
 
@@ -52,6 +52,7 @@ type SpawnedProcessRecord = {
 type DoctorStatus = {
 	cwd: string;
 	cliVersion: string;
+	buildFingerprint: string;
 	coreVersion?: string;
 	hubUrl?: string;
 	hubHealthy: boolean;
@@ -342,6 +343,7 @@ async function collectDoctorStatus(cwd: string): Promise<DoctorStatus> {
 	return {
 		cwd,
 		cliVersion,
+		buildFingerprint: resolveBuildFingerprint(),
 		coreVersion: health?.coreVersion ?? discovery?.coreVersion,
 		hubUrl: current?.url,
 		hubHealthy: !!health?.url,
@@ -426,6 +428,9 @@ export async function runDoctorCommand(
 			return 0;
 		}
 		writeln(`cli version ${c.dim}${before.cliVersion}${c.reset}`);
+		if (before.buildFingerprint) {
+			writeln(`build ${c.dim}${before.buildFingerprint}${c.reset}`);
+		}
 		writeln(`core version ${c.dim}${before.coreVersion ?? "n/a"}${c.reset}`);
 		writeln(`hub url ${c.dim}${before.hubUrl ?? "none"}${c.reset}`);
 		writeln(
