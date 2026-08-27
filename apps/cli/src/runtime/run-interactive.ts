@@ -7,7 +7,7 @@ import {
 	setToolAutoApproveGlobally,
 	type UserInstructionConfigService,
 } from "@cline/core";
-import { setContinuationNote } from "@cline/llms";
+import { setContinuationNote, shutdownLaunchedBrowsers } from "@cline/llms";
 import { formatModeSwitchNotice } from "@cline/shared";
 import type { CliMigrationNotice } from "../kanban-migration/notice";
 import { logCliError } from "../logging/errors";
@@ -394,6 +394,14 @@ export async function runInteractive(
 					// Best effort cleanup for plugin command discovery sandbox.
 				});
 				pluginChatCommandHostShutdown = undefined;
+				// Close the Chrome instances the web providers launched. They are
+				// spawned detached so a mid-turn crash doesn't take the logged-in
+				// session with it, which also means they outlive a clean exit and
+				// keep holding their --remote-debugging-port. Only browsers we
+				// spawned ourselves are registered, and local model runtimes
+				// (llamacpp) are deliberately left running — see
+				// llms' tool-pipeline/browser-processes.ts.
+				await shutdownLaunchedBrowsers().catch(() => []);
 				setActiveRuntimeAbort(undefined);
 				setActiveRuntimeCleanup(undefined);
 			}
@@ -832,6 +840,7 @@ export async function runInteractive(
 			);
 			return (await deleteSession(sessionId)).deleted;
 		},
+		getSessionId: () => sessionRuntime.getActiveSessionId() || undefined,
 		onCompact: async () => {
 			await sessionRuntime.ensureReady();
 			return await sessionRuntime.compactCurrentSession();

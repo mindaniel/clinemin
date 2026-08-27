@@ -9,21 +9,29 @@
  * through the exact same tool parsing, validation, approval, and tool-result
  * feedback path a live reply would have taken.
  *
- * Deliberately a module-level single slot: a manual paste is a rare, explicitly
- * user-initiated recovery, and the next model request always consumes it.
+ * Deliberately a single slot: a manual paste is a rare, explicitly
+ * user-initiated recovery, and the next model request always consumes it. The
+ * slot is process-wide rather than module-level because `/paste` sets it from a
+ * different copy of `@cline/llms` than the provider consumes it from — see
+ * `process-global.ts`.
  */
 
-let pendingReply: string | undefined;
+import { processGlobal } from "./process-global";
+
+const state = () =>
+	processGlobal("injectedReply", () => ({
+		pending: undefined as string | undefined,
+	}));
 
 /** Queue `text` as the reply for the next web-provider model request. */
 export function setPendingInjectedReply(text: string): void {
 	const trimmed = text.trim();
-	pendingReply = trimmed || undefined;
+	state().pending = trimmed || undefined;
 }
 
 /** Whether a paste is waiting to be consumed. */
 export function hasPendingInjectedReply(): boolean {
-	return pendingReply !== undefined;
+	return state().pending !== undefined;
 }
 
 /**
@@ -31,12 +39,13 @@ export function hasPendingInjectedReply(): boolean {
  * queued, which is the signal to talk to the browser as usual.
  */
 export function consumePendingInjectedReply(): string | undefined {
-	const reply = pendingReply;
-	pendingReply = undefined;
+	const slot = state();
+	const reply = slot.pending;
+	slot.pending = undefined;
 	return reply;
 }
 
 /** Discard a queued reply without using it (e.g. the user cancelled). */
 export function clearPendingInjectedReply(): void {
-	pendingReply = undefined;
+	state().pending = undefined;
 }

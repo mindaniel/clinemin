@@ -428,6 +428,20 @@ export function usePromptInputController(input: {
 		if (!prompt) return;
 		inputValueRef.current = prompt;
 		setInputValue(prompt);
+		// `/paste` calls this from inside its own local-command handler, which is
+		// still in flight — and `submitPrompt` refuses to start a turn while a
+		// local command runs, so submitting here would be dropped silently and
+		// the queued reply would sit unused. Defer to the next macrotask, after
+		// `runSlashCommand`'s `finally` has cleared the flag.
+		if (localCommandInFlightRef.current) {
+			setTimeout(() => {
+				// A render in between resets the ref from state (which is now
+				// ""), so restore the text we are submitting.
+				inputValueRef.current = prompt;
+				submitRef.current();
+			}, 0);
+			return;
+		}
 		submitRef.current();
 	}, []);
 

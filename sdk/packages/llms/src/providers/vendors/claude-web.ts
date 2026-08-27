@@ -38,10 +38,8 @@ import {
 	isSameChatLocation,
 	parseFallbackToolUses,
 } from "./deepseek-web-v2";
-import {
-	consumeChatKeyOverride,
-	recordActiveChatKey,
-} from "./tool-pipeline/chat-target";
+import { registerLaunchedBrowser } from "./tool-pipeline/browser-processes";
+import { resolveChatKey } from "./tool-pipeline/chat-target";
 import {
 	realUserMessageKey,
 	stripPreviousUserBlock,
@@ -402,6 +400,15 @@ async function connectBrowser(
 		stdio: "ignore",
 	});
 	child.unref();
+	// We own this browser, so the CLI can close it on exit instead of leaving
+	// it holding the debug port. See tool-pipeline/browser-processes.ts.
+	if (child.pid) {
+		registerLaunchedBrowser({
+			providerId: "claude-web",
+			pid: child.pid,
+			debugPort: config.debugPort,
+		});
+	}
 
 	try {
 		await waitForEndpoint(config.debugPort, config.launchTimeoutMs);
@@ -1209,11 +1216,9 @@ function createClaudeWebModel(
 		// last ordinary turn used, because the standalone summarize request
 		// would otherwise hash to an empty chat of its own. See
 		// `tool-pipeline/chat-target.ts` for the full /compact hand-off.
-		const routedChatKey = consumeChatKeyOverride("claude-web");
-		const chatKey = routedChatKey ?? chatKeyFromPrompt(options.prompt);
-		if (!routedChatKey) {
-			recordActiveChatKey("claude-web", chatKey);
-		}
+		const chatKey = resolveChatKey("claude-web", () =>
+			chatKeyFromPrompt(options.prompt),
+		);
 		const existingClaudeSession = lookupClaudeChatSession(
 			runtimeConfig.chatsFile,
 			chatKey,

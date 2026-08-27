@@ -24,11 +24,14 @@ import type {
 	GatewayProviderContext,
 	GatewayResolvedProviderConfig,
 } from "@cline/shared";
+import { estimateTokens } from "@cline/shared";
 
 import {
 	messagesToPrompt,
+	normalizeToolName,
 	parseDeepSeekToolCalls,
 	parseLooseDeepSeekToolCalls,
+	parseRepairedToolJson,
 } from "./deepseek-web";
 import {
 	buildLeanConversation,
@@ -38,10 +41,8 @@ import {
 	isSameChatLocation,
 	parseFallbackToolUses,
 } from "./deepseek-web-v2";
-import {
-	consumeChatKeyOverride,
-	recordActiveChatKey,
-} from "./tool-pipeline/chat-target";
+import { registerLaunchedBrowser } from "./tool-pipeline/browser-processes";
+import { resolveChatKey } from "./tool-pipeline/chat-target";
 import {
 	realUserMessageKey,
 	stripPreviousUserBlock,
@@ -321,6 +322,16 @@ class CdpClient {
 let activeCdp: CdpClient | null = null;
 let activeCdpKey: string | null = null;
 
+// Cache the attached page target + its CDP session so consecutive turns reuse
+// the SAME session instead of re-attaching (and re-toggling the Network
+// domain) on every message — the same flakiness fix applied to chatgpt-web.
+let activeGeminiTargetId: string | null = null;
+let activeGeminiCdpSessionId: string | null = null;
+
+// Sessions whose Network domain is already enabled. Enable once and leave it
+// on for the session's lifetime; toggling it per turn made capture flaky.
+const geminiNetworkEnabledSessions = new Set<string>();
+
 async function connectCdp(port: number, timeoutMs: number): Promise<CdpClient> {
 	const endpoint = `http://127.0.0.1:${port}`;
 	const deadline = Date.now() + timeoutMs;
@@ -402,6 +413,15 @@ async function connectBrowser(
 		stdio: "ignore",
 	});
 	child.unref();
+	// We own this browser, so the CLI can close it on exit instead of leaving
+	// it holding the debug port. See tool-pipeline/browser-processes.ts.
+	if (child.pid) {
+		registerLaunchedBrowser({
+			providerId: "gemini-web",
+			pid: child.pid,
+			debugPort: config.debugPort,
+		});
+	}
 
 	try {
 		await waitForEndpoint(config.debugPort, config.launchTimeoutMs);
@@ -418,6 +438,58 @@ async function connectBrowser(
 
 // ── Enhanced Gemini send script (from send_gemini.txt) ──────────────────────────
 const SEND_MESSAGE_SOURCE = `
+// ---------- 0. Select model (Flash, Pro, Flash-Lite, etc.) ----------
+async function selectGeminiModel(modelName) {
+    if (!modelName) return true;
+    const modelBtn = document.querySelector('[data-test-id="bard-mode-menu-button"]');
+    if (!modelBtn) {
+        console.warn('Model selector button not found');
+        return false;
+    }
+
+    modelBtn.click();
+
+    let menuItems = null;
+    for (let attempt = 0; attempt < 5; attempt++) {
+        await new Promise(resolve => setTimeout(resolve, 500 + attempt * 200));
+        menuItems = document.querySelectorAll('gem-menu-item[role="menuitem"]');
+        if (menuItems.length > 0) break;
+    }
+    if (!menuItems || menuItems.length === 0) {
+        console.warn('No model menu items found');
+        return false;
+    }
+
+    const target = modelName.toLowerCase().trim();
+    let exactMatch = null;
+    let partialMatch = null;
+
+    for (const item of menuItems) {
+        const labelEl = item.querySelector('.label');
+        if (!labelEl) continue;
+        let label = (labelEl.textContent || '').trim();
+        let cleaned = label.replace(/^\\d+\\.\\s*/, '').trim();
+        let cleanedLower = cleaned.toLowerCase();
+        if (cleanedLower === target) {
+            exactMatch = item;
+            break;
+        }
+        if (cleanedLower.includes(target)) {
+            partialMatch = item;
+        }
+    }
+
+    const targetItem = exactMatch || partialMatch;
+    if (!targetItem) {
+        console.warn('Model "' + modelName + '" not found in menu');
+        return false;
+    }
+
+    targetItem.click();
+    await new Promise(resolve => setTimeout(resolve, 500));
+    return true;
+}
+
 // ---------- 1. Set text in Quill editor ----------
 async function setGeminiInput(message) {
     const editor = document.querySelector('.ql-editor.textarea.new-input-ui') ||
@@ -496,6 +568,18 @@ async function clickGeminiSend() {
 // ---------- 3. Main function ----------
 async function sendMessageToGemini(message, options) {
     options = options || {};
+
+    // Mirror the reference automation: pick the requested model (Pro, Flash,
+    // Flash-Lite, etc.) before typing, but only when the caller asked for a
+    // specific one — otherwise leave Gemini on its current selection.
+    var model = options.model || null;
+    if (model) {
+        var ok = await selectGeminiModel(model);
+        if (!ok) {
+            console.warn('Model selection failed, continuing with current model');
+        }
+    }
+
     const inputSuccess = await setGeminiInput(message);
     if (!inputSuccess) return false;
     await new Promise(resolve => setTimeout(resolve, 500));
@@ -507,7 +591,7 @@ async function sendMessageToGemini(message, options) {
 
 function buildSendScript(
 	prompt: string,
-	options?: { think?: boolean },
+	options?: { think?: boolean; model?: string | null },
 ): string {
 	const opts = options || {};
 	return `(async () => {
@@ -668,11 +752,6 @@ function consumeGeminiSse(
 	onChunk: (text: string) => void,
 	onDone: () => void,
 	onError: (err: Error) => void,
-	_onUsage?: (usage: {
-		inputTokens: number;
-		outputTokens: number;
-		totalTokens: number;
-	}) => void,
 ): void {
 	try {
 		// Gemini returns length-prefixed JSON (each line starts with "[").
@@ -914,7 +993,7 @@ async function sendAndCapture(
 	prompt: string,
 	config: GeminiWebV2RuntimeConfig,
 	logger?: BasicLogger,
-	sendOptions?: { think?: boolean },
+	sendOptions?: { think?: boolean; model?: string | null },
 	isToolTurn = false,
 ): Promise<{
 	text: string;
@@ -968,7 +1047,16 @@ async function sendAndCapture(
 	cdp.on("Network.loadingFinished", onLoadingFinished);
 
 	try {
-		await cdp.send("Network.enable", {}, cdpSessionId);
+		// Enable the Network domain ONCE per CDP session and leave it on for
+		// the session's lifetime. The old code re-enabled here and re-disabled
+		// in `finally` every turn — that toggle churn (plus re-attaching) could
+		// drop a completion response and surface as "Model returned empty
+		// response". Keeping the domain enabled is stable and harmless: the
+		// listeners are still scoped/unregistered per turn.
+		if (!geminiNetworkEnabledSessions.has(cdpSessionId)) {
+			await cdp.send("Network.enable", {}, cdpSessionId);
+			geminiNetworkEnabledSessions.add(cdpSessionId);
+		}
 
 		// Randomized human-like pacing before sending, plus an extra random
 		// amount on tool-request turns (the fastest back-to-back pattern in an
@@ -996,16 +1084,19 @@ async function sendAndCapture(
 		await Promise.race([bodyCaptured, timeoutPromise]);
 
 		if (!capturedBody) {
-			return {
-				text: "",
-				finishReason: "stop",
-				usage: { inputTokens: 0, outputTokens: 0, totalTokens: 0 },
-			};
+			// Distinguish a real timeout (the body never arrived) from a
+			// listener gap. An empty captured body after the wait is exactly the
+			// condition that used to be returned as empty text and then bubbled
+			// up as the opaque "Model returned empty response".
+			throw new Error(
+				`[gemini-web] no completion response captured for the last message. ` +
+					`${completionRequestId ? "A response was seen but its body could not be read." : "No Gemini completion response was observed."} ` +
+					"Check that gemini.google.com is logged in and not rate-limited in the browser profile.",
+			);
 		}
 
 		let fullText = "";
 		const finishReason: LanguageModelV2FinishReason = "stop";
-		let usage = { inputTokens: 0, outputTokens: 0, totalTokens: 0 };
 		consumeGeminiSse(
 			capturedBody,
 			(chunk) => {
@@ -1015,10 +1106,20 @@ async function sendAndCapture(
 			(err) => {
 				logger?.error?.(`[gemini-web] SSE parse error: ${err.message}`);
 			},
-			(nextUsage) => {
-				usage = nextUsage;
-			},
 		);
+
+		// The web endpoint does not report token counts, so estimate them from
+		// the exact prompt sent and the buffered reply, mirroring the Python
+		// reference automation (which estimates tokens from captured text) and
+		// deepseek-web-v2's `estimateDeepSeekWebUsage`. Use the repo-wide
+		// `estimateTokens` (chars / 3) so the context bar, per-turn metrics, and
+		// session totals show real numbers instead of zeros.
+		const usage = {
+			inputTokens: estimateTokens(prompt.length),
+			outputTokens: estimateTokens(fullText.length),
+			totalTokens: 0,
+		};
+		usage.totalTokens = usage.inputTokens + usage.outputTokens;
 
 		// Flag a throttled reply so the caller can back off / report it, and
 		// arm a one-shot recovery reload so the next turn forces a page
@@ -1034,9 +1135,11 @@ async function sendAndCapture(
 		}
 		return { text: fullText, finishReason, usage, rateLimited };
 	} finally {
+		// Unregister only this turn's listeners. Leave the Network domain
+		// enabled for the session — disabling it here was the other half of the
+		// per-turn toggle that made capture flaky.
 		cdp.off("Network.responseReceived", onResponseReceived);
 		cdp.off("Network.loadingFinished", onLoadingFinished);
-		await cdp.send("Network.disable", {}, cdpSessionId).catch(() => {});
 	}
 }
 
@@ -1082,6 +1185,113 @@ function buildGeminiPrompt(
 	return messagesToPrompt(conversation, promptOptions);
 }
 
+/**
+ * Map the provider `modelId` (e.g. "gemini-2.5-pro", "gemini-flash-latest",
+ * "gemini-3.1-flash-lite") to the Gemini web UI tier name ("Pro", "Flash",
+ * "Flash-Lite"). The web client picks models from a menu whose labels are the
+ * tier name with a leading version number ("3.6 Flash"), and
+ * `selectGeminiModel` strips that number before matching. "auto"/unknown ids
+ * return null so the browser is left on whatever model it's currently using,
+ * matching the reference automation's `send <msg>` (no `model=` suffix).
+ */
+function modelIdToGeminiUiModel(modelId: string): string | null {
+	const id = modelId.toLowerCase();
+	if (id.includes("auto")) return null;
+	if (id.includes("flash-lite")) return "Flash-Lite";
+	if (id.includes("pro")) return "Pro";
+	if (id.includes("flash")) return "Flash";
+	return null;
+}
+
+/**
+ * Parse Gemini's native tool-call format — a JSON array (or single object) of
+ * `{"name": "...", "args": {...}}` entries, usually wrapped in a ```json code
+ * fence. Gemini does not emit the `<tool>` tag contract the DeepSeek parsers
+ * expect; left to `parseFallbackToolUses`, that ```json fence is misread as
+ * "code to write to a file", turning a `read_files` call into a destructive
+ * `editor` call. This parser runs before the fallback so a real tool call wins.
+ */
+function parseGeminiToolCalls(
+	content: string,
+	toolNames: string[],
+): {
+	cleanedContent: string;
+	toolCalls: { name: string; arguments: Record<string, unknown> }[];
+} {
+	const accepted = new Set(toolNames.map((name) => normalizeToolName(name)));
+	const toolCalls: { name: string; arguments: Record<string, unknown> }[] = [];
+	const cleanedParts: string[] = [];
+	let cursor = 0;
+
+	// Find ```json ... ``` fences AND bare JSON arrays/objects. The fence is the
+	// common Gemini shape; a bare array is a fallback for unfenced output.
+	const fenceRe = /```(?:json)?\s*([\s\S]*?)```/gi;
+	let match: RegExpExecArray | null;
+	while ((match = fenceRe.exec(content)) !== null) {
+		const body = match[1].trim();
+		const parsed = parseRepairedToolJson(body);
+		cleanedParts.push(content.slice(cursor, match.index));
+		cursor = match.index + match[0].length;
+		if (parsed === undefined) continue;
+
+		for (const call of asToolCallList(parsed)) {
+			if (call && accepted.has(normalizeToolName(call.name))) {
+				toolCalls.push(call);
+			}
+		}
+	}
+	cleanedParts.push(content.slice(cursor));
+
+	// No fence matched — try the whole text as a bare JSON array/object.
+	if (toolCalls.length === 0) {
+		const parsed = parseRepairedToolJson(content);
+		if (parsed !== undefined) {
+			for (const call of asToolCallList(parsed)) {
+				if (call && accepted.has(normalizeToolName(call.name))) {
+					toolCalls.push(call);
+				}
+			}
+			if (toolCalls.length > 0) {
+				return { cleanedContent: "", toolCalls };
+			}
+		}
+	}
+
+	return { cleanedContent: cleanedParts.join("").trim(), toolCalls };
+}
+
+/** Normalize a parsed tool-call value into `{name, arguments}` entries. */
+function asToolCallList(
+	parsed: unknown,
+): { name: string; arguments: Record<string, unknown> }[] {
+	const items: unknown[] = Array.isArray(parsed) ? parsed : [parsed];
+	const out: { name: string; arguments: Record<string, unknown> }[] = [];
+	for (const item of items) {
+		if (!item || typeof item !== "object") continue;
+		const record = item as Record<string, unknown>;
+		const name =
+			typeof record.name === "string"
+				? record.name
+				: typeof record.type === "string"
+					? record.type
+					: "";
+		if (!name) continue;
+		let args: unknown = record.args ?? record.arguments ?? record.params;
+		if (args === undefined && record.arguments_json !== undefined) {
+			try {
+				args = JSON.parse(String(record.arguments_json));
+			} catch {
+				args = undefined;
+			}
+		}
+		if (args === undefined) args = {};
+		if (args && typeof args === "object" && !Array.isArray(args)) {
+			out.push({ name, arguments: args as Record<string, unknown> });
+		}
+	}
+	return out;
+}
+
 function createGeminiWebModel(
 	modelId: string,
 	logger?: BasicLogger,
@@ -1097,6 +1307,12 @@ function createGeminiWebModel(
 	// hasn't typed anything new), drop the stale "Previous user message:"
 	// block so it isn't re-sent every turn. Mirrors deepseek-web-v2.
 	let lastSentUserMessage = "";
+
+	// The Gemini UI keeps its model selection across sends, so re-clicking the
+	// model picker every turn (or on every tool-result follow-up) is an
+	// unnecessary loop. Track the model we've already applied to this model
+	// instance and only tell the page to select a model when it changes.
+	let lastAppliedGeminiUiModel: string | null = null;
 
 	// Shared by doGenerate/doStream (mirrors deepseek-web-v2's doCompletion):
 	// drives the CDP session, sends the prompt, captures + parses the SSE
@@ -1130,11 +1346,33 @@ function createGeminiWebModel(
 			}
 		}
 
-		const attachResult = await cdp.send("Target.attachToTarget", {
-			targetId: pageTarget.targetId,
-			flatten: true,
-		});
-		const cdpSessionId = attachResult.sessionId;
+		// Reuse the already-attached session for this page target when we can:
+		// the page target + its CDP session stay alive across turns, so
+		// re-attaching every turn (and re-enabling the Network domain) was a
+		// source of capture flakiness. Only (re-)attach when the target changed
+		// or we don't have a cached session for it yet.
+		let cdpSessionId: string | null = activeGeminiCdpSessionId;
+		if (
+			!cdpSessionId ||
+			activeGeminiTargetId !== pageTarget.targetId ||
+			!cdp.isOpen()
+		) {
+			const attachResult = await cdp.send("Target.attachToTarget", {
+				targetId: pageTarget.targetId,
+				flatten: true,
+			});
+			const newSessionId = attachResult.sessionId as string;
+			cdpSessionId = newSessionId;
+			activeGeminiTargetId = pageTarget.targetId;
+			activeGeminiCdpSessionId = newSessionId;
+			// A brand-new session needs the Network domain enabled fresh.
+			geminiNetworkEnabledSessions.delete(newSessionId);
+		}
+		if (!cdpSessionId) {
+			throw new Error(
+				"[gemini-web] failed to attach a CDP session to the Gemini page",
+			);
+		}
 
 		// Chat continuity: this CLI conversation is keyed by its first user
 		// message. A fresh key (no mapped Gemini chat yet) means this call opens
@@ -1145,11 +1383,9 @@ function createGeminiWebModel(
 		// last ordinary turn used, because the standalone summarize request
 		// would otherwise hash to an empty chat of its own. See
 		// `tool-pipeline/chat-target.ts` for the full /compact hand-off.
-		const routedChatKey = consumeChatKeyOverride("gemini-web");
-		const chatKey = routedChatKey ?? chatKeyFromPrompt(options.prompt);
-		if (!routedChatKey) {
-			recordActiveChatKey("gemini-web", chatKey);
-		}
+		const chatKey = resolveChatKey("gemini-web", () =>
+			chatKeyFromPrompt(options.prompt),
+		);
 		const existingGeminiSession = lookupGeminiChatSession(
 			runtimeConfig.chatsFile,
 			chatKey,
@@ -1193,13 +1429,23 @@ function createGeminiWebModel(
 
 		debugLog(`Sending prompt (${promptText.length} chars)`);
 
+		// Only re-select the model in the web UI when it actually changes.
+		// Gemini keeps its selection across sends, so re-clicking the picker on
+		// every message (or tool-result follow-up) is an unneeded loop. When
+		// the model is unchanged, pass `model: null` so the page script leaves
+		// the picker alone.
+		const geminiUiModel = modelIdToGeminiUiModel(modelId);
+		const shouldSelectModel = geminiUiModel !== lastAppliedGeminiUiModel;
+		if (shouldSelectModel) {
+			lastAppliedGeminiUiModel = geminiUiModel;
+		}
 		const result = await sendAndCapture(
 			cdp,
 			cdpSessionId,
 			promptText,
 			runtimeConfig,
 			logger,
-			{},
+			{ model: shouldSelectModel ? geminiUiModel : null },
 			functionTools.length > 0,
 		);
 
@@ -1232,6 +1478,25 @@ function createGeminiWebModel(
 			const displayText = retryPrompt
 				? `${cleanedContent}\n\n${retryPrompt}`.trim()
 				: cleanedContent;
+			return {
+				text: displayText,
+				toolCalls: validatedCalls,
+				usage: result.usage,
+			};
+		}
+
+		// Gemini emits native JSON tool calls (usually wrapped in a ```json
+		// fence) rather than the `<tool>` tag contract. Parse those BEFORE the
+		// fallback so a `read_files` JSON call is not misread as an `editor`
+		// write through the code-fence heuristic.
+		const geminiCallParse = parseGeminiToolCalls(cleanedContent, toolNames);
+		if (geminiCallParse.toolCalls.length > 0) {
+			const { tools: validatedCalls, retryPrompt } = validateToolCalls(
+				geminiCallParse.toolCalls,
+			);
+			const displayText = retryPrompt
+				? `${geminiCallParse.cleanedContent}\n\n${retryPrompt}`.trim()
+				: geminiCallParse.cleanedContent;
 			return {
 				text: displayText,
 				toolCalls: validatedCalls,

@@ -151,10 +151,20 @@ export {
 	type QwenWebChatEntry,
 	resolveQwenWebV2Config,
 } from "./providers/vendors/qwen-web";
+// Chrome instances the web providers launched. The CLI shuts these down on
+// exit so they stop holding their debug ports; local model runtimes (llamacpp)
+// are deliberately left running.
+export {
+	listLaunchedBrowsers,
+	shutdownLaunchedBrowsers,
+} from "./providers/vendors/tool-pipeline/browser-processes";
 // Explicit chat routing (used by compaction to send its summarize request
 // into the web chat that actually holds the conversation).
 export {
+	bindChatKey,
+	clearChatKeyBinding,
 	clearChatKeyOverride,
+	getBoundChatKey,
 	useLastChatForNextCall,
 } from "./providers/vendors/tool-pipeline/chat-target";
 // Post-tool continuation note (the agent runtime appends it; the CLI `/note`

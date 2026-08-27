@@ -28,15 +28,22 @@
  * being trimmed correctly instead of silently degrading.
  */
 
+import { processGlobal } from "./process-global";
+
 /** Note used when a project has not customised one. */
 export const DEFAULT_CONTINUATION_NOTE =
 	"Use tool to continue the task or if finish, then tell 'finish'.";
 
-let activeContinuationNote = DEFAULT_CONTINUATION_NOTE;
+// Process-wide, not module-level: the CLI sets this from a different copy of
+// `@cline/llms` than the agent runtime reads it from. See `process-global.ts`.
+const state = () =>
+	processGlobal("continuationNote", () => ({
+		active: DEFAULT_CONTINUATION_NOTE,
+	}));
 
 /** The note the runtime appends after each round of tool execution. */
 export function getContinuationNote(): string {
-	return activeContinuationNote;
+	return state().active;
 }
 
 /**
@@ -45,12 +52,12 @@ export function getContinuationNote(): string {
  */
 export function setContinuationNote(note: string | undefined): void {
 	const trimmed = note?.trim();
-	activeContinuationNote = trimmed ? trimmed : DEFAULT_CONTINUATION_NOTE;
+	state().active = trimmed ? trimmed : DEFAULT_CONTINUATION_NOTE;
 }
 
 /** Restore the built-in default. */
 export function resetContinuationNote(): void {
-	activeContinuationNote = DEFAULT_CONTINUATION_NOTE;
+	state().active = DEFAULT_CONTINUATION_NOTE;
 }
 
 /**
@@ -60,7 +67,5 @@ export function resetContinuationNote(): void {
  */
 export function isContinuationNoteText(text: string): boolean {
 	const trimmed = text.trim();
-	return (
-		trimmed === activeContinuationNote || trimmed === DEFAULT_CONTINUATION_NOTE
-	);
+	return trimmed === state().active || trimmed === DEFAULT_CONTINUATION_NOTE;
 }

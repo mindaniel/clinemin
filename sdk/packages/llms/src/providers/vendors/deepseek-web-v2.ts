@@ -41,12 +41,11 @@ function detectMalformedToolTag(text: string): string | null {
 	return null;
 }
 
-import {
-	consumeChatKeyOverride,
-	recordActiveChatKey,
-} from "./tool-pipeline/chat-target";
+import { registerLaunchedBrowser } from "./tool-pipeline/browser-processes";
+import { resolveChatKey } from "./tool-pipeline/chat-target";
 import { isContinuationNoteText } from "./tool-pipeline/continuation-note";
 import { consumePendingInjectedReply } from "./tool-pipeline/injected-reply";
+import { parseInvokeStyleToolCalls } from "./tool-pipeline/invoke-parser";
 import {
 	realUserMessageKey,
 	stripPreviousUserBlock,
@@ -123,7 +122,7 @@ const CONFIG_DIR = path.join(os.homedir(), ".cline", "deepseek-web-v2");
 const CONFIG_FILE = path.join(CONFIG_DIR, "config.json");
 const DEFAULT_DEBUG_PORT = 9222;
 const DEFAULT_LAUNCH_TIMEOUT_MS = 20_000;
-const DEFAULT_RESPONSE_TIMEOUT_MS = 120_000;
+const DEFAULT_RESPONSE_TIMEOUT_MS = 1_200_000; // 1200s (20 mins) to prevent premature timeout on long thinking/tool calls
 const DEFAULT_LOGIN_TIMEOUT_MS = 120_000;
 const DEFAULT_TOOL_PROMPT_THRESHOLD_CHARS = 20_000;
 /**
@@ -927,6 +926,15 @@ async function connectBrowser(
 		stdio: "ignore",
 	});
 	child.unref();
+	// We own this browser, so the CLI can close it on exit instead of leaving
+	// it holding the debug port. See tool-pipeline/browser-processes.ts.
+	if (child.pid) {
+		registerLaunchedBrowser({
+			providerId: "deepseek-web-v2",
+			pid: child.pid,
+			debugPort: config.debugPort,
+		});
+	}
 
 	try {
 		await waitForEndpoint(config.debugPort, config.launchTimeoutMs);
@@ -2241,6 +2249,24 @@ function buildCompletionFromText(
 		};
 	}
 
+	// Anthropic-style `<invoke>` bodies (see tool-pipeline/invoke-parser.ts).
+	// Before the malformed-tag hint, which would fire on the `<tool>` wrapper
+	// the model opened around the invoke block.
+	const invoked = parseInvokeStyleToolCalls(text, toolNames);
+	if (invoked.toolCalls.length > 0) {
+		const { tools: validatedInvoked, retryPrompt } = validateToolCalls(
+			invoked.toolCalls,
+		);
+		return {
+			text: retryPrompt
+				? `${invoked.cleanedContent}\n\n${retryPrompt}`.trim()
+				: invoked.cleanedContent,
+			reasoning: "",
+			toolCalls: validatedInvoked,
+			usage,
+		};
+	}
+
 	const malformedError = detectMalformedToolTag(text);
 	if (malformedError) {
 		return {
@@ -2326,11 +2352,9 @@ function createDeepSeekWebV2Model(
 		// explicitly to the chat the last ordinary turn used. See
 		// `tool-pipeline/chat-target.ts` for the full three-stage /compact
 		// hand-off and for how to wire another web provider into it.
-		const routedChatKey = consumeChatKeyOverride("deepseek-web-v2");
-		const chatKey = routedChatKey ?? chatKeyFromPrompt(options.prompt);
-		if (!routedChatKey) {
-			recordActiveChatKey("deepseek-web-v2", chatKey);
-		}
+		const chatKey = resolveChatKey("deepseek-web-v2", () =>
+			chatKeyFromPrompt(options.prompt),
+		);
 		const isNewChat =
 			lookupChatSession(resolveDeepSeekWebV2Config().chatsFile, chatKey) ===
 			undefined;
@@ -2457,6 +2481,20 @@ function createDeepSeekWebV2Model(
 					? `${cleanedContent}\n\n${looseRetry}`.trim()
 					: cleanedContent;
 				finalToolCalls = validatedLoose;
+				break;
+			}
+			// Anthropic-style `<invoke name="...">` bodies: right tool, right
+			// arguments, wrong envelope. Must come before the malformed-tag
+			// hint below, which would otherwise fire on the (usually unclosed)
+			// `<tool>` wrapper the model opened around it.
+			const invoked = parseInvokeStyleToolCalls(text, toolNames);
+			if (invoked.toolCalls.length > 0) {
+				const { tools: validatedInvoked, retryPrompt: invokedRetry } =
+					validateToolCalls(invoked.toolCalls);
+				finalText = invokedRetry
+					? `${invoked.cleanedContent}\n\n${invokedRetry}`.trim()
+					: invoked.cleanedContent;
+				finalToolCalls = validatedInvoked;
 				break;
 			}
 			// Both parsers above already repair a `<tool` tag whose `>` was
@@ -2595,15 +2633,28 @@ function createDeepSeekWebV2Model(
 							functionTools.map((t) => t.name),
 						)
 					: toolCalls;
+			// Last recovery rung: Anthropic-style `<invoke>` bodies, which neither
+			// parser above understands (see tool-pipeline/invoke-parser.ts).
+			const invoked =
+				streamToolCalls.length === 0 && functionTools.length > 0
+					? parseInvokeStyleToolCalls(
+							rawText,
+							functionTools.map((t) => t.name),
+						)
+					: { cleanedContent, toolCalls: [] };
+			const recoveredCalls =
+				invoked.toolCalls.length > 0 ? invoked.toolCalls : streamToolCalls;
+			const recoveredContent =
+				invoked.toolCalls.length > 0 ? invoked.cleanedContent : cleanedContent;
 			// Python-validation gate (same as doCompletion's non-streaming path):
 			// drop editor calls with malformed `new_text` and surface the retry
 			// prompt as text so the correction feeds back to the model instead of
 			// executing bad code.
 			const { tools: validatedCalls, retryPrompt } =
-				validateToolCalls(streamToolCalls);
+				validateToolCalls(recoveredCalls);
 			const displayText = retryPrompt
-				? `${cleanedContent}\n\n${retryPrompt}`.trim()
-				: cleanedContent;
+				? `${recoveredContent}\n\n${retryPrompt}`.trim()
+				: recoveredContent;
 
 			const parts: LanguageModelV2StreamPart[] = [
 				{ type: "stream-start", warnings: [] },

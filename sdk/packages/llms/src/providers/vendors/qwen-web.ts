@@ -38,10 +38,8 @@ import {
 	isSameChatLocation,
 	parseFallbackToolUses,
 } from "./deepseek-web-v2";
-import {
-	consumeChatKeyOverride,
-	recordActiveChatKey,
-} from "./tool-pipeline/chat-target";
+import { registerLaunchedBrowser } from "./tool-pipeline/browser-processes";
+import { resolveChatKey } from "./tool-pipeline/chat-target";
 import { consumePendingInjectedReply } from "./tool-pipeline/injected-reply";
 import {
 	realUserMessageKey,
@@ -403,6 +401,15 @@ async function connectBrowser(
 		stdio: "ignore",
 	});
 	child.unref();
+	// We own this browser, so the CLI can close it on exit instead of leaving
+	// it holding the debug port. See tool-pipeline/browser-processes.ts.
+	if (child.pid) {
+		registerLaunchedBrowser({
+			providerId: "qwen-web",
+			pid: child.pid,
+			debugPort: config.debugPort,
+		});
+	}
 
 	try {
 		await waitForEndpoint(config.debugPort, config.launchTimeoutMs);
@@ -1269,11 +1276,9 @@ function createQwenWebModel(
 		// last ordinary turn used, because the standalone summarize request
 		// would otherwise hash to an empty chat of its own. See
 		// `tool-pipeline/chat-target.ts` for the full /compact hand-off.
-		const routedChatKey = consumeChatKeyOverride("qwen-web");
-		const chatKey = routedChatKey ?? chatKeyFromPrompt(options.prompt);
-		if (!routedChatKey) {
-			recordActiveChatKey("qwen-web", chatKey);
-		}
+		const chatKey = resolveChatKey("qwen-web", () =>
+			chatKeyFromPrompt(options.prompt),
+		);
 		const existingQwenSession = lookupQwenChatSession(
 			runtimeConfig.chatsFile,
 			chatKey,

@@ -70,17 +70,41 @@
  *
  * Keys are tracked per provider id, so two web providers used in one session
  * never route into each other's chats.
+ *
+ * ## Sticky `/findchat` bindings
+ *
+ * The hash works as long as the CLI conversation and the web chat were created
+ * together. Resuming an old CLI session from `/history` and wanting it to talk
+ * to a specific existing web chat is the case it cannot express — so `/findchat`
+ * pins the pair explicitly: `bindChatKey(providerId, chatKey)` makes every
+ * subsequent turn of this CLI session go to that chat, hash ignored.
+ *
+ * The binding is one-to-one. Binding a web chat that another CLI session
+ * already claimed takes it over; the CLI side (apps/cli/src/utils/chat-binding.ts)
+ * drops the loser's record so two sessions never write into one chat.
+ *
+ * Compaction deliberately moves the conversation into a FRESH web chat, so a
+ * binding must not survive it — the CLI clears it as part of the compaction
+ * restart. Re-run `/findchat` afterwards to pin the new session to a chat.
  */
 
-/** chatKey of the most recent ordinary turn, per provider module. */
-const lastActiveChatKeys = new Map<string, string>();
+import { processGlobal } from "./process-global";
 
-/** Set when the next call must reuse the last active chat instead of hashing. */
-let reuseLastChat = false;
+// Process-wide so every copy of `@cline/llms` in the process shares one view of
+// which chat is active; see `process-global.ts`.
+const state = () =>
+	processGlobal("chatTarget", () => ({
+		/** chatKey of the most recent ordinary turn, per provider id. */
+		lastActiveChatKeys: new Map<string, string>(),
+		/** Set when the next call must reuse the last chat instead of hashing. */
+		reuseLastChat: false,
+		/** Sticky `/findchat` binding, per provider id. */
+		boundChatKeys: new Map<string, string>(),
+	}));
 
 /** Record the chat an ordinary turn just used. */
 export function recordActiveChatKey(providerId: string, chatKey: string): void {
-	lastActiveChatKeys.set(providerId, chatKey);
+	state().lastActiveChatKeys.set(providerId, chatKey);
 }
 
 /**
@@ -88,7 +112,7 @@ export function recordActiveChatKey(providerId: string, chatKey: string): void {
  * used, instead of deriving a chat from the request's own text.
  */
 export function useLastChatForNextCall(): void {
-	reuseLastChat = true;
+	state().reuseLastChat = true;
 }
 
 /**
@@ -97,14 +121,62 @@ export function useLastChatForNextCall(): void {
  * back to hashing the prompt as usual.
  */
 export function consumeChatKeyOverride(providerId: string): string | undefined {
-	if (!reuseLastChat) {
+	const slot = state();
+	if (!slot.reuseLastChat) {
 		return undefined;
 	}
-	reuseLastChat = false;
-	return lastActiveChatKeys.get(providerId);
+	slot.reuseLastChat = false;
+	return slot.lastActiveChatKeys.get(providerId);
 }
 
 /** Drop a pending override (e.g. compaction bailed before sending). */
 export function clearChatKeyOverride(): void {
-	reuseLastChat = false;
+	state().reuseLastChat = false;
+}
+
+/**
+ * Pin this CLI session's turns to one web chat, ignoring the prompt hash (see
+ * "Sticky `/findchat` bindings" above). Replaces any existing binding for the
+ * provider.
+ */
+export function bindChatKey(providerId: string, chatKey: string): void {
+	state().boundChatKeys.set(providerId, chatKey);
+}
+
+/** Drop the sticky binding, returning the provider to hash-derived routing. */
+export function clearChatKeyBinding(providerId: string): void {
+	state().boundChatKeys.delete(providerId);
+}
+
+/** The provider's sticky binding, if `/findchat` set one. */
+export function getBoundChatKey(providerId: string): string | undefined {
+	return state().boundChatKeys.get(providerId);
+}
+
+/**
+ * The single entry point a provider uses to decide which web chat a call goes
+ * to. Precedence, highest first:
+ *
+ *  1. The one-shot compaction override (`useLastChatForNextCall`), which must
+ *     win so a summarize request reaches the chat holding the real history.
+ *  2. A sticky `/findchat` binding for this CLI session.
+ *  3. `deriveFromPrompt()` — the usual hash of the conversation's first user
+ *     message.
+ *
+ * Also records the resolved key as the provider's last active chat, EXCEPT when
+ * it came from the one-shot override: a compaction request is not an ordinary
+ * turn, and letting it overwrite the last-active key would leave the next
+ * compaction pointing at itself.
+ */
+export function resolveChatKey(
+	providerId: string,
+	deriveFromPrompt: () => string,
+): string {
+	const routed = consumeChatKeyOverride(providerId);
+	if (routed) {
+		return routed;
+	}
+	const chatKey = getBoundChatKey(providerId) ?? deriveFromPrompt();
+	recordActiveChatKey(providerId, chatKey);
+	return chatKey;
 }

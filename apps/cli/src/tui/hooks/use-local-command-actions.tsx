@@ -1,4 +1,5 @@
 import {
+	bindChatKey,
 	type ChatGPTWebChatEntry,
 	type ClaudeWebChatEntry,
 	DEFAULT_CONTINUATION_NOTE,
@@ -29,6 +30,7 @@ import {
 	setContinuationNote,
 	setPendingInjectedReply,
 } from "@cline/llms";
+import { writeChatBinding } from "../../utils/chat-binding";
 import { readClipboardText } from "../../utils/clipboard";
 import { writeProjectContinuationNote } from "../../utils/continuation-note";
 
@@ -135,6 +137,8 @@ export function useLocalCommandActions(input: {
 	providerId: string;
 	/** Project directory the continuation note (`/note`) is stored against. */
 	cwd: string;
+	/** Id of the running CLI session; used by `/findchat` to pin it to a chat. */
+	getSessionId: () => string | undefined;
 	/** Submit text as if the user typed it (used by `/paste` to start a turn). */
 	submitText: (text: string) => void;
 }) {
@@ -162,6 +166,7 @@ export function useLocalCommandActions(input: {
 		onExit,
 		providerId,
 		cwd,
+		getSessionId,
 		submitText,
 	} = input;
 
@@ -433,9 +438,43 @@ export function useLocalCommandActions(input: {
 				kind: "error",
 				text: `/findchat: failed to open chat ${dialogChoice}: ${error instanceof Error ? error.message : String(error)}`,
 			}));
+			return true;
 		}
+
+		// Pin this CLI session to the chat that was just opened, so every
+		// following turn goes there instead of to whatever the prompt hash would
+		// pick. Persisted, so resuming this session from `/history` restores the
+		// pairing. See utils/chat-binding.ts.
+		const cliSessionId = getSessionId();
+		const chosen = chats.find((entry) => entry.sessionId === dialogChoice);
+		if (!cliSessionId) {
+			session.appendEntry({
+				kind: "status",
+				text: "/findchat: opened the chat, but this CLI session has no id yet, so it was not pinned. Send a message first, then run /findchat again.",
+			});
+			return true;
+		}
+		if (!chosen) {
+			session.appendEntry({
+				kind: "status",
+				text: `/findchat: opened the chat, but it is missing from ${providerConfig.name}'s registry, so it was not pinned.`,
+			});
+			return true;
+		}
+
+		const stolenFrom = writeChatBinding(cliSessionId, {
+			providerId,
+			chatKey: chosen.chatKey,
+		});
+		bindChatKey(providerId, chosen.chatKey);
+		session.appendEntry({
+			kind: "status",
+			text: stolenFrom
+				? `/findchat: this session is now pinned to that chat (taken over from session ${stolenFrom}).`
+				: "/findchat: this session is now pinned to that chat.",
+		});
 		return true;
-	}, [dialog, providerId, refocusTextarea, session, termHeight]);
+	}, [dialog, getSessionId, providerId, refocusTextarea, session, termHeight]);
 
 	/**
 	 * `/paste`: recover a web-provider turn whose reply was lost to a network

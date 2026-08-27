@@ -24,6 +24,7 @@ import type {
 	GatewayProviderContext,
 	GatewayResolvedProviderConfig,
 } from "@cline/shared";
+import { estimateTokens } from "@cline/shared";
 
 import {
 	messagesToPrompt,
@@ -38,10 +39,8 @@ import {
 	isSameChatLocation,
 	parseFallbackToolUses,
 } from "./deepseek-web-v2";
-import {
-	consumeChatKeyOverride,
-	recordActiveChatKey,
-} from "./tool-pipeline/chat-target";
+import { registerLaunchedBrowser } from "./tool-pipeline/browser-processes";
+import { resolveChatKey } from "./tool-pipeline/chat-target";
 import {
 	realUserMessageKey,
 	stripPreviousUserBlock,
@@ -321,6 +320,20 @@ class CdpClient {
 let activeCdp: CdpClient | null = null;
 let activeCdpKey: string | null = null;
 
+// Cache the attached page target + its CDP session so consecutive turns reuse
+// the SAME session instead of re-attaching (and re-toggling the Network
+// domain) on every message. Re-attaching each turn was the "monitoring
+// restarts every send" behavior: a fresh session plus Network.enable/disable
+// churn left a window where the completion response could slip past the
+// listener and surface as "Model returned empty response".
+let activeChatGPTTargetId: string | null = null;
+let activeChatGPTCdpSessionId: string | null = null;
+
+// Sessions whose Network domain is already enabled. We enable once and leave
+// it on for the session's lifetime; toggling it per turn is what made capture
+// flaky.
+const chatgptNetworkEnabledSessions = new Set<string>();
+
 async function connectCdp(port: number, timeoutMs: number): Promise<CdpClient> {
 	const endpoint = `http://127.0.0.1:${port}`;
 	const deadline = Date.now() + timeoutMs;
@@ -402,6 +415,15 @@ async function connectBrowser(
 		stdio: "ignore",
 	});
 	child.unref();
+	// We own this browser, so the CLI can close it on exit instead of leaving
+	// it holding the debug port. See tool-pipeline/browser-processes.ts.
+	if (child.pid) {
+		registerLaunchedBrowser({
+			providerId: "chatgpt-web",
+			pid: child.pid,
+			debugPort: config.debugPort,
+		});
+	}
 
 	try {
 		await waitForEndpoint(config.debugPort, config.launchTimeoutMs);
@@ -1087,7 +1109,16 @@ async function sendAndCapture(
 	cdp.on("Network.loadingFinished", onLoadingFinished);
 
 	try {
-		await cdp.send("Network.enable", {}, cdpSessionId);
+		// Enable the Network domain ONCE per CDP session and leave it on for
+		// the session's lifetime. The old code re-enabled here and re-disabled
+		// in `finally` every turn — that toggle churn (plus re-attaching) could
+		// drop a completion response and surface as "Model returned empty
+		// response". Keeping the domain enabled is stable and harmless: the
+		// listeners are still scoped/unregistered per turn.
+		if (!chatgptNetworkEnabledSessions.has(cdpSessionId)) {
+			await cdp.send("Network.enable", {}, cdpSessionId);
+			chatgptNetworkEnabledSessions.add(cdpSessionId);
+		}
 
 		// Randomized human-like pacing before sending, plus an extra random
 		// amount on tool-request turns (the fastest back-to-back pattern in an
@@ -1115,11 +1146,15 @@ async function sendAndCapture(
 		await Promise.race([bodyCaptured, timeoutPromise]);
 
 		if (!capturedBody) {
-			return {
-				text: "",
-				finishReason: "stop",
-				usage: { inputTokens: 0, outputTokens: 0, totalTokens: 0 },
-			};
+			// Distinguish a real timeout (the body never arrived) from a
+			// listener gap. An empty captured body after the wait is exactly the
+			// condition that used to be returned as empty text and then bubbled
+			// up as the opaque "Model returned empty response".
+			throw new Error(
+				`[chatgpt-web] no completion response captured for the last message. ` +
+					`${completionRequestId ? "A response was seen but its body could not be read." : "No ChatGPT completion response was observed."} ` +
+					"Check that chatgpt.com is logged in and not rate-limited in the browser profile.",
+			);
 		}
 
 		let fullText = "";
@@ -1139,6 +1174,22 @@ async function sendAndCapture(
 			},
 		);
 
+		// ChatGPT's web SSE stream often omits a `usage` payload, leaving the
+		// numbers at zero. The Python reference automation estimates tokens from
+		// the captured text instead (tiktoken cl100k_base, falling back to
+		// max(words, chars/4)), and deepseek-web-v2 uses the repo-wide
+		// `estimateTokens` (chars / 3). Do the same here so the context bar,
+		// per-turn metrics, and session totals show real numbers.
+		if (usage.totalTokens === 0) {
+			const inputTokens = estimateTokens(prompt.length);
+			const outputTokens = estimateTokens(fullText.length);
+			usage = {
+				inputTokens,
+				outputTokens,
+				totalTokens: inputTokens + outputTokens,
+			};
+		}
+
 		// Flag a throttled reply so the caller can back off / report it, and
 		// arm a one-shot recovery reload so the next turn forces a page
 		// refresh to clear the temporarily-blocked composer.
@@ -1153,9 +1204,11 @@ async function sendAndCapture(
 		}
 		return { text: fullText, finishReason, usage, rateLimited };
 	} finally {
+		// Unregister only this turn's listeners. Leave the Network domain
+		// enabled for the session — disabling it here was the other half of the
+		// per-turn toggle that made capture flaky.
 		cdp.off("Network.responseReceived", onResponseReceived);
 		cdp.off("Network.loadingFinished", onLoadingFinished);
-		await cdp.send("Network.disable", {}, cdpSessionId).catch(() => {});
 	}
 }
 
@@ -1248,11 +1301,33 @@ function createChatGPTWebModel(
 			}
 		}
 
-		const attachResult = await cdp.send("Target.attachToTarget", {
-			targetId: pageTarget.targetId,
-			flatten: true,
-		});
-		const cdpSessionId = attachResult.sessionId;
+		// Reuse the already-attached session for this page target when we can:
+		// the page target + its CDP session stay alive across turns, so
+		// re-attaching every turn (and re-enabling the Network domain) was a
+		// source of capture flakiness. Only (re-)attach when the target changed
+		// or we don't have a cached session for it yet.
+		let cdpSessionId: string | null = activeChatGPTCdpSessionId;
+		if (
+			!cdpSessionId ||
+			activeChatGPTTargetId !== pageTarget.targetId ||
+			!cdp.isOpen()
+		) {
+			const attachResult = await cdp.send("Target.attachToTarget", {
+				targetId: pageTarget.targetId,
+				flatten: true,
+			});
+			const newSessionId = attachResult.sessionId as string;
+			cdpSessionId = newSessionId;
+			activeChatGPTTargetId = pageTarget.targetId;
+			activeChatGPTCdpSessionId = newSessionId;
+			// A brand-new session needs the Network domain enabled fresh.
+			chatgptNetworkEnabledSessions.delete(newSessionId);
+		}
+		if (!cdpSessionId) {
+			throw new Error(
+				"[chatgpt-web] failed to attach a CDP session to the ChatGPT page",
+			);
+		}
 
 		// Chat continuity: this CLI conversation is keyed by its first user
 		// message. A fresh key (no mapped ChatGPT chat yet) means this call opens
@@ -1263,11 +1338,9 @@ function createChatGPTWebModel(
 		// last ordinary turn used, because the standalone summarize request
 		// would otherwise hash to an empty chat of its own. See
 		// `tool-pipeline/chat-target.ts` for the full /compact hand-off.
-		const routedChatKey = consumeChatKeyOverride("chatgpt-web");
-		const chatKey = routedChatKey ?? chatKeyFromPrompt(options.prompt);
-		if (!routedChatKey) {
-			recordActiveChatKey("chatgpt-web", chatKey);
-		}
+		const chatKey = resolveChatKey("chatgpt-web", () =>
+			chatKeyFromPrompt(options.prompt),
+		);
 		const existingChatGPTSession = lookupChatGPTChatSession(
 			runtimeConfig.chatsFile,
 			chatKey,

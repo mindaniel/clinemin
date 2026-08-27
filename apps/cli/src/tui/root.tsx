@@ -659,6 +659,7 @@ function App(props: TuiProps) {
 		onExit: exitCline,
 		providerId: props.config.providerId,
 		cwd: props.config.cwd,
+		getSessionId: props.getSessionId,
 		submitText: (text: string) => submitTextRef.current(text),
 	});
 
