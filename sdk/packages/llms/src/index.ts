@@ -158,6 +158,22 @@ export {
 	listLaunchedBrowsers,
 	shutdownLaunchedBrowsers,
 } from "./providers/vendors/tool-pipeline/browser-processes";
+// Named Chrome profiles for the web providers. The CLI `/profile` command
+// lists, creates and selects these; every web provider resolves its
+// user-data-dir, debug port and chat registry from the active one.
+export {
+	type BrowserProfile,
+	createBrowserProfile,
+	DEFAULT_PROFILE_NAME,
+	deleteBrowserProfile,
+	getActiveBrowserProfile,
+	listBrowserProfiles,
+	normalizeProfileName,
+	pinBrowserProfile,
+	resetBrowserProfilePin,
+	resolveActiveProfilePaths,
+	setActiveBrowserProfile,
+} from "./providers/vendors/tool-pipeline/browser-profiles";
 // Explicit chat routing (used by compaction to send its summarize request
 // into the web chat that actually holds the conversation).
 export {
@@ -173,6 +189,8 @@ export {
 	DEFAULT_CONTINUATION_NOTE,
 	getContinuationNote,
 	isContinuationNoteText,
+	isSyntheticUserText,
+	PASTE_CARRIER_PROMPT,
 	resetContinuationNote,
 	setContinuationNote,
 } from "./providers/vendors/tool-pipeline/continuation-note";

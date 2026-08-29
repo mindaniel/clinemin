@@ -50,6 +50,13 @@ import type {
 	BuiltRuntime as RuntimeEnvironment,
 } from "./session-runtime";
 
+/**
+ * Command timeout (ms) for the Claude Web provider. Claude Web asks the user to
+ * run PowerShell locally and paste results back; those commands and the model
+ * turns around them can take much longer than the SDK's normal 60s default.
+ */
+const CLAUDE_WEB_COMMAND_TIMEOUT_MS = 1_200_000; // 20 minutes, matching the web provider's response timeout
+
 function hasConfigExtension(
 	extensions: ReadonlyArray<RuntimeConfigExtensionKind> | undefined,
 	kind: RuntimeConfigExtensionKind,
@@ -153,6 +160,12 @@ function createBuiltinToolsList(
 			...preset,
 			enableSkills: !!skillsExecutor,
 			...toolRoutingConfig,
+			// The Claude Web provider drives its own built-in tools through the
+			// browser and hands us PowerShell commands to run locally; those
+			// commands (and the model turns around them) routinely outlive the
+			// SDK's 60s default, so give this provider a much larger budget.
+			bashTimeoutMs:
+				providerId === "claude-web" ? CLAUDE_WEB_COMMAND_TIMEOUT_MS : undefined,
 			executors: {
 				...(skillsExecutor
 					? {

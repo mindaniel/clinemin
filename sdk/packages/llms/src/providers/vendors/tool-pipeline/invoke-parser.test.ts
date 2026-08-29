@@ -94,4 +94,18 @@ describe("parseInvokeStyleToolCalls", () => {
 			{ name: "read_files", arguments: { files: ["a.ts"] } },
 		]);
 	});
+
+	it("repairs a Windows path written with single backslashes", () => {
+		// The model writes the path the way it appears in a shell, which is not
+		// valid JSON: `\\U` is not an escape sequence.
+		const reply =
+			'<tool><invoke name="read_files"><parameter name="files">[{"path": "C:\\\\Users\\\\me\\\\a.ts"}]</parameter></invoke>';
+		const { toolCalls } = parseInvokeStyleToolCalls(reply, TOOLS);
+		expect(toolCalls).toEqual([
+			{
+				name: "read_files",
+				arguments: { files: [{ path: "C:\\Users\\me\\a.ts" }] },
+			},
+		]);
+	});
 });

@@ -536,6 +536,8 @@ function inferClient(spec: BuiltinSpec): ProviderClient {
 		case "sap-ai-core":
 		case "deepseek-web":
 		case "deepseek-web-v2":
+		case "kimi-web":
+		case "grok-web":
 			return "ai-sdk-community";
 		default:
 			return "openai-compatible";
@@ -1335,6 +1337,44 @@ const BUILTIN_SPEC_OVERRIDES: BuiltinSpecOverride[] = [
 			"gemini-flash-lite": {
 				id: "gemini-flash-lite",
 				name: "Gemini Flash-Lite",
+				capabilities: ["streaming"],
+				contextWindow: 1_000_000,
+			},
+		}),
+		metadata: { usageCostDisplay: "hide" },
+	},
+	{
+		id: "kimi-web",
+		name: "Kimi (Web — Browser)",
+		description:
+			"Kimi via your real Chrome browser session (CDP) — no API key needed. Log in to www.kimi.ai once in the browser profile. Options (headless, debug, chromePath, profileDir, debugPort) in ~/.cline/kimi-web/config.json or KIMI_WEB_* env vars",
+		family: "kimi-web",
+		popular: 25,
+		capabilities: ["local-auth", "tools", "streaming"],
+		defaultModelId: "kimi-auto",
+		modelsFactory: () => ({
+			"kimi-auto": {
+				id: "kimi-auto",
+				name: "Kimi Auto",
+				capabilities: ["streaming"],
+				contextWindow: 1_000_000,
+			},
+		}),
+		metadata: { usageCostDisplay: "hide" },
+	},
+	{
+		id: "grok-web",
+		name: "Grok (Web — Browser)",
+		description:
+			"Grok via your real Chrome browser session (CDP) — no API key needed. Log in to grok.com once in the browser profile. Options (headless, debug, chromePath, profileDir, debugPort) in ~/.cline/grok-web/config.json or GROK_WEB_* env vars",
+		family: "grok-web",
+		popular: 25,
+		capabilities: ["local-auth", "tools", "streaming"],
+		defaultModelId: "grok-auto",
+		modelsFactory: () => ({
+			"grok-auto": {
+				id: "grok-auto",
+				name: "Grok Auto",
 				capabilities: ["streaming"],
 				contextWindow: 1_000_000,
 			},

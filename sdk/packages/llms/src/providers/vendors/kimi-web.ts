@@ -1,7 +1,7 @@
 /**
- * Qwen Web ("qwen-web") provider.
+ * Kimi Web ("kimi-web") provider.
  *
- * Drives the real Qwen web client (chat.qwen.ai) through your installed Chrome
+ * Drives the real Kimi web client (chat.Kimi.ai) through your installed Chrome
  * via the DevTools Protocol — no API key needed.
  */
 
@@ -55,10 +55,10 @@ import { stripPreviousUserBlock } from "./tool-pipeline/previous-user-dedupe";
 import { validateToolCalls } from "./tool-pipeline/tool-dispatcher";
 import type { ProviderFactoryResult } from "./types";
 
-const CONFIG_DIR = path.join(os.homedir(), ".cline", "qwen-web");
+const CONFIG_DIR = path.join(os.homedir(), ".cline", "kimi-web");
 const CONFIG_FILE = path.join(CONFIG_DIR, "config.json");
-const QWEN_WEB_URL = "https://chat.qwen.ai/";
-const QWEN_API_ENDPOINT = "/api/v2/chat/completions";
+const Kimi_WEB_URL = "https://chat.Kimi.ai/";
+const Kimi_API_ENDPOINT = "/api/v2/chat/completions";
 
 const DEFAULT_DEBUG_PORT = 9223;
 const DEFAULT_LAUNCH_TIMEOUT_MS = 30000;
@@ -74,23 +74,23 @@ const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
 /**
  * One-shot "recover from a throttle/block" signal, mirroring deepseek-web-v2's
  * own flag (kept separate — this provider drives an unrelated tab/profile, so
- * the two must never share recovery state). When Qwen rate-limits a turn, the
+ * the two must never share recovery state). When Kimi rate-limits a turn, the
  * page can be left blocked; the next `runCompletion` forces a full reload even
  * if the URL already matches to clear it. Consumed (reset) after one reload.
  */
-let qwenRecoverFromThrottle = false;
+let KimiRecoverFromThrottle = false;
 
-function requestQwenThrottleRecoveryReload(): void {
-	qwenRecoverFromThrottle = true;
+function requestKimiThrottleRecoveryReload(): void {
+	KimiRecoverFromThrottle = true;
 }
 
-function consumeQwenThrottleRecoveryReload(): boolean {
-	const shouldReload = qwenRecoverFromThrottle;
-	qwenRecoverFromThrottle = false;
+function consumeKimiThrottleRecoveryReload(): boolean {
+	const shouldReload = KimiRecoverFromThrottle;
+	KimiRecoverFromThrottle = false;
 	return shouldReload;
 }
 
-export interface QwenWebV2RuntimeConfig {
+export interface KimiWebV2RuntimeConfig {
 	chromePath?: string;
 	profileDir?: string;
 	debugPort: number;
@@ -114,14 +114,14 @@ interface ChatSessionRecord {
 	last_active: string;
 }
 
-export interface QwenWebChatEntry {
+export interface KimiWebChatEntry {
 	chatKey: string;
 	sessionId: string;
 	firstSeen: string;
 	lastActive: string;
 }
 
-function readConfigFile(): Partial<QwenWebV2RuntimeConfig> {
+function readConfigFile(): Partial<KimiWebV2RuntimeConfig> {
 	try {
 		return JSON.parse(fs.readFileSync(CONFIG_FILE, "utf-8"));
 	} catch {
@@ -129,63 +129,63 @@ function readConfigFile(): Partial<QwenWebV2RuntimeConfig> {
 	}
 }
 
-export function resolveQwenWebV2Config(): QwenWebV2RuntimeConfig {
+export function resolveKimiWebV2Config(): KimiWebV2RuntimeConfig {
 	const fileConfig = readConfigFile();
 	// The active named profile (`/profile`) decides which Chrome user-data-dir,
 	// debug port and chat registry this provider uses, so one provider can be
 	// driven with several logins. Env vars and config.json still win over it.
 	const profile = resolveActiveProfilePaths(CONFIG_DIR, DEFAULT_DEBUG_PORT);
 	const port =
-		Number(process.env.QWEN_WEB_DEBUG_PORT ?? fileConfig.debugPort) ||
+		Number(process.env.Kimi_WEB_DEBUG_PORT ?? fileConfig.debugPort) ||
 		profile.debugPort;
 	return {
-		chromePath: process.env.QWEN_WEB_CHROME_PATH || fileConfig.chromePath,
+		chromePath: process.env.Kimi_WEB_CHROME_PATH || fileConfig.chromePath,
 		profileDir:
-			process.env.QWEN_WEB_PROFILE_DIR ||
+			process.env.Kimi_WEB_PROFILE_DIR ||
 			fileConfig.profileDir ||
 			profile.profileDir,
 		debugPort: port,
 		headless:
-			process.env.QWEN_WEB_HEADLESS !== undefined
-				? process.env.QWEN_WEB_HEADLESS !== "false"
+			process.env.Kimi_WEB_HEADLESS !== undefined
+				? process.env.Kimi_WEB_HEADLESS !== "false"
 				: (fileConfig.headless ?? false),
 		debug:
-			process.env.QWEN_WEB_DEBUG !== undefined
-				? process.env.QWEN_WEB_DEBUG !== "false"
+			process.env.Kimi_WEB_DEBUG !== undefined
+				? process.env.Kimi_WEB_DEBUG !== "false"
 				: (fileConfig.debug ?? false),
 		launchTimeoutMs:
 			Number(
-				process.env.QWEN_WEB_LAUNCH_TIMEOUT_MS ?? fileConfig.launchTimeoutMs,
+				process.env.Kimi_WEB_LAUNCH_TIMEOUT_MS ?? fileConfig.launchTimeoutMs,
 			) || DEFAULT_LAUNCH_TIMEOUT_MS,
 		responseTimeoutMs:
 			Number(
-				process.env.QWEN_WEB_RESPONSE_TIMEOUT_MS ??
+				process.env.Kimi_WEB_RESPONSE_TIMEOUT_MS ??
 					fileConfig.responseTimeoutMs,
 			) || DEFAULT_RESPONSE_TIMEOUT_MS,
 		loginTimeoutMs:
 			Number(
-				process.env.QWEN_WEB_LOGIN_TIMEOUT_MS ?? fileConfig.loginTimeoutMs,
+				process.env.Kimi_WEB_LOGIN_TIMEOUT_MS ?? fileConfig.loginTimeoutMs,
 			) || DEFAULT_LOGIN_TIMEOUT_MS,
 		chatsFile:
-			process.env.QWEN_WEB_CHATS_FILE ||
+			process.env.Kimi_WEB_CHATS_FILE ||
 			fileConfig.chatsFile ||
 			profile.chatsFile,
 		minSendDelayMs:
 			Number(
-				process.env.QWEN_WEB_MIN_SEND_DELAY_MS ?? fileConfig.minSendDelayMs,
+				process.env.Kimi_WEB_MIN_SEND_DELAY_MS ?? fileConfig.minSendDelayMs,
 			) || DEFAULT_MIN_SEND_DELAY_MS,
 		maxSendDelayMs:
 			Number(
-				process.env.QWEN_WEB_MAX_SEND_DELAY_MS ?? fileConfig.maxSendDelayMs,
+				process.env.Kimi_WEB_MAX_SEND_DELAY_MS ?? fileConfig.maxSendDelayMs,
 			) || DEFAULT_MAX_SEND_DELAY_MS,
 		toolTurnExtraMinMs:
 			Number(
-				process.env.QWEN_WEB_TOOL_TURN_EXTRA_MIN_MS ??
+				process.env.Kimi_WEB_TOOL_TURN_EXTRA_MIN_MS ??
 					fileConfig.toolTurnExtraMinMs,
 			) || DEFAULT_TOOL_TURN_EXTRA_MIN_MS,
 		toolTurnExtraMaxMs:
 			Number(
-				process.env.QWEN_WEB_TOOL_TURN_EXTRA_MAX_MS ??
+				process.env.Kimi_WEB_TOOL_TURN_EXTRA_MAX_MS ??
 					fileConfig.toolTurnExtraMaxMs,
 			) || DEFAULT_TOOL_TURN_EXTRA_MAX_MS,
 	};
@@ -348,7 +348,7 @@ async function waitForEndpoint(port: number, timeoutMs: number): Promise<void> {
 }
 
 async function connectBrowser(
-	config: QwenWebV2RuntimeConfig,
+	config: KimiWebV2RuntimeConfig,
 ): Promise<CdpClient> {
 	const key = `${config.debugPort}`;
 	if (activeCdp && activeCdpKey === key && activeCdp.isOpen()) {
@@ -379,8 +379,8 @@ async function connectBrowser(
 	if (!executablePath) {
 		throw new Error(
 			browserNotFoundMessage(
-				"~/.cline/qwen-web/config.json",
-				"QWEN_WEB_CHROME_PATH",
+				"~/.cline/kimi-web/config.json",
+				"Kimi_WEB_CHROME_PATH",
 			),
 		);
 	}
@@ -393,7 +393,7 @@ async function connectBrowser(
 		"--no-first-run",
 		"--no-default-browser-check",
 		"--remote-allow-origins=*",
-		QWEN_WEB_URL,
+		Kimi_WEB_URL,
 	];
 	if (config.headless) args.push("--headless=new");
 
@@ -406,7 +406,7 @@ async function connectBrowser(
 	// it holding the debug port. See tool-pipeline/browser-processes.ts.
 	if (child.pid) {
 		registerLaunchedBrowser({
-			providerId: "qwen-web",
+			providerId: "kimi-web",
 			pid: child.pid,
 			debugPort: config.debugPort,
 		});
@@ -416,8 +416,8 @@ async function connectBrowser(
 		await waitForEndpoint(config.debugPort, config.launchTimeoutMs);
 	} catch (err) {
 		throw new Error(
-			`Failed to launch Chrome for Qwen Web: ${(err as Error).message}. ` +
-				"If Chrome is already running with this profile, close it or set a different QWEN_WEB_PROFILE_DIR.",
+			`Failed to launch Chrome for Kimi Web: ${(err as Error).message}. ` +
+				"If Chrome is already running with this profile, close it or set a different Kimi_WEB_PROFILE_DIR.",
 		);
 	}
 	activeCdp = await connectCdp(config.debugPort, connectTimeoutMs);
@@ -425,7 +425,7 @@ async function connectBrowser(
 	return activeCdp;
 }
 
-// ── Enhanced Qwen send script (from send_qwen.txt) ──────────────────────────
+// ── Enhanced Kimi send script (from send_Kimi.txt) ──────────────────────────
 const SEND_MESSAGE_SOURCE = `
 // ---------- Helper: Select thinking mode ----------
 async function selectThinkingMode(mode) {
@@ -554,7 +554,7 @@ async function clickSendButton(timeout) {
 }
 
 // ---------- Main send function ----------
-async function sendMessageToQwen(message, options) {
+async function sendMessageToKimi(message, options) {
     options = options || {};
     const { thinkingMode, model } = options;
 
@@ -565,7 +565,7 @@ async function sendMessageToQwen(message, options) {
     }
 
     // Model selection disabled on purpose: sending a message should not touch
-    // the model picker. Whatever model the Qwen web UI already has selected is
+    // the model picker. Whatever model the Kimi web UI already has selected is
     // the one we use.
     // if (model) {
     //     await selectModel(model);
@@ -574,19 +574,19 @@ async function sendMessageToQwen(message, options) {
     void model;
 
     // Find input field. IMPORTANT: never pick a textarea that belongs to a
-    // rendered code block (Qwen wraps those in .qwen-markdown-code / Monaco and
+    // rendered code block (Kimi wraps those in .Kimi-markdown-code / Monaco and
     // embeds a readonly .ime-text-area). Falling through to a bare textarea is
     // what made the assistant code box get mistaken for the composer.
     const inputField = (() => {
         const preferred = document.querySelector('textarea[placeholder*="消息" i], textarea[placeholder*="Message" i], [contenteditable="true"]');
         if (preferred && !preferred.disabled && !preferred.readOnly) {
-            const bad = preferred.closest && preferred.closest('.qwen-markdown-code, .monaco-editor, [class*="markdown-code"], pre');
+            const bad = preferred.closest && preferred.closest('.Kimi-markdown-code, .monaco-editor, [class*="markdown-code"], pre');
             if (!bad) return preferred;
         }
         const all = Array.from(document.querySelectorAll('textarea, [contenteditable="true"]'));
         for (const el of all) {
             if (el.disabled || el.readOnly) continue;
-            if (el.closest && el.closest('.qwen-markdown-code, .monaco-editor, [class*="markdown-code"], pre')) continue;
+            if (el.closest && el.closest('.Kimi-markdown-code, .monaco-editor, [class*="markdown-code"], pre')) continue;
             const s = window.getComputedStyle(el);
             if (s.display === 'none' || s.visibility === 'hidden') continue;
             if (el.offsetWidth === 0 || el.offsetHeight === 0) continue;
@@ -640,7 +640,7 @@ function buildSendScript(
 	const opts = options || {};
 	return `(async () => {
         ${SEND_MESSAGE_SOURCE}
-        await sendMessageToQwen(${JSON.stringify(prompt)}, ${JSON.stringify(opts)});
+        await sendMessageToKimi(${JSON.stringify(prompt)}, ${JSON.stringify(opts)});
     })(); true;`;
 }
 
@@ -664,18 +664,18 @@ function writeChatRegistry(
 		fs.mkdirSync(path.dirname(chatsFile), { recursive: true });
 		fs.writeFileSync(chatsFile, JSON.stringify(registry, null, 2), "utf-8");
 	} catch (error) {
-		console.warn(`[qwen-web] failed to persist chat registry: ${error}`);
+		console.warn(`[kimi-web] failed to persist chat registry: ${error}`);
 	}
 }
 
-export function lookupQwenChatSession(
+export function lookupKimiChatSession(
 	chatsFile: string,
 	chatKey: string,
 ): string | undefined {
 	return readChatRegistry(chatsFile)[chatKey]?.session_id;
 }
 
-export function recordQwenChatSession(
+export function recordKimiChatSession(
 	chatsFile: string,
 	chatKey: string,
 	sessionId: string,
@@ -690,7 +690,7 @@ export function recordQwenChatSession(
 	writeChatRegistry(chatsFile, registry);
 }
 
-export function deleteQwenChatSession(
+export function deleteKimiChatSession(
 	chatsFile: string,
 	chatKey: string,
 ): void {
@@ -732,13 +732,13 @@ function lastUserText(prompt: LanguageModelV2Prompt): string {
 	return "";
 }
 
-export function extractQwenSessionId(url: string): string | undefined {
+export function extractKimiSessionId(url: string): string | undefined {
 	const match = /\/c\/([a-f0-9-]+)/.exec(url);
 	return match?.[1] ?? undefined;
 }
 
-export function listQwenWebChats(): QwenWebChatEntry[] {
-	const config = resolveQwenWebV2Config();
+export function listKimiWebChats(): KimiWebChatEntry[] {
+	const config = resolveKimiWebV2Config();
 	const registry = readChatRegistry(config.chatsFile);
 	return Object.entries(registry)
 		.map(([chatKey, record]) => ({
@@ -751,27 +751,27 @@ export function listQwenWebChats(): QwenWebChatEntry[] {
 }
 
 /**
- * Opens an existing Qwen Web chat in the browser driven by this provider.
+ * Opens an existing Kimi Web chat in the browser driven by this provider.
  * This is what the CLI `/findchat` command calls after you pick a chat.
  */
-export async function openQwenWebChat(
+export async function openKimiWebChat(
 	sessionId: string,
 ): Promise<{ sessionId: string; url: string }> {
-	const config = resolveQwenWebV2Config();
+	const config = resolveKimiWebV2Config();
 	const cdp = await connectBrowser(config);
 	const targets = await cdp.send("Target.getTargets");
 	let pageTarget = targets.targetInfos?.find(
-		(t: any) => t.type === "page" && t.url?.startsWith("https://chat.qwen.ai"),
+		(t: any) => t.type === "page" && t.url?.startsWith("https://chat.Kimi.ai"),
 	);
 	if (!pageTarget) {
-		const result = await cdp.send("Target.createTarget", { url: QWEN_WEB_URL });
+		const result = await cdp.send("Target.createTarget", { url: Kimi_WEB_URL });
 		await sleep(2000);
 		const newTargets = await cdp.send("Target.getTargets");
 		pageTarget = newTargets.targetInfos?.find(
 			(t: any) => t.targetId === result.targetId,
 		);
 		if (!pageTarget) {
-			throw new Error("Failed to create Qwen page");
+			throw new Error("Failed to create Kimi page");
 		}
 	}
 	const attachResult = await cdp.send("Target.attachToTarget", {
@@ -779,16 +779,16 @@ export async function openQwenWebChat(
 		flatten: true,
 	});
 	const cdpSessionId = attachResult.sessionId;
-	await navigateQwenChat(cdp, cdpSessionId, { fresh: false, sessionId });
+	await navigateKimiChat(cdp, cdpSessionId, { fresh: false, sessionId });
 	return {
 		sessionId,
-		url: `https://chat.qwen.ai/c/${sessionId}`,
+		url: `https://chat.Kimi.ai/c/${sessionId}`,
 	};
 }
 
-// ── SSE parser for Qwen ──────────────────────────────────────────────────────
+// ── SSE parser for Kimi ──────────────────────────────────────────────────────
 
-function consumeQwenSse(
+function consumeKimiSse(
 	body: string,
 	onChunk: (text: string) => void,
 	onDone: () => void,
@@ -882,7 +882,7 @@ function consumeQwenSse(
 async function waitForComposerReady(
 	cdp: CdpClient,
 	sessionId: string,
-	config: QwenWebV2RuntimeConfig,
+	config: KimiWebV2RuntimeConfig,
 	logger?: BasicLogger,
 ): Promise<void> {
 	const pageFullyLoaded = `(() => {
@@ -892,10 +892,10 @@ async function waitForComposerReady(
             var ta = candidates[i];
             if (!ta || ta.disabled || ta.readOnly) continue;
             // Exclude Monaco/code-block editors rendered inside assistant
-            // responses. Qwen wraps code blocks in .qwen-markdown-code and the
+            // responses. Kimi wraps code blocks in .Kimi-markdown-code and the
             // Monaco editor contains a readonly .ime-text-area textarea that
             // used to be mistaken for the chat composer.
-            if (ta.closest('.qwen-markdown-code, .monaco-editor, [class*="markdown-code"], pre')) continue;
+            if (ta.closest('.Kimi-markdown-code, .monaco-editor, [class*="markdown-code"], pre')) continue;
             var s = window.getComputedStyle(ta);
             if (s.display === 'none' || s.visibility === 'hidden') continue;
             if (ta.offsetWidth === 0 || ta.offsetHeight === 0) continue;
@@ -924,7 +924,7 @@ async function waitForComposerReady(
 		}
 
 		if (ready) {
-			if (config.debug) logger?.debug("[qwen-web] page fully loaded");
+			if (config.debug) logger?.debug("[kimi-web] page fully loaded");
 			await sleep(1500);
 			return;
 		}
@@ -932,16 +932,16 @@ async function waitForComposerReady(
 		if (!hintLogged) {
 			hintLogged = true;
 			logger?.log(
-				"Qwen Web: waiting for the chat.qwen.ai page to finish loading " +
+				"Kimi Web: waiting for the chat.Kimi.ai page to finish loading " +
 					`(up to ${Math.round(config.loginTimeoutMs / 1000)}s). If the Chrome window shows a login page, log in now.`,
-				{ severity: "info", providerId: "qwen-web" },
+				{ severity: "info", providerId: "kimi-web" },
 			);
 		}
 
 		if (Date.now() >= deadline) {
 			throw new Error(
-				"Qwen Web: chat.qwen.ai did not finish loading within " +
-					`${Math.round(config.loginTimeoutMs / 1000)}s. Please log in to chat.qwen.ai in the Chrome window.`,
+				"Kimi Web: chat.Kimi.ai did not finish loading within " +
+					`${Math.round(config.loginTimeoutMs / 1000)}s. Please log in to chat.Kimi.ai in the Chrome window.`,
 			);
 		}
 		await sleep(500);
@@ -968,14 +968,14 @@ async function readPageUrl(
 }
 
 /**
- * Point the Qwen tab at a specific chat (load an old conversation) or at a
+ * Point the Kimi tab at a specific chat (load an old conversation) or at a
  * fresh composer (new chat). Skips navigating when the tab is already on the
  * destination — that is what avoids a needless full page reload on every
  * follow-up turn of the same conversation. `forceReload` skips that shortcut
  * to recover from a rate-limit block, where the page needs a real refresh to
  * accept messages again even though the URL is unchanged.
  */
-async function navigateQwenChat(
+async function navigateKimiChat(
 	cdp: CdpClient,
 	cdpSessionId: string,
 	target: { sessionId?: string; fresh: boolean },
@@ -983,10 +983,10 @@ async function navigateQwenChat(
 	forceReload = false,
 ): Promise<void> {
 	const destination = target.fresh
-		? QWEN_WEB_URL
+		? Kimi_WEB_URL
 		: target.sessionId
-			? `https://chat.qwen.ai/c/${target.sessionId}`
-			: QWEN_WEB_URL;
+			? `https://chat.Kimi.ai/c/${target.sessionId}`
+			: Kimi_WEB_URL;
 
 	const currentUrl = (await readPageUrl(cdp, cdpSessionId)) || "";
 	const alreadyThere = isSameChatLocation(currentUrl, destination);
@@ -1010,7 +1010,7 @@ async function navigateQwenChat(
 
 	if (alreadyThere && !forceReload) {
 		logger?.debug?.(
-			`[qwen-web] already on ${destination} — skipping navigation (no reload)`,
+			`[kimi-web] already on ${destination} — skipping navigation (no reload)`,
 		);
 		if (target.fresh) {
 			await cdp.send(
@@ -1024,7 +1024,7 @@ async function navigateQwenChat(
 	}
 
 	logger?.debug?.(
-		`[qwen-web] ${target.fresh ? "opening a new Qwen chat" : `loading Qwen chat ${target.sessionId}`}`,
+		`[kimi-web] ${target.fresh ? "opening a new Kimi chat" : `loading Kimi chat ${target.sessionId}`}`,
 	);
 	await cdp.send(
 		"Runtime.evaluate",
@@ -1062,7 +1062,7 @@ async function sendAndCapture(
 	cdp: CdpClient,
 	cdpSessionId: string,
 	prompt: string,
-	config: QwenWebV2RuntimeConfig,
+	config: KimiWebV2RuntimeConfig,
 	logger?: BasicLogger,
 	sendOptions?: { model?: string; thinkingMode?: string },
 	isToolTurn = false,
@@ -1074,7 +1074,7 @@ async function sendAndCapture(
 	rateLimited?: boolean;
 }> {
 	const debugLog = (msg: string) => {
-		if (config.debug) logger?.debug(`[qwen-web] ${msg}`);
+		if (config.debug) logger?.debug(`[kimi-web] ${msg}`);
 	};
 
 	let completionRequestId: string | undefined;
@@ -1087,7 +1087,7 @@ async function sendAndCapture(
 	const onResponseReceived = (event: any, eventSessionId?: string) => {
 		if (eventSessionId !== cdpSessionId) return;
 		const url: string = event.response?.url ?? "";
-		if (!url.includes(QWEN_API_ENDPOINT)) return;
+		if (!url.includes(Kimi_API_ENDPOINT)) return;
 		if (event.response?.status !== 200) return;
 		completionRequestId = event.requestId;
 		debugLog(`completion response received (${url})`);
@@ -1108,7 +1108,7 @@ async function sendAndCapture(
 			debugLog(`completion body captured (${capturedBody.length} chars)`);
 		} catch (err) {
 			logger?.error?.(
-				`[qwen-web] failed to read response body: ${err instanceof Error ? err.message : String(err)}`,
+				`[kimi-web] failed to read response body: ${err instanceof Error ? err.message : String(err)}`,
 			);
 		} finally {
 			bodyResolve?.();
@@ -1123,7 +1123,7 @@ async function sendAndCapture(
 
 		// Randomized human-like pacing before sending, plus an extra random
 		// amount on tool-request turns (the fastest back-to-back pattern in an
-		// agent run) — dodges chat.qwen.ai's own anti-abuse frequency throttle
+		// agent run) — dodges chat.Kimi.ai's own anti-abuse frequency throttle
 		// the same way deepseek-web-v2 dodges DeepSeek's.
 		const sendDelay = computeSendDelay(config, { isToolTurn });
 		debugLog(
@@ -1166,14 +1166,14 @@ async function sendAndCapture(
 		let fullText = "";
 		const finishReason: LanguageModelV2FinishReason = "stop";
 		let usage = { inputTokens: 0, outputTokens: 0, totalTokens: 0 };
-		consumeQwenSse(
+		consumeKimiSse(
 			capturedBody,
 			(chunk) => {
 				fullText += chunk;
 			},
 			() => {},
 			(err) => {
-				logger?.error?.(`[qwen-web] SSE parse error: ${err.message}`);
+				logger?.error?.(`[kimi-web] SSE parse error: ${err.message}`);
 			},
 			(nextUsage) => {
 				usage = nextUsage;
@@ -1185,11 +1185,11 @@ async function sendAndCapture(
 		// refresh to clear the temporarily-blocked composer.
 		const rateLimited = isRateLimitText(fullText);
 		if (rateLimited) {
-			requestQwenThrottleRecoveryReload();
+			requestKimiThrottleRecoveryReload();
 			logger?.log?.(
-				"[qwen-web] Qwen throttled the request (rate-limit reply detected). " +
+				"[kimi-web] Kimi throttled the request (rate-limit reply detected). " +
 					"Next message will reload the page to recover, and sending is paced. " +
-					"Consider raising QWEN_WEB_MIN/MAX_SEND_DELAY_MS.",
+					"Consider raising Kimi_WEB_MIN/MAX_SEND_DELAY_MS.",
 			);
 		}
 		return { text: fullText, finishReason, usage, rateLimited };
@@ -1202,22 +1202,22 @@ async function sendAndCapture(
 
 // ── Main provider ─────────────────────────────────────────────────────────────
 
-interface QwenCompletionResult {
+interface KimiCompletionResult {
 	text: string;
 	toolCalls: { name: string; arguments: Record<string, unknown> }[];
 	usage: { inputTokens: number; outputTokens: number; totalTokens: number };
 }
 
 /**
- * Build the flat prompt sent to chat.qwen.ai, mirroring deepseek-web-v2's
+ * Build the flat prompt sent to chat.Kimi.ai, mirroring deepseek-web-v2's
  * `buildPrompt`: the real web client keeps its own server-side conversation
  * state, so the system prompt is sent verbatim on the conversation's first
  * turn (via `buildLeanConversation`'s own first-turn passthrough) and dropped
- * on every follow-up turn in the SAME Qwen chat — re-added only when
- * `reInjectSystem` is true (a brand-new Qwen chat, e.g. right after a
+ * on every follow-up turn in the SAME Kimi chat — re-added only when
+ * `reInjectSystem` is true (a brand-new Kimi chat, e.g. right after a
  * compaction opens a fresh one).
  */
-function buildQwenPrompt(
+function buildKimiPrompt(
 	prompt: LanguageModelV2Prompt,
 	reInjectSystem: boolean,
 	preserveCompactionContext: boolean,
@@ -1242,7 +1242,7 @@ function buildQwenPrompt(
 	return messagesToPrompt(conversation, promptOptions);
 }
 
-function createQwenWebModel(
+function createKimiWebModel(
 	modelId: string,
 	logger?: BasicLogger,
 ): LanguageModelV2 {
@@ -1250,10 +1250,10 @@ function createQwenWebModel(
 	// active browser profile between turns, which changes the user-data-dir,
 	// the debug port and the chat registry. A model built before the switch
 	// would otherwise keep driving the old profile's Chrome.
-	let runtimeConfig = resolveQwenWebV2Config();
+	let runtimeConfig = resolveKimiWebV2Config();
 
 	const debugLog = (msg: string) => {
-		if (runtimeConfig.debug) logger?.debug(`[qwen-web] ${msg}`);
+		if (runtimeConfig.debug) logger?.debug(`[kimi-web] ${msg}`);
 	};
 
 	// Shared by doGenerate/doStream (mirrors deepseek-web-v2's doCompletion):
@@ -1263,8 +1263,8 @@ function createQwenWebModel(
 	// divergent wrapper around doGenerate.
 	async function runCompletion(
 		options: LanguageModelV2CallOptions,
-	): Promise<QwenCompletionResult> {
-		runtimeConfig = resolveQwenWebV2Config();
+	): Promise<KimiCompletionResult> {
+		runtimeConfig = resolveKimiWebV2Config();
 		debugLog("runCompletion called");
 
 		// A reply the user pasted back with `/paste` after a network error ate
@@ -1272,7 +1272,7 @@ function createQwenWebModel(
 		// already the model's answer, it just needs the same tool parsing a
 		// captured reply gets. No retry loop — a paste is a fixed string, so
 		// re-sending a correction into the chat would be meaningless here.
-		const injected = consumePendingInjectedReply("qwen-web");
+		const injected = consumePendingInjectedReply("kimi-web");
 		if (injected) {
 			debugLog(`Using pasted reply (${injected.length} chars)`);
 			return buildCompletionFromText(injected, options);
@@ -1286,12 +1286,12 @@ function createQwenWebModel(
 		const targets = await cdp.send("Target.getTargets");
 		let pageTarget = targets.targetInfos?.find(
 			(t: any) =>
-				t.type === "page" && t.url?.startsWith("https://chat.qwen.ai"),
+				t.type === "page" && t.url?.startsWith("https://chat.Kimi.ai"),
 		);
 
 		if (!pageTarget) {
 			const result = await cdp.send("Target.createTarget", {
-				url: QWEN_WEB_URL,
+				url: Kimi_WEB_URL,
 			});
 			await sleep(2000);
 			const newTargets = await cdp.send("Target.getTargets");
@@ -1299,7 +1299,7 @@ function createQwenWebModel(
 				(t: any) => t.targetId === result.targetId,
 			);
 			if (!pageTarget) {
-				throw new Error("Failed to create Qwen page");
+				throw new Error("Failed to create Kimi page");
 			}
 		}
 
@@ -1310,7 +1310,7 @@ function createQwenWebModel(
 		const cdpSessionId = attachResult.sessionId;
 
 		// Chat continuity: this CLI conversation is keyed by its first user
-		// message. A fresh key (no mapped Qwen chat yet) means this call opens
+		// message. A fresh key (no mapped Kimi chat yet) means this call opens
 		// a brand-new web chat, e.g. right after a compaction where the
 		// compaction summary becomes the first user message.
 		// Which web chat does this call go to? Normally the hash of the
@@ -1318,25 +1318,25 @@ function createQwenWebModel(
 		// last ordinary turn used, because the standalone summarize request
 		// would otherwise hash to an empty chat of its own. See
 		// `tool-pipeline/chat-target.ts` for the full /compact hand-off.
-		const chatKey = resolveChatKey("qwen-web", () =>
+		const chatKey = resolveChatKey("kimi-web", () =>
 			chatKeyFromPrompt(options.prompt),
 		);
-		let existingQwenSession = lookupQwenChatSession(
+		let existingKimiSession = lookupKimiChatSession(
 			runtimeConfig.chatsFile,
 			chatKey,
 		);
-		if (!existingQwenSession && chatKey.length !== 16) {
-			existingQwenSession = chatKey;
-			recordQwenChatSession(runtimeConfig.chatsFile, chatKey, chatKey);
+		if (!existingKimiSession && chatKey.length !== 16) {
+			existingKimiSession = chatKey;
+			recordKimiChatSession(runtimeConfig.chatsFile, chatKey, chatKey);
 		}
-		const isNewChat = existingQwenSession === undefined;
+		const isNewChat = existingKimiSession === undefined;
 
-		const forceReload = consumeQwenThrottleRecoveryReload();
-		await navigateQwenChat(
+		const forceReload = consumeKimiThrottleRecoveryReload();
+		await navigateKimiChat(
 			cdp,
 			cdpSessionId,
-			existingQwenSession
-				? { sessionId: existingQwenSession, fresh: false }
+			existingKimiSession
+				? { sessionId: existingKimiSession, fresh: false }
 				: { fresh: true },
 			logger,
 			forceReload,
@@ -1345,12 +1345,12 @@ function createQwenWebModel(
 		await waitForComposerReady(cdp, cdpSessionId, runtimeConfig, logger);
 
 		// Re-inject the system prompt only when this turn opens a brand-new
-		// Qwen chat — every other turn in the SAME chat sends no system
+		// Kimi chat — every other turn in the SAME chat sends no system
 		// prompt at all, since the web client already has it server-side.
 		// (Unlike deepseek-web-v2 this has no token-threshold re-injection:
-		// Qwen's SSE responses don't expose an equivalent cumulative
+		// Kimi's SSE responses don't expose an equivalent cumulative
 		// accumulated-context figure to gate that on.)
-		let promptText = buildQwenPrompt(options.prompt, isNewChat, isNewChat);
+		let promptText = buildKimiPrompt(options.prompt, isNewChat, isNewChat);
 
 		// The web chat is stateful: everything the user typed is already in it.
 		// The current instruction still goes out — `messagesToPrompt` labels it
@@ -1377,7 +1377,7 @@ function createQwenWebModel(
 
 		// Bounded retry: when EVERY tool call in a reply gets rejected (e.g.
 		// invalid Python in an `editor` call), the rejection note is OUR
-		// commentary on what the model typed — Qwen never sees it just because
+		// commentary on what the model typed — Kimi never sees it just because
 		// we computed it locally, since it isn't part of its server-side chat
 		// history. Resend it as a real follow-up message in the SAME chat so
 		// the model actually sees the rejection and can self-correct, capped
@@ -1387,7 +1387,7 @@ function createQwenWebModel(
 		let sendPrompt = promptText;
 		let result: Awaited<ReturnType<typeof sendAndCapture>> | undefined;
 		let finalText = "";
-		let finalToolCalls: QwenCompletionResult["toolCalls"] = [];
+		let finalToolCalls: KimiCompletionResult["toolCalls"] = [];
 
 		for (let attempt = 0; ; attempt++) {
 			result = await sendAndCapture(
@@ -1426,7 +1426,7 @@ function createQwenWebModel(
 					attempt < MAX_TOOL_REJECTION_RETRIES
 				) {
 					logger?.log(
-						`[qwen-web] all tool calls rejected, resending correction into chat (attempt ${attempt + 1}/${MAX_TOOL_REJECTION_RETRIES})`,
+						`[kimi-web] all tool calls rejected, resending correction into chat (attempt ${attempt + 1}/${MAX_TOOL_REJECTION_RETRIES})`,
 						{ severity: "warn" },
 					);
 					sendPrompt = retryPrompt;
@@ -1454,11 +1454,11 @@ function createQwenWebModel(
 		}
 
 		// After sending, the SPA routes to `/c/<id>`; capture it so the next
-		// turn (or a resume) can reopen this same Qwen chat.
+		// turn (or a resume) can reopen this same Kimi chat.
 		const pageUrl = await readPageUrl(cdp, cdpSessionId);
-		const qwenSession = extractQwenSessionId(pageUrl);
-		if (qwenSession) {
-			recordQwenChatSession(runtimeConfig.chatsFile, chatKey, qwenSession);
+		const KimiSession = extractKimiSessionId(pageUrl);
+		if (KimiSession) {
+			recordKimiChatSession(runtimeConfig.chatsFile, chatKey, KimiSession);
 		}
 
 		return { text: finalText, toolCalls: finalToolCalls, usage: result.usage };
@@ -1472,7 +1472,7 @@ function createQwenWebModel(
 	function buildCompletionFromText(
 		text: string,
 		options: LanguageModelV2CallOptions,
-	): QwenCompletionResult {
+	): KimiCompletionResult {
 		const usage = { inputTokens: 0, outputTokens: 0, totalTokens: 0 };
 		const toolNames = (options.tools ?? [])
 			.filter(
@@ -1513,14 +1513,14 @@ function createQwenWebModel(
 
 	function finishReasonFor(
 		text: string,
-		toolCalls: QwenCompletionResult["toolCalls"],
+		toolCalls: KimiCompletionResult["toolCalls"],
 	): LanguageModelV2FinishReason {
 		return toolCalls.length > 0 ? "tool-calls" : text ? "stop" : "unknown";
 	}
 
 	const provider: LanguageModelV2 = {
 		specificationVersion: "v2",
-		provider: "qwen-web",
+		provider: "kimi-web",
 		modelId,
 		supportedUrls: {} as Record<string, RegExp[]>,
 
@@ -1547,14 +1547,14 @@ function createQwenWebModel(
 				};
 			} catch (error) {
 				const err = error instanceof Error ? error : new Error(String(error));
-				logger?.error?.(`[qwen-web] doGenerate error: ${err.message}`);
+				logger?.error?.(`[kimi-web] doGenerate error: ${err.message}`);
 				throw err;
 			}
 		},
 
 		async doStream(options: LanguageModelV2CallOptions) {
 			const { text, toolCalls, usage } = await runCompletion(options);
-			const id = `qwen-web-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+			const id = `kimi-web-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
 
 			const parts: LanguageModelV2StreamPart[] = [
 				{ type: "stream-start", warnings: [] },
@@ -1602,25 +1602,25 @@ function createQwenWebModel(
 
 // ── Provider factory ──────────────────────────────────────────────────────────
 
-export function createQwenWebProvider(
+export function createKimiWebProvider(
 	_config: GatewayResolvedProviderConfig,
 	context?: GatewayProviderContext,
 ): ProviderFactoryResult {
 	const logger = context?.logger;
 	return {
-		model: (modelId: string) => createQwenWebModel(modelId, logger),
+		model: (modelId: string) => createKimiWebModel(modelId, logger),
 	};
 }
 
-export function createQwenWebProviderFactory() {
-	return { id: "qwen-web", create: createQwenWebProvider };
+export function createKimiWebProviderFactory() {
+	return { id: "kimi-web", create: createKimiWebProvider };
 }
 
 // ── Module factory (used by ai-sdk.ts) ────────────────────────────────────────
 
-export function createQwenWebProviderModule(
+export function createKimiWebProviderModule(
 	config: GatewayResolvedProviderConfig,
 	context?: GatewayProviderContext,
 ): ProviderFactoryResult {
-	return createQwenWebProvider(config, context);
+	return createKimiWebProvider(config, context);
 }

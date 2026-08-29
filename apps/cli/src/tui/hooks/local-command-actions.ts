@@ -34,6 +34,12 @@ export interface LocalSlashCommandActionInput {
 	 * restores the built-in one, anything else becomes the new note.
 	 */
 	setNote: (arg: string) => boolean;
+	/**
+	 * Pick which named Chrome profile the web providers log in with. Each
+	 * profile is a separate browser user-data-dir, so one provider can be
+	 * driven with several accounts.
+	 */
+	switchProfile: () => Promise<boolean>;
 }
 
 /**
@@ -132,6 +138,9 @@ export function runLocalSlashCommandAction(
 	}
 	if (normalized === "paste") {
 		return input.pasteReply();
+	}
+	if (normalized === "profile") {
+		return input.switchProfile();
 	}
 	if (normalized === "note") {
 		return input.setNote(commandArgument(input.invocation?.text));

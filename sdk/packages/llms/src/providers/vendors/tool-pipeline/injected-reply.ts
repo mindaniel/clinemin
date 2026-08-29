@@ -18,15 +18,36 @@
 
 import { processGlobal } from "./process-global";
 
+interface PendingReply {
+	text: string;
+	/** The provider the reply was copied out of, when the caller knows it. */
+	providerId?: string;
+}
+
 const state = () =>
 	processGlobal("injectedReply", () => ({
-		pending: undefined as string | undefined,
+		pending: undefined as PendingReply | undefined,
 	}));
 
-/** Queue `text` as the reply for the next web-provider model request. */
-export function setPendingInjectedReply(text: string): void {
+/**
+ * Queue `text` as the reply for the next model request from `providerId`.
+ *
+ * The provider matters: each web provider parses replies its own way (Gemini
+ * emits native JSON tool calls, Claude Web answers in prose with shell fences,
+ * DeepSeek uses the `<tool>` contract), so a reply copied out of one browser
+ * must be parsed by that provider and no other. Without the tag, whichever
+ * model request happens to run next — a summarizer, a title generator, a turn
+ * the user switched providers for — would swallow the paste and run it through
+ * the wrong ladder.
+ *
+ * Omitting `providerId` keeps the old any-provider behaviour.
+ */
+export function setPendingInjectedReply(
+	text: string,
+	providerId?: string,
+): void {
 	const trimmed = text.trim();
-	state().pending = trimmed || undefined;
+	state().pending = trimmed ? { text: trimmed, providerId } : undefined;
 }
 
 /** Whether a paste is waiting to be consumed. */
@@ -37,12 +58,21 @@ export function hasPendingInjectedReply(): boolean {
 /**
  * Take the queued reply, clearing it. Returns `undefined` when nothing is
  * queued, which is the signal to talk to the browser as usual.
+ *
+ * A reply tagged for another provider is left in place rather than consumed:
+ * the paste waits for the provider it belongs to.
  */
-export function consumePendingInjectedReply(): string | undefined {
+export function consumePendingInjectedReply(
+	providerId?: string,
+): string | undefined {
 	const slot = state();
 	const reply = slot.pending;
+	if (!reply) return undefined;
+	if (reply.providerId && providerId && reply.providerId !== providerId) {
+		return undefined;
+	}
 	slot.pending = undefined;
-	return reply;
+	return reply.text;
 }
 
 /** Discard a queued reply without using it (e.g. the user cancelled). */

@@ -332,6 +332,17 @@ describe("runDoctorCommand", () => {
 						"60123 /Users/example/dev/apps/examples/desktop-app/src-tauri/bin/code-sidecar\n",
 				};
 			}
+			// Windows has no pgrep: doctor takes one Win32_Process snapshot and
+			// filters it itself, and kills through taskkill rather than SIGKILL.
+			if (command === "powershell.exe") {
+				return {
+					status: 0,
+					stdout: `60123 1 C:\\example\\src-tauri\\bin\\code-sidecar\n`,
+				};
+			}
+			if (command === "taskkill") {
+				return { status: 0, stdout: "" };
+			}
 			return { status: 1, stdout: "" };
 		});
 		const killSpy = vi.spyOn(process, "kill").mockImplementation(() => true);
@@ -348,7 +359,15 @@ describe("runDoctorCommand", () => {
 		);
 
 		expect(code).toBe(0);
-		expect(killSpy).toHaveBeenCalledWith(60123, "SIGKILL");
+		if (process.platform === "win32") {
+			expect(mockSpawnSync).toHaveBeenCalledWith(
+				"taskkill",
+				["/pid", "60123", "/T", "/F"],
+				expect.anything(),
+			);
+		} else {
+			expect(killSpy).toHaveBeenCalledWith(60123, "SIGKILL");
+		}
 		expect(JSON.parse(output[0] || "")).toMatchObject({
 			before: {
 				staleSidecarPids: [60123],

@@ -146,7 +146,13 @@ function App(props: TuiProps) {
 	const populateInputRef = useRef<(value: string) => void>(() => {});
 	// Assigned once the prompt controller exists below; local commands are wired
 	// up before it, so they reach submission through this ref.
-	const submitTextRef = useRef<(text: string) => void>(() => {});
+	const submitTextRef = useRef<
+		(
+			text: string,
+			delivery?: "queue" | "steer",
+			options?: { silent?: boolean },
+		) => void
+	>(() => {});
 	const insertSkillCommandRef = useRef<
 		(command: string, invocation?: LocalSlashCommandInvocation) => void
 	>(() => {});
@@ -660,7 +666,11 @@ function App(props: TuiProps) {
 		providerId: props.config.providerId,
 		cwd: props.config.cwd,
 		getSessionId: props.getSessionId,
-		submitText: (text: string) => submitTextRef.current(text),
+		submitText: (
+			text: string,
+			delivery?: "queue" | "steer",
+			options?: { silent?: boolean },
+		) => submitTextRef.current(text, delivery, options),
 	});
 
 	const startupActionsRef = useRef({ openConfig, openHistory });

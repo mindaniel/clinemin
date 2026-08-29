@@ -16,6 +16,7 @@ import {
 	type UserInstructionConfigService,
 } from "@cline/core";
 import { bindChatKey, clearChatKeyBinding } from "@cline/llms";
+import { clearChatBinding } from "../../utils/chat-binding";
 import type { Message } from "@cline/shared";
 import { createCliCore } from "../../session/session";
 import { submitAndExitInTerminal } from "../../utils/approval";
@@ -533,6 +534,9 @@ export function createInteractiveSessionRuntime(input: {
 		startupError = undefined;
 		const manager = sessionManager;
 		const sessionId = activeSessionId;
+		if (sessionId) {
+			clearChatBinding(sessionId); // Remove persistent chat binding so we start a fresh chat
+		}
 		clearActiveSession();
 		if (manager && sessionId) {
 			await manager.stop(sessionId);

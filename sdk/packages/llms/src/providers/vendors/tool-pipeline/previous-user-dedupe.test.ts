@@ -71,4 +71,18 @@ describe("stripPreviousUserBlock", () => {
 		const prompt = "Previous user message: line one\nline two";
 		expect(stripPreviousUserBlock(prompt)).toBe("");
 	});
+
+	it("keeps the current instruction, which carries its own label", () => {
+		// Providers strip unconditionally now, so the turn the user just typed
+		// has to survive: `messagesToPrompt` labels it `User:`, never
+		// `Previous user message:`.
+		const prompt = [
+			"Previous user message: an older ask",
+			"Assistant: sure",
+			"User: the new ask",
+		].join("\n\n");
+		expect(stripPreviousUserBlock(prompt)).toBe(
+			"Assistant: sure\n\nUser: the new ask",
+		);
+	});
 });

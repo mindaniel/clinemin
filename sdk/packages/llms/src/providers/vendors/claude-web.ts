@@ -2,7 +2,7 @@
  * Claude Web ("claude-web") provider.
  *
  * Drives the real Claude web client (claude.ai) through your installed Chrome
- * via the DevTools Protocol — no API key needed.
+ * via the DevTools Protocol â€” no API key needed.
  */
 
 import { spawn } from "node:child_process";
@@ -39,11 +39,19 @@ import {
 	parseFallbackToolUses,
 } from "./deepseek-web-v2";
 import {
+	abortableSleep,
+	abortRace,
+	throwIfAborted,
+} from "./tool-pipeline/abort";
+import {
 	browserNotFoundMessage,
 	findChromePath,
 } from "./tool-pipeline/browser-path";
 import { registerLaunchedBrowser } from "./tool-pipeline/browser-processes";
+import { resolveActiveProfilePaths } from "./tool-pipeline/browser-profiles";
 import { resolveChatKey } from "./tool-pipeline/chat-target";
+import { consumePendingInjectedReply } from "./tool-pipeline/injected-reply";
+import { parseInvokeStyleToolCalls } from "./tool-pipeline/invoke-parser";
 import {
 	realUserMessageKey,
 	stripPreviousUserBlock,
@@ -53,7 +61,6 @@ import type { ProviderFactoryResult } from "./types";
 
 const CONFIG_DIR = path.join(os.homedir(), ".cline", "claude-web");
 const CONFIG_FILE = path.join(CONFIG_DIR, "config.json");
-const DEFAULT_CHATS_FILE = path.join(CONFIG_DIR, "chats.json");
 const CLAUDE_WEB_URL = "https://claude.ai/";
 const CLAUDE_API_ENDPOINT = "/chat_conversations/";
 
@@ -65,12 +72,14 @@ const DEFAULT_MIN_SEND_DELAY_MS = 800;
 const DEFAULT_MAX_SEND_DELAY_MS = 2_800;
 const DEFAULT_TOOL_TURN_EXTRA_MIN_MS = 1_500;
 const DEFAULT_TOOL_TURN_EXTRA_MAX_MS = 4_500;
+/** Fallback context window when the model definition doesn't report one. */
+const CLAUDE_WEB_FALLBACK_CONTEXT_WINDOW = 1_000_000;
 
 const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
 
 /**
  * One-shot "recover from a throttle/block" signal, mirroring deepseek-web-v2's
- * own flag (kept separate — this provider drives an unrelated tab/profile, so
+ * own flag (kept separate â€” this provider drives an unrelated tab/profile, so
  * the two must never share recovery state). When Claude rate-limits a turn, the
  * page can be left blocked; the next `runCompletion` forces a full reload even
  * if the URL already matches to clear it. Consumed (reset) after one reload.
@@ -103,6 +112,11 @@ export interface ClaudeWebV2RuntimeConfig {
 	/** Extra randomized delay added on turns that themselves request tools. */
 	toolTurnExtraMinMs: number;
 	toolTurnExtraMaxMs: number;
+	/**
+	 * Context window of the selected model, used to turn the session usage
+	 * percent Claude Web reports into an absolute token count for the status bar.
+	 */
+	contextWindow?: number;
 }
 
 interface ChatSessionRecord {
@@ -128,12 +142,19 @@ function readConfigFile(): Partial<ClaudeWebV2RuntimeConfig> {
 
 export function resolveClaudeWebV2Config(): ClaudeWebV2RuntimeConfig {
 	const fileConfig = readConfigFile();
+	// The active named profile (`/profile`) decides which Chrome user-data-dir,
+	// debug port and chat registry this provider uses, so one provider can be
+	// driven with several logins. Env vars and config.json still win over it.
+	const profile = resolveActiveProfilePaths(CONFIG_DIR, DEFAULT_DEBUG_PORT);
 	const port =
 		Number(process.env.CLAUDE_WEB_DEBUG_PORT ?? fileConfig.debugPort) ||
-		DEFAULT_DEBUG_PORT;
+		profile.debugPort;
 	return {
 		chromePath: process.env.CLAUDE_WEB_CHROME_PATH || fileConfig.chromePath,
-		profileDir: process.env.CLAUDE_WEB_PROFILE_DIR || fileConfig.profileDir,
+		profileDir:
+			process.env.CLAUDE_WEB_PROFILE_DIR ||
+			fileConfig.profileDir ||
+			profile.profileDir,
 		debugPort: port,
 		headless:
 			process.env.CLAUDE_WEB_HEADLESS !== undefined
@@ -159,7 +180,7 @@ export function resolveClaudeWebV2Config(): ClaudeWebV2RuntimeConfig {
 		chatsFile:
 			process.env.CLAUDE_WEB_CHATS_FILE ||
 			fileConfig.chatsFile ||
-			DEFAULT_CHATS_FILE,
+			profile.chatsFile,
 		minSendDelayMs:
 			Number(
 				process.env.CLAUDE_WEB_MIN_SEND_DELAY_MS ?? fileConfig.minSendDelayMs,
@@ -192,7 +213,7 @@ async function isEndpointUp(port: number): Promise<boolean> {
 	}
 }
 
-// ── CDP Client ────────────────────────────────────────────────────────────────
+// â”€â”€ CDP Client â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
 class CdpClient {
 	private ws: WebSocket;
@@ -296,6 +317,17 @@ class CdpClient {
 let activeCdp: CdpClient | null = null;
 let activeCdpKey: string | null = null;
 
+// Cache the attached page target + its CDP session so consecutive turns reuse
+// the SAME session instead of re-attaching (and re-toggling the Network
+// domain) on every message — the same first-message "empty response" fix
+// applied to chatgpt-web and gemini-web.
+let activeClaudeTargetId: string | null = null;
+let activeClaudeCdpSessionId: string | null = null;
+
+// Sessions whose Network domain is already enabled. Enable once and leave it
+// on for the session's lifetime; toggling it per turn made capture flaky.
+const claudeNetworkEnabledSessions = new Set<string>();
+
 async function connectCdp(port: number, timeoutMs: number): Promise<CdpClient> {
 	const endpoint = `http://127.0.0.1:${port}`;
 	const deadline = Date.now() + timeoutMs;
@@ -343,6 +375,18 @@ async function connectBrowser(
 	const key = `${config.debugPort}`;
 	if (activeCdp && activeCdpKey === key && activeCdp.isOpen()) {
 		return activeCdp;
+	}
+	// A different key means a different browser — `/profile` switched the
+	// user-data-dir and with it the debug port. Drop the old socket rather than
+	// leaking it; the Chrome behind it stays up so switching back is instant.
+	if (activeCdp && activeCdpKey !== key) {
+		try {
+			activeCdp.close();
+		} catch {
+			// Already gone; nothing to release.
+		}
+		activeCdp = null;
+		activeCdpKey = null;
 	}
 
 	const connectTimeoutMs = Math.max(config.launchTimeoutMs, 30000);
@@ -403,7 +447,7 @@ async function connectBrowser(
 	return activeCdp;
 }
 
-// ── Enhanced Claude send script (from send_claude.txt) ──────────────────────────
+// â”€â”€ Enhanced Claude send script (from send_claude.txt) â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 const SEND_MESSAGE_SOURCE = `
 // ---------- 1. Set text in editor ----------
 async function setClaudeInput(message) {
@@ -423,7 +467,7 @@ async function setClaudeInput(message) {
     }
 
     if (!editor) {
-        console.error('❌ Input editor not found. Available inputs:', Array.from(document.querySelectorAll('textarea, div[contenteditable="true"]')).map(e => e.tagName + (e.className ? '.'+e.className : '')));
+        console.error('âŒ Input editor not found. Available inputs:', Array.from(document.querySelectorAll('textarea, div[contenteditable="true"]')).map(e => e.tagName + (e.className ? '.'+e.className : '')));
         return false;
     }
 
@@ -468,7 +512,7 @@ async function waitForSendButton(timeout) {
             'button[type="submit"]',
             '.send-button',
             'button[aria-label*="Send" i]',
-            'button[aria-label*="发送" i]',
+            'button[aria-label*="å‘é€" i]',
             'button.send-message-button'
         ];
         for (const sel of selectors) {
@@ -486,7 +530,7 @@ async function clickClaudeSend() {
         sendBtn.dispatchEvent(new MouseEvent('mousedown', { bubbles: true }));
         sendBtn.dispatchEvent(new MouseEvent('mouseup', { bubbles: true }));
         sendBtn.click();
-        console.log('✅ Send button clicked');
+        console.log('âœ… Send button clicked');
         return true;
     }
     
@@ -505,11 +549,11 @@ async function clickClaudeSend() {
     if (editor) {
         editor.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', code: 'Enter', keyCode: 13, which: 13, bubbles: true }));
         editor.dispatchEvent(new KeyboardEvent('keyup', { key: 'Enter', code: 'Enter', keyCode: 13, which: 13, bubbles: true }));
-        console.log('✅ Enter key dispatched as fallback');
+        console.log('âœ… Enter key dispatched as fallback');
         return true;
     }
     
-    console.warn('❌ Send button not found and Enter key failed');
+    console.warn('âŒ Send button not found and Enter key failed');
     return false;
 }
 
@@ -518,7 +562,7 @@ async function sendMessageToClaude(message, options) {
     options = options || {};
     const inputSuccess = await setClaudeInput(message);
     if (!inputSuccess) {
-        console.error('❌ Failed to set input');
+        console.error('âŒ Failed to set input');
         return false;
     }
 
@@ -526,7 +570,7 @@ async function sendMessageToClaude(message, options) {
 
     const sendSuccess = await clickClaudeSend();
     if (sendSuccess) {
-        console.log('✅ Message sent successfully: ' + message.substring(0, 50) + '...');
+        console.log('âœ… Message sent successfully: ' + message.substring(0, 50) + '...');
     }
     return sendSuccess;
 }
@@ -543,7 +587,7 @@ function buildSendScript(
     })(); true;`;
 }
 
-// ── Chat session persistence ──────────────────────────────────────────────────
+// â”€â”€ Chat session persistence â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
 function readChatRegistry(
 	chatsFile: string,
@@ -687,7 +731,109 @@ export async function openClaudeWebChat(
 	};
 }
 
-// ── SSE parser for Claude ──────────────────────────────────────────────────────
+// â”€â”€ SSE parser for Claude â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+
+/**
+ * Pull the raw JSON out of an `ask_user_input_v0` block, whether it arrived
+ * as a pre-populated `tool_use.input`, a `tool_result.content` text part, or
+ * a plain `text` field. Returns the tool_use id (for dedupe) and the JSON
+ * string.
+ */
+function extractAskUserInputJson(
+	block: any,
+): { id?: string; json: string } | undefined {
+	if (!block || typeof block !== "object") return undefined;
+
+	const id =
+		typeof block.tool_use_id === "string"
+			? block.tool_use_id
+			: typeof block.id === "string"
+				? block.id
+				: undefined;
+
+	// Full input already populated on a tool_use block.
+	if (block.input && typeof block.input === "object") {
+		if (Object.keys(block.input).length > 0) {
+			return { id, json: JSON.stringify(block.input) };
+		}
+	}
+
+	// tool_result blocks carry the JSON in content[0].text.
+	const content = block.content;
+	if (Array.isArray(content)) {
+		for (const part of content) {
+			if (
+				part &&
+				typeof part === "object" &&
+				typeof (part as any).text === "string"
+			) {
+				const trimmed = (part as any).text.trim();
+				if (trimmed) return { id, json: trimmed };
+			}
+		}
+	} else if (typeof content === "string" && content.trim()) {
+		return { id, json: content.trim() };
+	}
+
+	// Final fallbacks.
+	if (typeof block.text === "string" && block.text.trim()) {
+		return { id, json: block.text.trim() };
+	}
+
+	return undefined;
+}
+
+/**
+ * Convert the raw JSON from Claude's `ask_user_input_v0` widget into the
+ * runtime's `ask_question` tool calls. The widget payload looks like:
+ *
+ *   {"questions":[{"question":"...","options":["T1","T2"]}]}
+ *
+ * Each question becomes one `ask_question` call with `{ question, options }`,
+ * only when `ask_question` is one of the available function tools.
+ */
+function parseAskUserInputToolCalls(
+	rawJson: string,
+	availableToolNames: string[],
+): { name: string; arguments: Record<string, unknown> }[] {
+	if (!availableToolNames.includes("ask_question")) return [];
+
+	let parsed: unknown;
+	try {
+		parsed = JSON.parse(rawJson);
+	} catch {
+		return [];
+	}
+
+	const questions = (parsed as any)?.questions;
+	if (!Array.isArray(questions)) return [];
+
+	const calls: { name: string; arguments: Record<string, unknown> }[] = [];
+	for (const q of questions) {
+		if (!q || typeof q !== "object") continue;
+		const question = typeof q.question === "string" ? q.question.trim() : "";
+		if (!question) continue;
+
+		let options = q.options;
+		if (!Array.isArray(options)) {
+			options = typeof q.choices === "string" ? [q.choices] : [];
+		}
+		const cleanedOptions = options
+			.filter(
+				(o: unknown): o is string => typeof o === "string" && o.trim() !== "",
+			)
+			.slice(0, 5);
+
+		calls.push({
+			name: "ask_question",
+			arguments: {
+				question,
+				options: cleanedOptions.length > 0 ? cleanedOptions : [],
+			},
+		});
+	}
+	return calls;
+}
 
 function consumeClaudeSse(
 	body: string,
@@ -699,10 +845,17 @@ function consumeClaudeSse(
 		outputTokens: number;
 		totalTokens: number;
 	}) => void,
+	onAskUserInput?: (json: string) => void,
+	onSessionPercent?: (percent: number) => void,
 ): void {
 	try {
 		// Claude SSE parsing: Anthropic content block format.
 		let fullText = "";
+
+		// Track native `ask_user_input_v0` tool_use blocks by index so the
+		// streamed `input_json_delta` fragments can be reassembled and handed
+		// back to the runtime's `ask_question` tool once the block closes.
+		const askUserInputBlocks = new Map<number, string>();
 
 		for (const rawLine of body.split("\n")) {
 			const line = rawLine.trim();
@@ -723,10 +876,65 @@ function consumeClaudeSse(
 				const d = parsed.delta;
 				if (d && d.type === "text_delta" && typeof d.text === "string")
 					fullText += d.text;
+
+				// Accumulate the streamed JSON for a native ask-user-input
+				// widget (ask_user_input_v0) so it can be mapped to the
+				// runtime's ask_question tool once the block closes.
+				if (
+					d &&
+					d.type === "input_json_delta" &&
+					typeof parsed.index === "number" &&
+					askUserInputBlocks.has(parsed.index)
+				) {
+					const partial =
+						typeof d.partial_json === "string" ? d.partial_json : "";
+					askUserInputBlocks.set(
+						parsed.index,
+						askUserInputBlocks.get(parsed.index)! + partial,
+					);
+				}
 			} else if (parsed.type === "content_block_start") {
 				const b = parsed.content_block;
 				if (b && b.type === "text" && typeof b.text === "string")
 					fullText += b.text;
+
+				if (
+					b &&
+					typeof b.type === "string" &&
+					typeof parsed.index === "number"
+				) {
+					if (b.type === "tool_use" && b.name === "ask_user_input_v0") {
+						// Pre-populated input arrives in some payloads; emit it
+						// now. Empty input means the JSON is streamed via
+						// `input_json_delta`, so open a buffer for it instead.
+						const extracted = extractAskUserInputJson(b);
+						if (extracted?.json) {
+							onAskUserInput?.(extracted.json);
+						} else {
+							askUserInputBlocks.set(parsed.index, "");
+						}
+					} else if (
+						b.type === "tool_result" &&
+						b.name === "ask_user_input_v0"
+					) {
+						// Some payloads emit the full tool_result block instead
+						// of streamed input_json_delta fragments; parse it
+						// directly from the block.
+						const extracted = extractAskUserInputJson(b);
+						if (extracted?.json) onAskUserInput?.(extracted.json);
+					}
+				}
+			} else if (parsed.type === "content_block_stop") {
+				// The streamed input for an ask-user-input block is now
+				// complete.
+				if (
+					typeof parsed.index === "number" &&
+					askUserInputBlocks.has(parsed.index)
+				) {
+					const json = askUserInputBlocks.get(parsed.index)!.trim();
+					if (json) onAskUserInput?.(json);
+					askUserInputBlocks.delete(parsed.index);
+				}
 			}
 
 			// message.content.parts[] is Claude's normal terminal payload.
@@ -752,6 +960,18 @@ function consumeClaudeSse(
 				fullText += parsed.text;
 			}
 
+			if (parsed.type === "message_limit" && onSessionPercent) {
+				const resolvedPercent = (parsed as any)?.message_limit?.resolved?.limit
+					?.percent;
+				if (
+					typeof resolvedPercent === "number" &&
+					Number.isFinite(resolvedPercent) &&
+					resolvedPercent >= 0
+				) {
+					onSessionPercent(resolvedPercent);
+				}
+			}
+
 			if (parsed.usage && onUsage) {
 				onUsage({
 					inputTokens:
@@ -774,7 +994,7 @@ function consumeClaudeSse(
 	}
 }
 
-// ── Composer ready ─────────────────────────────────────────────────────────────
+// â”€â”€ Composer ready â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
 async function waitForComposerReady(
 	cdp: CdpClient,
@@ -835,7 +1055,7 @@ async function waitForComposerReady(
 	}
 }
 
-// ── Chat navigation (mirrors deepseek-web-v2's navigateDeepSeekChat) ───────────
+// â”€â”€ Chat navigation (mirrors deepseek-web-v2's navigateDeepSeekChat) â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
 /** Read the current page URL via CDP. */
 async function readPageUrl(
@@ -857,7 +1077,7 @@ async function readPageUrl(
 /**
  * Point the Claude tab at a specific chat (load an old conversation) or at a
  * fresh composer (new chat). Skips navigating when the tab is already on the
- * destination — that is what avoids a needless full page reload on every
+ * destination â€” that is what avoids a needless full page reload on every
  * follow-up turn of the same conversation. `forceReload` skips that shortcut
  * to recover from a rate-limit block, where the page needs a real refresh to
  * accept messages again even though the URL is unchanged.
@@ -897,7 +1117,7 @@ async function navigateClaudeChat(
 
 	if (alreadyThere && !forceReload) {
 		logger?.debug?.(
-			`[claude-web] already on ${destination} — skipping navigation (no reload)`,
+			`[claude-web] already on ${destination} â€” skipping navigation (no reload)`,
 		);
 		if (target.fresh) {
 			await cdp.send(
@@ -933,11 +1153,11 @@ async function navigateClaudeChat(
 	await sleep(1500);
 }
 
-// ── Send and capture (CDP Network domain — mirrors deepseek-web-v2) ────────────
+// â”€â”€ Send and capture (CDP Network domain â€” mirrors deepseek-web-v2) â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 //
 // Drives the SAME tab/session `doGenerate` already attached to over CDP,
 // instead of launching a second, disconnected Playwright browser on the same
-// profile dir (the previous approach — that second browser competed for the
+// profile dir (the previous approach â€” that second browser competed for the
 // profile lock and its own "response" listener often never fired, which is
 // what surfaced as "Model returned empty response").
 //
@@ -953,11 +1173,14 @@ async function sendAndCapture(
 	logger?: BasicLogger,
 	sendOptions?: { think?: boolean },
 	isToolTurn = false,
+	signal?: AbortSignal,
 ): Promise<{
 	text: string;
 	finishReason: LanguageModelV2FinishReason;
 	usage: { inputTokens: number; outputTokens: number; totalTokens: number };
 	rateLimited?: boolean;
+	/** Raw JSON from a native `ask_user_input_v0` widget, when present. */
+	askUserInput?: string;
 }> {
 	const debugLog = (msg: string) => {
 		if (config.debug) logger?.debug(`[claude-web] ${msg}`);
@@ -981,7 +1204,7 @@ async function sendAndCapture(
 	const onLoadingFinished = async (event: any, eventSessionId?: string) => {
 		if (eventSessionId !== cdpSessionId) return;
 		if (event.requestId !== completionRequestId) return;
-		debugLog("completion body fully written — reading it");
+		debugLog("completion body fully written â€” reading it");
 		try {
 			const { body, base64Encoded } = await cdp.send(
 				"Network.getResponseBody",
@@ -1005,17 +1228,23 @@ async function sendAndCapture(
 	cdp.on("Network.loadingFinished", onLoadingFinished);
 
 	try {
-		await cdp.send("Network.enable", {}, cdpSessionId);
+		// Enable the Network domain ONCE per CDP session and leave it on for
+		// the session's lifetime. Re-enabling here and disabling in `finally`
+		// every turn is what made capture flaky on the first message.
+		if (!claudeNetworkEnabledSessions.has(cdpSessionId)) {
+			await cdp.send("Network.enable", {}, cdpSessionId);
+			claudeNetworkEnabledSessions.add(cdpSessionId);
+		}
 
 		// Randomized human-like pacing before sending, plus an extra random
 		// amount on tool-request turns (the fastest back-to-back pattern in an
-		// agent run) — dodges claude.ai's own anti-abuse frequency throttle
+		// agent run) â€” dodges claude.ai's own anti-abuse frequency throttle
 		// the same way deepseek-web-v2 dodges DeepSeek's.
 		const sendDelay = computeSendDelay(config, { isToolTurn });
 		debugLog(
 			`pacing: waiting ${sendDelay}ms before send (toolTurn=${String(isToolTurn)})`,
 		);
-		await sleep(sendDelay);
+		await abortableSleep(sendDelay, signal);
 
 		await cdp.send(
 			"Runtime.evaluate",
@@ -1027,20 +1256,34 @@ async function sendAndCapture(
 			cdpSessionId,
 		);
 
+		// A cancelled turn has to stop waiting here. Until this returns the CLI
+		// still counts the turn as running and refuses the next message, so
+		// without the abort in this race Escape looked like it worked and then
+		// the input stayed dead until the response timeout fired minutes later.
+		const cancelled = abortRace(signal);
 		const timeoutPromise = new Promise<void>((resolve) => {
 			setTimeout(resolve, config.responseTimeoutMs);
 		});
-		await Promise.race([bodyCaptured, timeoutPromise]);
+		try {
+			await Promise.race([bodyCaptured, timeoutPromise, cancelled.promise]);
+		} finally {
+			cancelled.dispose();
+		}
 
 		if (!capturedBody) {
-			return {
-				text: "",
-				finishReason: "stop",
-				usage: { inputTokens: 0, outputTokens: 0, totalTokens: 0 },
-			};
+			// Distinguish a real timeout (body never arrived) from a listener
+			// gap. An empty captured body is exactly what used to silently
+			// surface as "Model returned empty response" on the first message.
+			throw new Error(
+				`[claude-web] no completion response captured for the last message. ` +
+					`${completionRequestId ? "A response was seen but its body could not be read." : "No Claude completion response was observed."} ` +
+					"Check that claude.ai is logged in and not rate-limited in the browser profile.",
+			);
 		}
 
 		let fullText = "";
+		let askUserInput: string | undefined;
+		let sessionPercent: number | undefined;
 		const finishReason: LanguageModelV2FinishReason = "stop";
 		let usage = { inputTokens: 0, outputTokens: 0, totalTokens: 0 };
 		consumeClaudeSse(
@@ -1055,7 +1298,30 @@ async function sendAndCapture(
 			(nextUsage) => {
 				usage = nextUsage;
 			},
+			(json) => {
+				if (json) askUserInput = json;
+			},
+			(percent) => {
+				sessionPercent = percent;
+			},
 		);
+
+		if (sessionPercent !== undefined) {
+			// Claude Web does not report per-turn input/output token counts; it
+			// reports the session usage as a percentage of the context window.
+			// Derive an absolute input-token estimate from that percent so the
+			// runtime's status bar shows "used/total" against the real window.
+			const contextWindow =
+				config.contextWindow ?? CLAUDE_WEB_FALLBACK_CONTEXT_WINDOW;
+			const inputTokens = Math.round(
+				(contextWindow * Math.max(0, Math.min(sessionPercent, 100))) / 100,
+			);
+			usage = {
+				inputTokens,
+				outputTokens: usage.outputTokens,
+				totalTokens: inputTokens + usage.outputTokens,
+			};
+		}
 
 		// Flag a throttled reply so the caller can back off / report it, and
 		// arm a one-shot recovery reload so the next turn forces a page
@@ -1069,20 +1335,29 @@ async function sendAndCapture(
 					"Consider raising CLAUDE_WEB_MIN/MAX_SEND_DELAY_MS.",
 			);
 		}
-		return { text: fullText, finishReason, usage, rateLimited };
+		return { text: fullText, finishReason, usage, rateLimited, askUserInput };
 	} finally {
+		// Unregister only this turn's listeners. Leave the Network domain
+		// enabled for the session — disabling it here was the other half of the
+		// per-turn toggle that made capture flaky.
 		cdp.off("Network.responseReceived", onResponseReceived);
 		cdp.off("Network.loadingFinished", onLoadingFinished);
-		await cdp.send("Network.disable", {}, cdpSessionId).catch(() => {});
 	}
 }
 
-// ── Main provider ─────────────────────────────────────────────────────────────
+// â”€â”€ Main provider â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
 interface ClaudeCompletionResult {
 	text: string;
 	toolCalls: { name: string; arguments: Record<string, unknown> }[];
 	usage: { inputTokens: number; outputTokens: number; totalTokens: number };
+	/**
+	 * Set when every tool call in the reply was rejected (e.g. invalid Python
+	 * in an `editor` call). It is OUR commentary on what the model typed, so
+	 * the model never sees it unless we send it back into the chat — the web
+	 * client's server-side history has no idea we rejected anything.
+	 */
+	retryPrompt?: string;
 }
 
 /**
@@ -1090,17 +1365,257 @@ interface ClaudeCompletionResult {
  * `buildPrompt`: the real web client keeps its own server-side conversation
  * state, so the system prompt is sent verbatim on the conversation's first
  * turn (via `buildLeanConversation`'s own first-turn passthrough) and dropped
- * on every follow-up turn in the SAME Claude chat — re-added only when
+ * on every follow-up turn in the SAME Claude chat â€” re-added only when
  * `reInjectSystem` is true (a brand-new Claude chat, e.g. right after a
  * compaction opens a fresh one).
  */
+
+/**
+ * Rephrase a tool result as natural first-person prose so Claude Web reads it
+ * as context the user is pasting back, not a tool-call transcript. Claude Web
+ * has its own built-in tools; when we echo "Tool result: (read_files) {...}",
+ * Claude denies it because from its side no such tool call was ever made.
+ */
+/**
+ * `run_commands` returns a JSON array of `ToolOperationResult` entries
+ * (`[{query, result, success, error, ...}]`). Sending that raw JSON back to
+ * Claude Web is unnatural; it only cares about the actual command output. Parse
+ * the array and join each entry's `result` (or `error`) string, so the model
+ * sees the PowerShell output like a human would. Falls back to the raw text
+ * when the payload isn't that structured shape.
+ */
+function extractRunCommandsOutput(text: string): string {
+	const trimmed = text.trim();
+	if (!trimmed.startsWith("[")) return trimmed;
+
+	const outputs: string[] = [];
+	let cursor = 0;
+
+	// The runtime can stack multiple `ToolOperationResult[]` arrays back to
+	// back (one per command in a single run_commands call), e.g.
+	// `[{...}]\n[{...}]`. JSON.parse can't handle the concatenation, so scan
+	// each balanced `[...]` block individually.
+	for (;;) {
+		const start = trimmed.indexOf("[", cursor);
+		if (start === -1) break;
+
+		let depth = 0;
+		let inString = false;
+		let escaped = false;
+		let end = -1;
+		for (let i = start; i < trimmed.length; i++) {
+			const ch = trimmed[i];
+			if (inString) {
+				if (escaped) escaped = false;
+				else if (ch === "\\") escaped = true;
+				else if (ch === '"') inString = false;
+				continue;
+			}
+			if (ch === '"') inString = true;
+			else if (ch === "[") depth++;
+			else if (ch === "]") {
+				depth--;
+				if (depth === 0) {
+					end = i;
+					break;
+				}
+			}
+		}
+		if (end === -1) break;
+
+		const raw = trimmed.slice(start, end + 1);
+		cursor = end + 1;
+
+		let parsed: unknown;
+		try {
+			parsed = JSON.parse(raw);
+		} catch {
+			continue;
+		}
+		if (!Array.isArray(parsed)) continue;
+
+		for (const entry of parsed) {
+			if (!entry || typeof entry !== "object") continue;
+			const record = entry as Record<string, unknown>;
+			const result =
+				typeof record.result === "string" ? record.result.trim() : "";
+			const error = typeof record.error === "string" ? record.error.trim() : "";
+			if (error && result !== error) {
+				// A failed entry (exit code, timeout, etc.) has a non-empty
+				// `error` and often an empty `result`. Emit the error so the
+				// model sees why the command failed instead of raw JSON.
+				outputs.push(result ? `${result}\n${error}` : error);
+			} else if (result) {
+				outputs.push(result);
+			}
+		}
+	}
+
+	return outputs.length > 0 ? outputs.join("\n\n") : trimmed;
+}
+/**
+ * Maximum number of lines of a Claude Web tool result sent back to the model.
+ * Claude Web answers in plain text and the whole flattened prompt is sent in a
+ * single browser request; a very long command output (e.g. `Get-Content -Raw`
+ * of a large file) makes the page return an empty response. Cap every tool
+ * result at this many lines so the request stays within the web client's
+ * practical limits.
+ */
+const CLAUDE_WEB_TOOL_RESULT_MAX_LINES = 200;
+
+function truncateToolResultLines(text: string): string {
+	const lines = text.split("\n");
+	if (lines.length <= CLAUDE_WEB_TOOL_RESULT_MAX_LINES) return text;
+	const dropped = lines.length - CLAUDE_WEB_TOOL_RESULT_MAX_LINES;
+	return [
+		...lines.slice(0, CLAUDE_WEB_TOOL_RESULT_MAX_LINES),
+		`... [output truncated: ${dropped} more lines]`,
+	].join("\n");
+}
+
+function formatClaudeToolResult(toolName: string, text: string): string {
+	const body = text.trim();
+	const capped = truncateToolResultLines(body);
+	switch (toolName) {
+		case "read_files":
+			return `Here is the file content I just read:\n${capped}`;
+		case "search_codebase":
+			return `Here are the files/functions I found when searching:\n${capped}`;
+		case "run_commands":
+			return `Here is the output of the command I just ran:\n${truncateToolResultLines(extractRunCommandsOutput(body))}`;
+		case "editor":
+			return `I just edited the file. Here is the result:\n${capped}`;
+		case "fetch_web_content":
+			return `Here is the content I fetched from the web:\n${capped}`;
+		case "ask_question":
+		case "ask_followup_question":
+			// This is the user's answer to a question we asked them, not a
+			// tool discovery. Send it back as plain natural language instead
+			// of wrapping it in "Here is what I found:".
+			return capped;
+		default:
+			return `Here is what I found:\n${capped}`;
+	}
+}
+
+/** Code-fence language tags that mean "run this as a shell command". */
+const CLAUDE_SHELL_FENCE_LANGS = new Set([
+	"powershell",
+	"pwsh",
+	"ps1",
+	"bash",
+	"shell",
+	"sh",
+	"zsh",
+	"cmd",
+	"bat",
+	"console",
+	"terminal",
+]);
+
+/**
+ * Claude Web-specific fallback. Claude answers in plain prose and often puts a
+ * PowerShell command in a ```powershell fence to ask the user to "run it and
+ * paste the output". The shared `parseFallbackToolUses` treats EVERY code fence
+ * as an `editor` (create file) call, which would wrongly turn that command into
+ * a file write. This parser first maps shell fences to `run_commands`, then
+ * delegates the rest (pip installs, real code files) to the shared fallback.
+ */
+function parseClaudeFallbackToolUses(
+	text: string,
+	prompt: string,
+	availableToolNames: string[],
+): {
+	cleanedText: string;
+	toolUses: { name: string; arguments: Record<string, unknown> }[];
+} {
+	const toolUses: { name: string; arguments: Record<string, unknown> }[] = [];
+	const hasRunCommands = availableToolNames.includes("run_commands");
+
+	let remaining = text;
+	if (hasRunCommands) {
+		const fenceRe = /```([\w+-]*)\s*\n([\s\S]*?)```/g;
+		remaining = text.replace(fenceRe, (full, lang: string, code: string) => {
+			const normalizedLang = (lang || "").toLowerCase().trim();
+			if (!CLAUDE_SHELL_FENCE_LANGS.has(normalizedLang)) return full;
+			const command = code.replace(/\s+$/, "");
+			if (!command.trim()) return full;
+			toolUses.push({
+				name: "run_commands",
+				arguments: { commands: [command] },
+			});
+			return "";
+		});
+	}
+
+	const fallback = parseFallbackToolUses(remaining, prompt, availableToolNames);
+	return {
+		cleanedText: fallback.cleanedText,
+		toolUses: [...toolUses, ...fallback.toolUses],
+	};
+}
+
+/**
+ * Clean the flattened prompt for Claude Web:
+ *   - rephrase `Tool result: (name) ...` turns into natural first-person prose,
+ *   - drop the stale `Previous user message:` echo (Claude Web keeps its own
+ *     server-side history, so re-sending the prior user text is redundant), and
+ *   - drop the runtime's synthetic `Note:` continuation (it reads like a
+ *     machine instruction, not a human pasting results back).
+ * This runs AFTER the shared `messagesToPrompt` formatter (which we do not
+ * modify). Segments are the formatter's own `\n\n`-joined turns.
+ */
+function rephraseClaudeToolResults(promptText: string): string {
+	const segments = promptText.split("\n\n");
+	return segments
+		.filter((segment, index) => {
+			const trimmed = segment.trim();
+			// Keep the LAST "Previous user message:" segment: it is the current
+			// queued directive when the user steers the turn right after a tool
+			// round. Every earlier one is stale context (Claude Web already
+			// holds it server-side) and is dropped.
+			const isLastPreviousUser =
+				trimmed.startsWith("Previous user message:") &&
+				index === segments.length - 1;
+			return (
+				isLastPreviousUser ||
+				(!trimmed.startsWith("Previous user message:") &&
+					!trimmed.startsWith("Note:"))
+			);
+		})
+		.map((segment) => {
+			const match = /^Tool result: \(([^)]+)\)\s*([\s\S]*)$/.exec(segment);
+			if (!match) return segment;
+			return formatClaudeToolResult(match[1], match[2]);
+		})
+		.join("\n\n");
+}
+
 function buildClaudePrompt(
 	prompt: LanguageModelV2Prompt,
 	reInjectSystem: boolean,
 	preserveCompactionContext: boolean,
 ): string {
-	const conversation = buildLeanConversation(prompt, preserveCompactionContext);
-	const systemMessage = prompt.find((m) => m.role === "system");
+	// Use a simpler system prompt for claude-web provider
+	const simpleSystemPrompt =
+		"Help me with this problem. Do not give me multiple code options, just 1 option. " +
+		"Before helping me with my task, you must first help me understand the project folder structure and read the relevant files — send me PowerShell commands to do that, and I will paste you the results. " +
+		"When a file needs to be edited, do not ask me to edit it manually: send me PowerShell code to make the change instead, while making sure I do not mess up the existing code. " +
+		"I will then paste you the results of what has been done that I followed you.";
+
+	// Replace the runtime's full system prompt with the simple one BEFORE
+	// building the conversation. Otherwise the first turn (where
+	// buildLeanConversation returns the whole prompt unchanged) would send the
+	// full "# ROLE & OBJECTIVE ..." tool-contract prompt to Claude Web.
+	const effectivePrompt = prompt.map((m) =>
+		m.role === "system" ? { ...m, content: simpleSystemPrompt } : m,
+	);
+
+	const conversation = buildLeanConversation(
+		effectivePrompt,
+		preserveCompactionContext,
+	);
+	const systemMessage = effectivePrompt.find((m) => m.role === "system");
 	const alreadyHasSystem = conversation.some((m) => m.role === "system");
 	const promptOptions = {
 		historyWindow: 10,
@@ -1109,36 +1624,126 @@ function buildClaudePrompt(
 		toolResultLabel: "Tool result",
 	};
 
-	// Use a simpler system prompt for claude-web provider
-	const simpleSystemPrompt =
-		"Help me with this problem. Do not give me multiple codes options, just 1 option. You can give me command on how to search for code, or function, or read what file, using powershell commands. I will then paste you the results of what have been done that I followed you.";
-
-	const customSystemMessage = systemMessage
-		? {
-				...systemMessage,
-				content: simpleSystemPrompt,
-			}
-		: undefined;
-
 	if (
 		reInjectSystem &&
-		customSystemMessage &&
+		systemMessage &&
 		!alreadyHasSystem &&
 		conversation.length > 0
 	) {
-		return messagesToPrompt(
-			[customSystemMessage, ...conversation],
-			promptOptions,
+		return rephraseClaudeToolResults(
+			messagesToPrompt([systemMessage, ...conversation], promptOptions),
 		);
 	}
-	return messagesToPrompt(conversation, promptOptions);
+	return rephraseClaudeToolResults(
+		messagesToPrompt(conversation, promptOptions),
+	);
+}
+
+/**
+ * Turn a finished reply into visible text plus tool calls.
+ *
+ * Two callers hand us a reply string: the normal capture path, and `/paste`,
+ * where the user copied the reply out of the browser because a network error
+ * ate ours. Both need the same parse ladder, so they run the same code.
+ */
+function parseCapturedReply(
+	text: string,
+	options: LanguageModelV2CallOptions,
+	usage: ClaudeCompletionResult["usage"],
+	askUserInput?: string,
+): ClaudeCompletionResult {
+	const functionTools = (options.tools ?? []).filter(
+		(tool): tool is LanguageModelV2FunctionTool => tool.type === "function",
+	);
+
+	// Claude's native `ask_user_input_v0` widget streams its payload as
+	// raw JSON (`{"questions":[...]}`). Map it to the runtime's `ask_question`
+	// tool so the agent gets a real question/options tool call instead of
+	// the raw JSON ending up ignored as prose.
+	if (askUserInput) {
+		const askCalls = parseAskUserInputToolCalls(
+			askUserInput,
+			functionTools.map((t) => t.name),
+		);
+		if (askCalls.length > 0) {
+			return { text, toolCalls: askCalls, usage };
+		}
+	}
+
+	if (functionTools.length === 0) {
+		return { text, toolCalls: [], usage };
+	}
+
+	const toolNames = functionTools.map((t) => t.name);
+	const { cleanedContent, toolCalls } = parseDeepSeekToolCalls(text, toolNames);
+	const looseCalls =
+		toolCalls.length === 0
+			? parseLooseDeepSeekToolCalls(text, toolNames)
+			: toolCalls;
+	if (looseCalls.length > 0) {
+		const { tools: validatedCalls, retryPrompt } =
+			validateToolCalls(looseCalls);
+		return {
+			text: retryPrompt
+				? `${cleanedContent}
+
+${retryPrompt}`.trim()
+				: cleanedContent,
+			toolCalls: validatedCalls,
+			usage,
+			retryPrompt,
+		};
+	}
+
+	// Anthropic-style `<invoke>` bodies, which every big model reaches for
+	// under load. See tool-pipeline/invoke-parser.ts.
+	const invoked = parseInvokeStyleToolCalls(text, toolNames);
+	if (invoked.toolCalls.length > 0) {
+		const { tools: validatedInvoked, retryPrompt } = validateToolCalls(
+			invoked.toolCalls,
+		);
+		return {
+			text: retryPrompt
+				? `${invoked.cleanedContent}
+
+${retryPrompt}`.trim()
+				: invoked.cleanedContent,
+			toolCalls: validatedInvoked,
+			usage,
+			retryPrompt,
+		};
+	}
+
+	// The web model often ignores the `<tool>` contract and answers with
+	// plain text (a plan, code fences, install commands). Convert the visible
+	// structure of the reply into real tool calls so the agent actually
+	// executes them, same as deepseek-web-v2's fallback.
+	// Claude answers in prose and puts shell commands in fences; map those to
+	// `run_commands` before the shared fallback treats every fence as a file
+	// write.
+	const fallback = parseClaudeFallbackToolUses(
+		cleanedContent,
+		lastUserText(options.prompt),
+		toolNames,
+	);
+	return {
+		text: fallback.cleanedText,
+		toolCalls: fallback.toolUses,
+		usage,
+	};
 }
 
 function createClaudeWebModel(
 	modelId: string,
 	logger?: BasicLogger,
+	contextWindow?: number,
 ): LanguageModelV2 {
-	const runtimeConfig = resolveClaudeWebV2Config();
+	// Re-resolved on every turn, not captured once: `/profile` can switch the
+	// active browser profile between turns, which changes the user-data-dir,
+	// the debug port and the chat registry. A model built before the switch
+	// would otherwise keep driving the old profile's Chrome.
+	let runtimeConfig = resolveClaudeWebV2Config();
+	runtimeConfig.contextWindow = contextWindow;
 
 	const debugLog = (msg: string) => {
 		if (runtimeConfig.debug) logger?.debug(`[claude-web] ${msg}`);
@@ -1152,13 +1757,31 @@ function createClaudeWebModel(
 
 	// Shared by doGenerate/doStream (mirrors deepseek-web-v2's doCompletion):
 	// drives the CDP session, sends the prompt, captures + parses the SSE
-	// body, and recovers `<tool>` calls the model emitted — one code path so
+	// body, and recovers `<tool>` calls the model emitted â€” one code path so
 	// both entry points behave identically instead of doStream being a thin,
 	// divergent wrapper around doGenerate.
 	async function runCompletion(
 		options: LanguageModelV2CallOptions,
 	): Promise<ClaudeCompletionResult> {
+		runtimeConfig = resolveClaudeWebV2Config();
 		debugLog("runCompletion called");
+
+		// A reply the user pasted back with `/paste` after a network error ate
+		// the real one. Short-circuit before touching the browser: the text is
+		// already the model's answer, it just needs the same tool parsing a
+		// captured reply gets.
+		const injected = consumePendingInjectedReply("claude-web");
+		if (injected) {
+			debugLog(`Using pasted reply (${injected.length} chars)`);
+			return parseCapturedReply(injected, options, {
+				inputTokens: 0,
+				outputTokens: 0,
+				totalTokens: 0,
+			});
+		}
+
+		// Cancelled while queued — do not open a browser for a dead turn.
+		throwIfAborted(options.abortSignal);
 
 		const cdp = await connectBrowser(runtimeConfig);
 
@@ -1181,11 +1804,32 @@ function createClaudeWebModel(
 			}
 		}
 
-		const attachResult = await cdp.send("Target.attachToTarget", {
-			targetId: pageTarget.targetId,
-			flatten: true,
-		});
-		const cdpSessionId = attachResult.sessionId;
+		// Reuse the already-attached session for this page target when we can.
+		// The page target + its CDP session stay alive across turns, so
+		// re-attaching every turn (and re-enabling the Network domain) was what
+		// dropped the completion response on the very first message.
+		let cdpSessionId: string | null = activeClaudeCdpSessionId;
+		if (
+			!cdpSessionId ||
+			activeClaudeTargetId !== pageTarget.targetId ||
+			!cdp.isOpen()
+		) {
+			const attachResult = await cdp.send("Target.attachToTarget", {
+				targetId: pageTarget.targetId,
+				flatten: true,
+			});
+			const newSessionId = attachResult.sessionId as string;
+			cdpSessionId = newSessionId;
+			activeClaudeTargetId = pageTarget.targetId;
+			activeClaudeCdpSessionId = newSessionId;
+			// A brand-new session needs the Network domain enabled fresh.
+			claudeNetworkEnabledSessions.delete(newSessionId);
+		}
+		if (!cdpSessionId) {
+			throw new Error(
+				"[claude-web] failed to attach a CDP session to the Claude page",
+			);
+		}
 
 		// Chat continuity: this CLI conversation is keyed by its first user
 		// message. A fresh key (no mapped Claude chat yet) means this call opens
@@ -1199,10 +1843,14 @@ function createClaudeWebModel(
 		const chatKey = resolveChatKey("claude-web", () =>
 			chatKeyFromPrompt(options.prompt),
 		);
-		const existingClaudeSession = lookupClaudeChatSession(
+		let existingClaudeSession = lookupClaudeChatSession(
 			runtimeConfig.chatsFile,
 			chatKey,
 		);
+		if (!existingClaudeSession && chatKey.length !== 16) {
+			existingClaudeSession = chatKey;
+			recordClaudeChatSession(runtimeConfig.chatsFile, chatKey, chatKey);
+		}
 		const isNewChat = existingClaudeSession === undefined;
 
 		const forceReload = consumeClaudeThrottleRecoveryReload();
@@ -1219,7 +1867,7 @@ function createClaudeWebModel(
 		await waitForComposerReady(cdp, cdpSessionId, runtimeConfig, logger);
 
 		// Re-inject the system prompt only when this turn opens a brand-new
-		// Claude chat — every other turn in the SAME chat sends no system
+		// Claude chat â€” every other turn in the SAME chat sends no system
 		// prompt at all, since the web client already has it server-side.
 		// (Unlike deepseek-web-v2 this has no token-threshold re-injection:
 		// Claude's SSE responses don't expose an equivalent cumulative
@@ -1242,17 +1890,49 @@ function createClaudeWebModel(
 
 		debugLog(`Sending prompt (${promptText.length} chars)`);
 
-		const result = await sendAndCapture(
-			cdp,
-			cdpSessionId,
-			promptText,
-			runtimeConfig,
-			logger,
-			{},
-			functionTools.length > 0,
-		);
+		const MAX_TOOL_REJECTION_RETRIES = 2;
 
-		debugLog(`Received response (${result.text.length} chars)`);
+		// Bounded retry: when EVERY tool call in a reply is rejected, resend the
+		// rejection as a real follow-up message in the SAME chat so the model
+		// actually sees why we refused it and can correct itself. Capped so a
+		// persistently broken reply can't loop forever.
+		let sendPrompt = promptText;
+		let result: Awaited<ReturnType<typeof sendAndCapture>>;
+		let parsed: ClaudeCompletionResult;
+		for (let attempt = 0; ; attempt++) {
+			result = await sendAndCapture(
+				cdp,
+				cdpSessionId,
+				sendPrompt,
+				runtimeConfig,
+				logger,
+				{},
+				functionTools.length > 0,
+				options.abortSignal,
+			);
+
+			debugLog(`Received response (${result.text.length} chars)`);
+
+			parsed = parseCapturedReply(
+				result.text,
+				options,
+				result.usage,
+				result.askUserInput,
+			);
+			if (
+				parsed.toolCalls.length === 0 &&
+				parsed.retryPrompt &&
+				attempt < MAX_TOOL_REJECTION_RETRIES
+			) {
+				logger?.log(
+					`[claude-web] all tool calls rejected, resending correction into chat (attempt ${attempt + 1}/${MAX_TOOL_REJECTION_RETRIES})`,
+					{ severity: "warn" },
+				);
+				sendPrompt = parsed.retryPrompt;
+				continue;
+			}
+			break;
+		}
 
 		// After sending, the SPA routes to `/c/<id>`; capture it so the next
 		// turn (or a resume) can reopen this same Claude chat.
@@ -1262,46 +1942,7 @@ function createClaudeWebModel(
 			recordClaudeChatSession(runtimeConfig.chatsFile, chatKey, claudeSession);
 		}
 
-		if (functionTools.length === 0) {
-			return { text: result.text, toolCalls: [], usage: result.usage };
-		}
-
-		const toolNames = functionTools.map((t) => t.name);
-		const { cleanedContent, toolCalls } = parseDeepSeekToolCalls(
-			result.text,
-			toolNames,
-		);
-		const looseCalls =
-			toolCalls.length === 0
-				? parseLooseDeepSeekToolCalls(result.text, toolNames)
-				: toolCalls;
-		if (looseCalls.length > 0) {
-			const { tools: validatedCalls, retryPrompt } =
-				validateToolCalls(looseCalls);
-			const displayText = retryPrompt
-				? `${cleanedContent}\n\n${retryPrompt}`.trim()
-				: cleanedContent;
-			return {
-				text: displayText,
-				toolCalls: validatedCalls,
-				usage: result.usage,
-			};
-		}
-
-		// The web model often ignores the `<tool>` contract and answers with
-		// plain text (a plan, code fences, install commands). Convert the
-		// visible structure of the reply into real tool calls so the agent
-		// actually executes them, same as deepseek-web-v2's fallback.
-		const fallback = parseFallbackToolUses(
-			cleanedContent,
-			lastUserText(options.prompt),
-			toolNames,
-		);
-		return {
-			text: fallback.cleanedText,
-			toolCalls: fallback.toolUses,
-			usage: result.usage,
-		};
+		return parsed;
 	}
 
 	function finishReasonFor(
@@ -1393,15 +2034,17 @@ function createClaudeWebModel(
 	return provider;
 }
 
-// ── Provider factory ──────────────────────────────────────────────────────────
+// â”€â”€ Provider factory â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
 export function createClaudeWebProvider(
 	_config: GatewayResolvedProviderConfig,
 	context?: GatewayProviderContext,
 ): ProviderFactoryResult {
 	const logger = context?.logger;
+	const contextWindow = context?.model?.contextWindow;
 	return {
-		model: (modelId: string) => createClaudeWebModel(modelId, logger),
+		model: (modelId: string) =>
+			createClaudeWebModel(modelId, logger, contextWindow),
 	};
 }
 
@@ -1409,7 +2052,7 @@ export function createClaudeWebProviderFactory() {
 	return { id: "claude-web", create: createClaudeWebProvider };
 }
 
-// ── Module factory (used by ai-sdk.ts) ────────────────────────────────────────
+// â”€â”€ Module factory (used by ai-sdk.ts) â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
 export function createClaudeWebProviderModule(
 	config: GatewayResolvedProviderConfig,

@@ -16,6 +16,7 @@
  */
 
 import { jsonrepair } from "jsonrepair";
+import { scanToolBlocks } from "./tool-block-scanner";
 
 /**
  * A single successfully-parsed `<tool>` call.
@@ -43,13 +44,6 @@ export interface ParseResult {
 	/** Raw inner text of the `<tool>` block (without the surrounding tags). */
 	raw?: string;
 }
-
-/**
- * Match every `<tool>...</tool>` block. `[\\s\\S]*?` is non-greedy so adjacent
- * blocks don't swallow each other; `gi` makes it case-insensitive + global.
- * Allows whitespace around the `tool` tag name: `< tool>`, `<tool >`, `</ tool>`, `</tool >`.
- */
-const TOOL_BLOCK_RE = /<\s*tool\s*>([\s\S]*?)<\s*\/\s*tool\s*>/gi;
 
 /**
  * Match a malformed opening tag where `>` is missing: `<tool { ...`
@@ -82,7 +76,7 @@ function stripMarkdownFences(raw: string): string {
  * `{ "name": string, "arguments": object }`. Returns a `ParseResult`.
  */
 function normalizeJsonKeySeparators(text: string): string {
-	return text.replace(/"([a-zA-Z0-9_]+)"\s*>\s*(?=["\[\{])/g, '"$1": ');
+	return text.replace(/"([a-zA-Z0-9_]+)"\s*>\s*(?=["[{])/g, '"$1": ');
 }
 
 function parseToolJson(body: string): ParseResult {
@@ -178,16 +172,18 @@ export function extractToolCalls(rawResponse: string): Array<ParseResult> {
 
 	const results: ParseResult[] = [];
 
-	// First, collect all proper <tool>...</tool> blocks.
-	TOOL_BLOCK_RE.lastIndex = 0;
+	// First, collect all proper <tool>...</tool> blocks. The extent of each one
+	// comes from a string-aware scan of its JSON envelope rather than from the
+	// first `</tool>` in the text — a payload may contain that tag verbatim.
+	// See tool-block-scanner.ts.
 	const properMatches: Array<{ start: number; end: number; body: string }> = [];
-	let match;
-	while ((match = TOOL_BLOCK_RE.exec(rawResponse)) !== null) {
-		const start = match.index;
-		const end = match.index + match[0].length;
-		const body = match[1] ?? "";
-		properMatches.push({ start, end, body });
-		results.push(parseToolJson(body));
+	for (const block of scanToolBlocks(rawResponse)) {
+		properMatches.push({
+			start: block.start,
+			end: block.end,
+			body: block.body,
+		});
+		results.push(parseToolJson(block.body));
 	}
 
 	// Build intervals for proper blocks to avoid overlapping with malformed detection.
@@ -211,7 +207,6 @@ export function extractToolCalls(rawResponse: string): Array<ParseResult> {
 		}
 	}
 
-
 	// Never fail the caller because of a stray block; surface a warning instead.
 	const failures = results.filter((r) => !r.ok);
 	if (failures.length > 0) {
@@ -225,15 +220,20 @@ export function extractToolCalls(rawResponse: string): Array<ParseResult> {
 	// If the response contains '<tool' but no valid blocks were extracted, the model
 	// likely attempted a tool call with malformed syntax. Provide explicit feedback.
 	if (results.length === 0 && /<tool/i.test(rawResponse)) {
-		let errorMsg = "Detected '<tool' in the response but no complete <tool>...</tool> block was found. ";
+		let errorMsg =
+			"Detected '<tool' in the response but no complete <tool>...</tool> block was found. ";
 		if (/<tool\s+[^>]*$/.test(rawResponse)) {
-			errorMsg = "Malformed tool tag: missing '>' after '<tool'. Expected format: <tool>{\"name\":\"...\",\"arguments\":{...}}</tool>";
+			errorMsg =
+				'Malformed tool tag: missing \'>\' after \'<tool\'. Expected format: <tool>{"name":"...","arguments":{...}}</tool>';
 		} else if (/<tool[^>]*>[^<]*$/.test(rawResponse)) {
-			errorMsg = "Unclosed tool tag: found '<tool>' but no matching '</tool>' closing tag. Expected format: <tool>{\"name\":\"...\",\"arguments\":{...}}</tool>";
+			errorMsg =
+				'Unclosed tool tag: found \'<tool>\' but no matching \'</tool>\' closing tag. Expected format: <tool>{"name":"...","arguments":{...}}</tool>';
 		} else if (/<tool[^>]*>\s*$/.test(rawResponse)) {
-			errorMsg = "Incomplete tool tag: missing JSON body after '<tool>'. Expected format: <tool>{\"name\":\"...\",\"arguments\":{...}}</tool>";
+			errorMsg =
+				'Incomplete tool tag: missing JSON body after \'<tool>\'. Expected format: <tool>{"name":"...","arguments":{...}}</tool>';
 		} else {
-			errorMsg += "Please use the exact format: <tool>{\"name\":\"tool_name\",\"arguments\":{...}}</tool>";
+			errorMsg +=
+				'Please use the exact format: <tool>{"name":"tool_name","arguments":{...}}</tool>';
 		}
 		results.push({
 			ok: false,

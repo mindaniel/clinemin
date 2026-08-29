@@ -61,6 +61,32 @@ export function resetContinuationNote(): void {
 }
 
 /**
+ * Carrier text for the turn `/paste` starts.
+ *
+ * `/paste` queues a reply the user copied out of the browser and then needs a
+ * turn for the provider to consume it in. The hub rejects an empty prompt, so
+ * the turn carries this text — but the model never answers it (the queued reply
+ * short-circuits the request), and it is not something the user typed. It lives
+ * here beside the continuation note because both are synthetic user messages
+ * the web providers must keep out of `Previous user message:`; without that, the
+ * next turn of the tool loop sends "Continue with the reply provided above." to
+ * the chat in place of the user's real instruction.
+ *
+ * The CLI `/paste` command imports this constant, so the two never drift.
+ */
+export const PASTE_CARRIER_PROMPT = "Continue with the reply provided above.";
+
+/**
+ * True for a user message the runtime wrote rather than the user: the
+ * continuation note or the `/paste` carrier. Prompt builders use this to find
+ * the last thing the user actually typed.
+ */
+export function isSyntheticUserText(text: string): boolean {
+	const trimmed = text.trim();
+	return isContinuationNoteText(trimmed) || trimmed === PASTE_CARRIER_PROMPT;
+}
+
+/**
  * True for text that is the runtime's synthetic continuation note — either the
  * currently active one or the built-in default (see the note on resumed
  * sessions above).

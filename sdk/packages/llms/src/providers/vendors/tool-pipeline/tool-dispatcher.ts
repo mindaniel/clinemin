@@ -85,7 +85,10 @@ function validateSingleTool(
 			// error) are sanitized to U+FFFD during validation. Write the sanitized
 			// string back so the surrogate never reaches the executor's UTF-8
 			// encoder downstream (`JSON.stringify` / file writes).
-			if (validation.sanitized !== undefined && validation.sanitized !== python) {
+			if (
+				validation.sanitized !== undefined &&
+				validation.sanitized !== python
+			) {
 				return {
 					ok: true,
 					value: {

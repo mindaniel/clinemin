@@ -29,7 +29,9 @@ export type ProviderFamily =
 	| "gemini-web"
 	| "sap-ai-core"
 	| "deepseek-web"
-	| "deepseek-web-v2";
+	| "deepseek-web-v2"
+	| "kimi-web"
+	| "grok-web";
 
 export type ProviderApiLine = "china" | "international";
 

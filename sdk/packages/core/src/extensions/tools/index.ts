@@ -198,6 +198,13 @@ export function createBuiltinTools(
 		bash: {
 			...executorOptions.bash,
 			shell,
+			// The tool-level `bashTimeoutMs` must also reach the shell
+			// executor's own internal timeout. The executor kills the child
+			// process independently of the tool wrapper, so raising only the
+			// tool wrapper (e.g. for claude-web) would still die at the
+			// executor's 60s default.
+			timeoutMs:
+				executorOptions.bash?.timeoutMs ?? toolsConfig.bashTimeoutMs,
 		},
 	};
 

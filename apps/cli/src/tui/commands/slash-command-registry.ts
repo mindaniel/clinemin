@@ -27,6 +27,7 @@ export type LocalSlashCommandName =
 	| "findchat"
 	| "paste"
 	| "note"
+	| "profile"
 	| "quit"
 	| "help";
 
@@ -114,11 +115,16 @@ const TUI_LOCAL_COMMANDS: Array<{
 	},
 	{
 		name: "paste",
-		description: "Use the clipboard as the model reply (web provider recovery)",
+		description:
+			"Preview the clipboard, then use it as the model reply (web provider recovery)",
 	},
 	{
 		name: "note",
 		description: "Show or set this project's post-tool continuation note",
+	},
+	{
+		name: "profile",
+		description: "Switch the browser profile web providers log in with",
 	},
 	{
 		name: "help",
@@ -147,6 +153,7 @@ const SYSTEM_COMMAND_ORDER = [
 	"findchat",
 	"paste",
 	"note",
+	"profile",
 	"help",
 	"quit",
 ] satisfies ReadonlyArray<LocalSlashCommandName | "team">;

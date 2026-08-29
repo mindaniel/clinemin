@@ -1,5 +1,5 @@
 import type { LanguageModelV2Prompt } from "@ai-sdk/provider";
-import { isContinuationNoteText } from "./continuation-note";
+import { isSyntheticUserText } from "./continuation-note";
 
 /**
  * Keeps the user's instruction out of every single web-chat turn.
@@ -17,7 +17,8 @@ import { isContinuationNoteText } from "./continuation-note";
  * ## Why the key is not simply "the last user message"
  *
  * On an iteration turn the LAST user message is the runtime's synthetic
- * continuation note (see `continuation-note.ts`), not anything the user typed.
+ * continuation note (see `continuation-note.ts`) or the `/paste` carrier, not
+ * anything the user typed.
  * Keying the dedup on it means the key flips from the typed text to the note on
  * the first iteration, so the instruction goes out a second time before the
  * comparison finally settles. Skipping continuation notes fixes that.
@@ -46,7 +47,7 @@ export function realUserMessageKey(prompt: LanguageModelV2Prompt): string {
 	for (const message of prompt) {
 		if (message.role !== "user") continue;
 		const text = messageText(message);
-		if (!text || isContinuationNoteText(text)) continue;
+		if (!text || isSyntheticUserText(text)) continue;
 		count += 1;
 		latest = text;
 	}

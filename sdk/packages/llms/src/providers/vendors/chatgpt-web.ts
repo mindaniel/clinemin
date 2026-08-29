@@ -34,27 +34,31 @@ import {
 import {
 	buildLeanConversation,
 	computeSendDelay,
-	continuationLabel,
+	currentUserLabel,
 	isRateLimitText,
 	isSameChatLocation,
 	parseFallbackToolUses,
 } from "./deepseek-web-v2";
 import {
+	abortableSleep,
+	abortRace,
+	throwIfAborted,
+} from "./tool-pipeline/abort";
+import {
 	browserNotFoundMessage,
 	findChromePath,
 } from "./tool-pipeline/browser-path";
 import { registerLaunchedBrowser } from "./tool-pipeline/browser-processes";
+import { resolveActiveProfilePaths } from "./tool-pipeline/browser-profiles";
 import { resolveChatKey } from "./tool-pipeline/chat-target";
-import {
-	realUserMessageKey,
-	stripPreviousUserBlock,
-} from "./tool-pipeline/previous-user-dedupe";
+import { consumePendingInjectedReply } from "./tool-pipeline/injected-reply";
+import { parseInvokeStyleToolCalls } from "./tool-pipeline/invoke-parser";
+import { stripPreviousUserBlock } from "./tool-pipeline/previous-user-dedupe";
 import { validateToolCalls } from "./tool-pipeline/tool-dispatcher";
 import type { ProviderFactoryResult } from "./types";
 
 const CONFIG_DIR = path.join(os.homedir(), ".cline", "chatgpt-web");
 const CONFIG_FILE = path.join(CONFIG_DIR, "config.json");
-const DEFAULT_CHATS_FILE = path.join(CONFIG_DIR, "chats.json");
 const CHATGPT_WEB_URL = "https://chatgpt.com/";
 const CHATGPT_API_ENDPOINT = "/backend-api/f/conversation";
 
@@ -129,12 +133,19 @@ function readConfigFile(): Partial<ChatGPTWebV2RuntimeConfig> {
 
 export function resolveChatGPTWebV2Config(): ChatGPTWebV2RuntimeConfig {
 	const fileConfig = readConfigFile();
+	// The active named profile (`/profile`) decides which Chrome user-data-dir,
+	// debug port and chat registry this provider uses, so one provider can be
+	// driven with several logins. Env vars and config.json still win over it.
+	const profile = resolveActiveProfilePaths(CONFIG_DIR, DEFAULT_DEBUG_PORT);
 	const port =
 		Number(process.env.CHATGPT_WEB_DEBUG_PORT ?? fileConfig.debugPort) ||
-		DEFAULT_DEBUG_PORT;
+		profile.debugPort;
 	return {
 		chromePath: process.env.CHATGPT_WEB_CHROME_PATH || fileConfig.chromePath,
-		profileDir: process.env.CHATGPT_WEB_PROFILE_DIR || fileConfig.profileDir,
+		profileDir:
+			process.env.CHATGPT_WEB_PROFILE_DIR ||
+			fileConfig.profileDir ||
+			profile.profileDir,
 		debugPort: port,
 		headless:
 			process.env.CHATGPT_WEB_HEADLESS !== undefined
@@ -160,7 +171,7 @@ export function resolveChatGPTWebV2Config(): ChatGPTWebV2RuntimeConfig {
 		chatsFile:
 			process.env.CHATGPT_WEB_CHATS_FILE ||
 			fileConfig.chatsFile ||
-			DEFAULT_CHATS_FILE,
+			profile.chatsFile,
 		minSendDelayMs:
 			Number(
 				process.env.CHATGPT_WEB_MIN_SEND_DELAY_MS ?? fileConfig.minSendDelayMs,
@@ -358,6 +369,18 @@ async function connectBrowser(
 	const key = `${config.debugPort}`;
 	if (activeCdp && activeCdpKey === key && activeCdp.isOpen()) {
 		return activeCdp;
+	}
+	// A different key means a different browser — `/profile` switched the
+	// user-data-dir and with it the debug port. Drop the old socket rather than
+	// leaking it; the Chrome behind it stays up so switching back is instant.
+	if (activeCdp && activeCdpKey !== key) {
+		try {
+			activeCdp.close();
+		} catch {
+			// Already gone; nothing to release.
+		}
+		activeCdp = null;
+		activeCdpKey = null;
 	}
 
 	const connectTimeoutMs = Math.max(config.launchTimeoutMs, 30000);
@@ -1037,6 +1060,7 @@ async function sendAndCapture(
 	logger?: BasicLogger,
 	sendOptions?: { think?: boolean },
 	isToolTurn = false,
+	signal?: AbortSignal,
 ): Promise<{
 	text: string;
 	finishReason: LanguageModelV2FinishReason;
@@ -1108,7 +1132,7 @@ async function sendAndCapture(
 		debugLog(
 			`pacing: waiting ${sendDelay}ms before send (toolTurn=${String(isToolTurn)})`,
 		);
-		await sleep(sendDelay);
+		await abortableSleep(sendDelay, signal);
 
 		await cdp.send(
 			"Runtime.evaluate",
@@ -1120,10 +1144,19 @@ async function sendAndCapture(
 			cdpSessionId,
 		);
 
+		// A cancelled turn has to stop waiting here. Until this returns the CLI
+		// still counts the turn as running and refuses the next message, so
+		// without the abort in this race Escape looked like it worked and then
+		// the input stayed dead until the response timeout fired minutes later.
+		const cancelled = abortRace(signal);
 		const timeoutPromise = new Promise<void>((resolve) => {
 			setTimeout(resolve, config.responseTimeoutMs);
 		});
-		await Promise.race([bodyCaptured, timeoutPromise]);
+		try {
+			await Promise.race([bodyCaptured, timeoutPromise, cancelled.promise]);
+		} finally {
+			cancelled.dispose();
+		}
 
 		if (!capturedBody) {
 			// Distinguish a real timeout (the body never arrived) from a
@@ -1198,6 +1231,13 @@ interface ChatGPTCompletionResult {
 	text: string;
 	toolCalls: { name: string; arguments: Record<string, unknown> }[];
 	usage: { inputTokens: number; outputTokens: number; totalTokens: number };
+	/**
+	 * Set when every tool call in the reply was rejected (e.g. invalid Python
+	 * in an `editor` call). It is OUR commentary on what the model typed, so
+	 * the model never sees it unless we send it back into the chat — the web
+	 * client's server-side history has no idea we rejected anything.
+	 */
+	retryPrompt?: string;
 }
 
 /**
@@ -1220,7 +1260,7 @@ function buildChatGPTPrompt(
 	const promptOptions = {
 		historyWindow: 10,
 		userLabel: "Previous user message",
-		lastUserLabel: continuationLabel(conversation),
+		lastUserLabel: currentUserLabel(conversation),
 		toolResultLabel: "Tool result",
 	};
 	if (
@@ -1234,21 +1274,94 @@ function buildChatGPTPrompt(
 	return messagesToPrompt(conversation, promptOptions);
 }
 
+/**
+ * Turn a finished reply into visible text plus tool calls.
+ *
+ * Two callers hand us a reply string: the normal capture path, and `/paste`,
+ * where the user copied the reply out of the browser because a network error
+ * ate ours. Both need the same parse ladder, so they run the same code.
+ */
+function parseCapturedReply(
+	text: string,
+	options: LanguageModelV2CallOptions,
+	usage: ChatGPTCompletionResult["usage"],
+): ChatGPTCompletionResult {
+	const functionTools = (options.tools ?? []).filter(
+		(tool): tool is LanguageModelV2FunctionTool => tool.type === "function",
+	);
+	if (functionTools.length === 0) {
+		return { text, toolCalls: [], usage };
+	}
+
+	const toolNames = functionTools.map((t) => t.name);
+	const { cleanedContent, toolCalls } = parseDeepSeekToolCalls(text, toolNames);
+	const looseCalls =
+		toolCalls.length === 0
+			? parseLooseDeepSeekToolCalls(text, toolNames)
+			: toolCalls;
+	if (looseCalls.length > 0) {
+		const { tools: validatedCalls, retryPrompt } =
+			validateToolCalls(looseCalls);
+		return {
+			text: retryPrompt
+				? `${cleanedContent}
+
+${retryPrompt}`.trim()
+				: cleanedContent,
+			toolCalls: validatedCalls,
+			usage,
+			retryPrompt,
+		};
+	}
+
+	// Anthropic-style `<invoke>` bodies, which every big model reaches for
+	// under load. See tool-pipeline/invoke-parser.ts.
+	const invoked = parseInvokeStyleToolCalls(text, toolNames);
+	if (invoked.toolCalls.length > 0) {
+		const { tools: validatedInvoked, retryPrompt } = validateToolCalls(
+			invoked.toolCalls,
+		);
+		return {
+			text: retryPrompt
+				? `${invoked.cleanedContent}
+
+${retryPrompt}`.trim()
+				: invoked.cleanedContent,
+			toolCalls: validatedInvoked,
+			usage,
+			retryPrompt,
+		};
+	}
+
+	// The web model often ignores the `<tool>` contract and answers with
+	// plain text (a plan, code fences, install commands). Convert the visible
+	// structure of the reply into real tool calls so the agent actually
+	// executes them, same as deepseek-web-v2's fallback.
+	const fallback = parseFallbackToolUses(
+		cleanedContent,
+		lastUserText(options.prompt),
+		toolNames,
+	);
+	return {
+		text: fallback.cleanedText,
+		toolCalls: fallback.toolUses,
+		usage,
+	};
+}
+
 function createChatGPTWebModel(
 	modelId: string,
 	logger?: BasicLogger,
 ): LanguageModelV2 {
-	const runtimeConfig = resolveChatGPTWebV2Config();
+	// Re-resolved on every turn, not captured once: `/profile` can switch the
+	// active browser profile between turns, which changes the user-data-dir,
+	// the debug port and the chat registry. A model built before the switch
+	// would otherwise keep driving the old profile's Chrome.
+	let runtimeConfig = resolveChatGPTWebV2Config();
 
 	const debugLog = (msg: string) => {
 		if (runtimeConfig.debug) logger?.debug(`[chatgpt-web] ${msg}`);
 	};
-
-	// De-dup: if the last user-authored message is identical to the one
-	// already sent (the agent is iterating after a tool call and the user
-	// hasn't typed anything new), drop the stale "Previous user message:"
-	// block so it isn't re-sent every turn. Mirrors deepseek-web-v2.
-	let lastSentUserMessage = "";
 
 	// Shared by doGenerate/doStream (mirrors deepseek-web-v2's doCompletion):
 	// drives the CDP session, sends the prompt, captures + parses the SSE
@@ -1258,7 +1371,25 @@ function createChatGPTWebModel(
 	async function runCompletion(
 		options: LanguageModelV2CallOptions,
 	): Promise<ChatGPTCompletionResult> {
+		runtimeConfig = resolveChatGPTWebV2Config();
 		debugLog("runCompletion called");
+
+		// A reply the user pasted back with `/paste` after a network error ate
+		// the real one. Short-circuit before touching the browser: the text is
+		// already the model's answer, it just needs the same tool parsing a
+		// captured reply gets.
+		const injected = consumePendingInjectedReply("chatgpt-web");
+		if (injected) {
+			debugLog(`Using pasted reply (${injected.length} chars)`);
+			return parseCapturedReply(injected, options, {
+				inputTokens: 0,
+				outputTokens: 0,
+				totalTokens: 0,
+			});
+		}
+
+		// Cancelled while queued — do not open a browser for a dead turn.
+		throwIfAborted(options.abortSignal);
 
 		const cdp = await connectBrowser(runtimeConfig);
 
@@ -1321,10 +1452,14 @@ function createChatGPTWebModel(
 		const chatKey = resolveChatKey("chatgpt-web", () =>
 			chatKeyFromPrompt(options.prompt),
 		);
-		const existingChatGPTSession = lookupChatGPTChatSession(
+		let existingChatGPTSession = lookupChatGPTChatSession(
 			runtimeConfig.chatsFile,
 			chatKey,
 		);
+		if (!existingChatGPTSession && chatKey.length !== 16) {
+			existingChatGPTSession = chatKey;
+			recordChatGPTChatSession(runtimeConfig.chatsFile, chatKey, chatKey);
+		}
 		const isNewChat = existingChatGPTSession === undefined;
 
 		const forceReload = consumeChatGPTThrottleRecoveryReload();
@@ -1348,15 +1483,13 @@ function createChatGPTWebModel(
 		// accumulated-context figure to gate that on.)
 		let promptText = buildChatGPTPrompt(options.prompt, isNewChat, isNewChat);
 
-		// Key on the last message the USER actually typed, not the last user
-		// message: on an iteration turn that is the runtime's synthetic
-		// continuation note, which would flip the key and let the instruction
-		// go out one extra time. See `tool-pipeline/previous-user-dedupe.ts`.
-		const currentUserText = realUserMessageKey(options.prompt);
-		if (currentUserText && currentUserText === lastSentUserMessage) {
-			promptText = stripPreviousUserBlock(promptText);
-		}
-		lastSentUserMessage = currentUserText;
+		// The web chat is stateful: everything the user typed is already in it.
+		// The current instruction still goes out — `messagesToPrompt` labels it
+		// `User:` (or `Note:` on an iteration turn) — but every OLDER
+		// `Previous user message:` block is dropped, so an instruction is sent
+		// once and never re-sent on each round of a tool loop. Anything the user
+		// wants restated goes through `/note`.
+		promptText = stripPreviousUserBlock(promptText);
 
 		const functionTools = (options.tools ?? []).filter(
 			(tool): tool is LanguageModelV2FunctionTool => tool.type === "function",
@@ -1364,17 +1497,44 @@ function createChatGPTWebModel(
 
 		debugLog(`Sending prompt (${promptText.length} chars)`);
 
-		const result = await sendAndCapture(
-			cdp,
-			cdpSessionId,
-			promptText,
-			runtimeConfig,
-			logger,
-			{},
-			functionTools.length > 0,
-		);
+		const MAX_TOOL_REJECTION_RETRIES = 2;
 
-		debugLog(`Received response (${result.text.length} chars)`);
+		// Bounded retry: when EVERY tool call in a reply is rejected, resend the
+		// rejection as a real follow-up message in the SAME chat so the model
+		// actually sees why we refused it and can correct itself. Capped so a
+		// persistently broken reply can't loop forever.
+		let sendPrompt = promptText;
+		let result: Awaited<ReturnType<typeof sendAndCapture>>;
+		let parsed: ChatGPTCompletionResult;
+		for (let attempt = 0; ; attempt++) {
+			result = await sendAndCapture(
+				cdp,
+				cdpSessionId,
+				sendPrompt,
+				runtimeConfig,
+				logger,
+				{},
+				functionTools.length > 0,
+				options.abortSignal,
+			);
+
+			debugLog(`Received response (${result.text.length} chars)`);
+
+			parsed = parseCapturedReply(result.text, options, result.usage);
+			if (
+				parsed.toolCalls.length === 0 &&
+				parsed.retryPrompt &&
+				attempt < MAX_TOOL_REJECTION_RETRIES
+			) {
+				logger?.log(
+					`[chatgpt-web] all tool calls rejected, resending correction into chat (attempt ${attempt + 1}/${MAX_TOOL_REJECTION_RETRIES})`,
+					{ severity: "warn" },
+				);
+				sendPrompt = parsed.retryPrompt;
+				continue;
+			}
+			break;
+		}
 
 		// After sending, the SPA routes to `/c/<id>`; capture it so the next
 		// turn (or a resume) can reopen this same ChatGPT chat.
@@ -1388,46 +1548,7 @@ function createChatGPTWebModel(
 			);
 		}
 
-		if (functionTools.length === 0) {
-			return { text: result.text, toolCalls: [], usage: result.usage };
-		}
-
-		const toolNames = functionTools.map((t) => t.name);
-		const { cleanedContent, toolCalls } = parseDeepSeekToolCalls(
-			result.text,
-			toolNames,
-		);
-		const looseCalls =
-			toolCalls.length === 0
-				? parseLooseDeepSeekToolCalls(result.text, toolNames)
-				: toolCalls;
-		if (looseCalls.length > 0) {
-			const { tools: validatedCalls, retryPrompt } =
-				validateToolCalls(looseCalls);
-			const displayText = retryPrompt
-				? `${cleanedContent}\n\n${retryPrompt}`.trim()
-				: cleanedContent;
-			return {
-				text: displayText,
-				toolCalls: validatedCalls,
-				usage: result.usage,
-			};
-		}
-
-		// The web model often ignores the `<tool>` contract and answers with
-		// plain text (a plan, code fences, install commands). Convert the
-		// visible structure of the reply into real tool calls so the agent
-		// actually executes them, same as deepseek-web-v2's fallback.
-		const fallback = parseFallbackToolUses(
-			cleanedContent,
-			lastUserText(options.prompt),
-			toolNames,
-		);
-		return {
-			text: fallback.cleanedText,
-			toolCalls: fallback.toolUses,
-			usage: result.usage,
-		};
+		return parsed;
 	}
 
 	function finishReasonFor(

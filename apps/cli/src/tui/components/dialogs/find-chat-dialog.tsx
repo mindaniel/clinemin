@@ -1,11 +1,12 @@
 import type { DeepSeekWebV2ChatEntry, QwenWebChatEntry } from "@cline/llms";
 import type { ChoiceContext } from "@opentui-ui/dialog";
 import { useDialogKeyboard } from "@opentui-ui/dialog/react";
-import { useState } from "react";
+import { useCallback, useState } from "react";
 import { palette } from "../../palette";
 import {
 	getSearchableListRowsWindow,
 	type SearchableItem,
+	type CreateSearchableItem,
 	useSearchableList,
 } from "../searchable-list";
 
@@ -17,6 +18,7 @@ export type WebChatEntry = DeepSeekWebV2ChatEntry | QwenWebChatEntry;
  * `sessionId`; Escape dismisses.
  *
  * Delete: press 'd' to mark a chat for deletion, then 'y' to confirm or 'n' to cancel.
+ * Import: type or paste a chat ID / URL into the search box to open it directly.
  */
 export function FindChatDialogContent(
 	props: ChoiceContext<string> & {
@@ -43,7 +45,28 @@ export function FindChatDialogContent(
 		searchText: `${chat.sessionId} ${chat.chatKey} ${chat.lastActive}`,
 	}));
 
-	const list = useSearchableList(items);
+	const createImportItem = useCallback<CreateSearchableItem>((search, baseItems) => {
+		if (!search) return null;
+		// Don't show the import action when the search matches an existing chat
+		const exists = baseItems.some((item) => item.key === search);
+		if (exists) return null;
+
+		// Try to extract a chat ID from a URL (DeepSeek / Qwen / ChatGPT / Claude patterns)
+		let extractedId = search.trim();
+		const urlMatch = search.match(/\/(?:a\/chat\/s|c|chat|s|share)\/([a-zA-Z0-9_-]+)/i);
+		if (urlMatch) {
+			extractedId = urlMatch[1];
+		}
+
+		return {
+			key: `__import__:${extractedId}`,
+			label: `Import Chat ID: ${extractedId}`,
+			section: "Action",
+			searchText: search,
+		};
+	}, []);
+
+	const list = useSearchableList(items, createImportItem);
 
 	useDialogKeyboard(async (key) => {
 		if (key.name === "escape") {
@@ -51,7 +74,10 @@ export function FindChatDialogContent(
 			return;
 		}
 		if (key.name === "return") {
-			if (list.selectedItem) resolve(list.selectedItem.key);
+			if (list.selectedItem) {
+				const key = list.selectedItem.key;
+				resolve(key.startsWith("__import__:") ? key.slice("__import__:".length) : key);
+			}
 			return;
 		}
 		// Delete flow
@@ -105,7 +131,7 @@ export function FindChatDialogContent(
 
 	const footerText = confirmDelete
 		? `Delete chat ${confirmDelete}? (y/n)`
-		: `d to delete, Enter to open, Esc to cancel`;
+		: `d to delete, Enter to open, paste ID to import, Esc to cancel`;
 
 	return (
 		<box flexDirection="column" gap={1}>
@@ -121,7 +147,7 @@ export function FindChatDialogContent(
 				<box border borderStyle="rounded" borderColor="gray" paddingX={1}>
 					<input
 						onInput={list.setSearch}
-						placeholder="Search chats... (Enter to open, Esc to cancel)"
+						placeholder="Search chats or paste chat ID/URL to import..."
 						flexGrow={1}
 						focused
 					/>
@@ -156,7 +182,10 @@ export function FindChatDialogContent(
 								flexDirection="row"
 								gap={1}
 								backgroundColor={isSel ? palette.selection : undefined}
-								onMouseDown={() => resolve(row.item.key)}
+								onMouseDown={() => {
+								const key = row.item.key;
+							resolve(key.startsWith("__import__:") ? key.slice("__import__:".length) : key);
+						}}
 								overflow="hidden"
 								height={1}
 							>

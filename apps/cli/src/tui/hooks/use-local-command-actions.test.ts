@@ -26,6 +26,7 @@ function makeActions(
 		findChat: vi.fn(async () => true),
 		pasteReply: vi.fn(async () => true),
 		setNote: vi.fn(() => true),
+		switchProfile: vi.fn(async () => true),
 		...overrides,
 	};
 }

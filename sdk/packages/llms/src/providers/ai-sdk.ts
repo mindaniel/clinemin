@@ -1223,6 +1223,18 @@ async function createProviderModule(
 			);
 			return createGeminiWebProviderModule(config, context);
 		}
+		case "kimi-web": {
+			const { createKimiWebProviderModule } = await import(
+				"./vendors/kimi-web"
+			);
+			return createKimiWebProviderModule(config, context);
+		}
+		case "grok-web": {
+			const { createGrokWebProviderModule } = await import(
+				"./vendors/grok-web"
+			);
+			return createGrokWebProviderModule(config, context);
+		}
 	}
 }
 

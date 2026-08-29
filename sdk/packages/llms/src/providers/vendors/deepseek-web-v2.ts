@@ -41,19 +41,74 @@ function detectMalformedToolTag(text: string): string | null {
 	return null;
 }
 
+function detectUnparsedToolBlock(text: string, toolNames: string[]): string | null {
+	const lower = text.toLowerCase();
+	const open = lower.indexOf("<tool");
+	if (open === -1) return null;
+	const example =
+		"<tool>" + JSON.stringify({ name: "tool_name", arguments: {} }) + "</tool>";
+	const close = lower.indexOf("</tool>", open);
+	if (close === -1) {
+		return (
+			"Tool call rejected: detected a <tool opening tag but could not find a complete </tool> body. Re-emit the block as exactly " +
+			example +
+			". Ensure every string is double-quoted, JSON string values do not contain literal newlines, and there are no trailing commas."
+		);
+	}
+	const innerStart = text.indexOf(">", open) + 1;
+	const inner = text.slice(innerStart, close).trim();
+	let parsed: unknown;
+	try {
+		parsed = JSON.parse(inner);
+	} catch {
+		parsed = undefined;
+	}
+	if (parsed) {
+		const record = parsed as Record<string, unknown>;
+		const usedName =
+			typeof record.name === "string"
+				? record.name
+				: typeof record.type === "string"
+					? record.type
+					: "unknown";
+		const available = toolNames.length > 0 ? toolNames.join(", ") : "none";
+		return (
+			"Tool call rejected: attempted tool " +
+			usedName +
+			" but it is not an available tool. Available tools: " +
+			available +
+			". Re-emit the block with a valid tool name: " +
+			example +
+			"."
+		);
+	}
+	try {
+		JSON.parse(inner);
+	} catch (error) {
+		const reason = error instanceof Error ? error.message : String(error);
+		return (
+			"Tool call rejected: the <tool> JSON could not be parsed. Reason: " +
+			reason +
+			". Re-emit as " +
+			example +
+			". JSON string values must not contain literal newlines (escape them instead), use double quotes, and avoid trailing commas."
+		);
+	}
+	return null;
+}
+
+import { isAbortError } from "./tool-pipeline/abort";
 import {
 	browserNotFoundMessage,
 	findChromePath,
 } from "./tool-pipeline/browser-path";
 import { registerLaunchedBrowser } from "./tool-pipeline/browser-processes";
+import { resolveActiveProfilePaths } from "./tool-pipeline/browser-profiles";
 import { resolveChatKey } from "./tool-pipeline/chat-target";
-import { isContinuationNoteText } from "./tool-pipeline/continuation-note";
+import { isSyntheticUserText } from "./tool-pipeline/continuation-note";
 import { consumePendingInjectedReply } from "./tool-pipeline/injected-reply";
 import { parseInvokeStyleToolCalls } from "./tool-pipeline/invoke-parser";
-import {
-	realUserMessageKey,
-	stripPreviousUserBlock,
-} from "./tool-pipeline/previous-user-dedupe";
+import { stripPreviousUserBlock } from "./tool-pipeline/previous-user-dedupe";
 import {
 	isToolCallStuckInThinking,
 	THINKING_MODE_NUDGE,
@@ -134,7 +189,6 @@ const DEFAULT_TOOL_PROMPT_THRESHOLD_CHARS = 20_000;
  * resumed/forked CLI chat reopens its original DeepSeek web conversation
  * (mirrors the `chat_sessions.json` in the reference `start_continue_chat.py`).
  */
-const DEFAULT_CHATS_FILE = path.join(CONFIG_DIR, "chats.json");
 
 /**
  * One-shot "recover from a throttle/block" signal. When DeepSeek rate-limited
@@ -224,14 +278,20 @@ function readConfigFile(): Partial<DeepSeekWebV2RuntimeConfig> {
  */
 export function resolveDeepSeekWebV2Config(): DeepSeekWebV2RuntimeConfig {
 	const fileConfig = readConfigFile();
+	// The active named profile (`/profile`) decides which Chrome user-data-dir,
+	// debug port and chat registry this provider uses, so one provider can be
+	// driven with several logins. Env vars and config.json still win over it.
+	const profile = resolveActiveProfilePaths(CONFIG_DIR, DEFAULT_DEBUG_PORT);
 	const port =
 		Number(process.env.DEEPSEEK_WEB_V2_DEBUG_PORT ?? fileConfig.debugPort) ||
-		DEFAULT_DEBUG_PORT;
+		profile.debugPort;
 	return {
 		chromePath:
 			process.env.DEEPSEEK_WEB_V2_CHROME_PATH || fileConfig.chromePath,
 		profileDir:
-			process.env.DEEPSEEK_WEB_V2_PROFILE_DIR || fileConfig.profileDir,
+			process.env.DEEPSEEK_WEB_V2_PROFILE_DIR ||
+			fileConfig.profileDir ||
+			profile.profileDir,
 		debugPort: port,
 		headless:
 			process.env.DEEPSEEK_WEB_V2_HEADLESS !== undefined
@@ -289,7 +349,7 @@ export function resolveDeepSeekWebV2Config(): DeepSeekWebV2RuntimeConfig {
 		chatsFile:
 			process.env.DEEPSEEK_WEB_V2_CHATS_FILE ||
 			fileConfig.chatsFile ||
-			DEFAULT_CHATS_FILE,
+			profile.chatsFile,
 	};
 }
 
@@ -870,6 +930,18 @@ async function connectBrowser(
 	if (activeCdp && activeCdpKey === key && activeCdp.isOpen()) {
 		return activeCdp;
 	}
+	// A different key means a different browser — `/profile` switched the
+	// user-data-dir and with it the debug port. Drop the old socket rather than
+	// leaking it; the Chrome behind it stays up so switching back is instant.
+	if (activeCdp && activeCdpKey !== key) {
+		try {
+			activeCdp.close();
+		} catch {
+			// Already gone; nothing to release.
+		}
+		activeCdp = undefined;
+		activeCdpKey = undefined;
+	}
 
 	const connectTimeoutMs = Math.max(config.launchTimeoutMs, 30_000);
 
@@ -1399,7 +1471,32 @@ async function streamCompletionFromPage(input: {
 			await sleep(100);
 		}
 		if (!sawTyped) {
-			throw new Error(
+			// The poll can miss a fast send: the script types and submits between
+			// two 100ms samples, so the textarea reads "" both times and we never
+			// observe the typed state — even though the message IS in the chat.
+			// Throwing here is what produced the "browser answered, terminal hung"
+			// reports, so confirm against the page before giving up: if the prompt's
+			// own tail is on screen, it was sent and the reply is on its way.
+			const tail = prompt.trim().slice(-80).replace(/\s+/g, " ").trim();
+			if (tail.length >= 16) {
+				const onPage = await cdp.send(
+					"Runtime.evaluate",
+					{
+						expression: `((document.body?.innerText ?? "").replace(/\\s+/g, " ").includes(${JSON.stringify(tail)}))`,
+						returnByValue: true,
+					},
+					sessionId,
+				);
+				sawTyped = onPage.result?.value === true;
+				if (sawTyped) {
+					debugLog(
+						"composer poll missed the send, but the prompt is on the page — treating as sent",
+					);
+				}
+			}
+		}
+		if (!sawTyped) {
+			throw new ComposerSendNotStartedError(
 				"DeepSeek Web v2: the message was not typed into the composer within 10s. " +
 					"If the Chrome window is showing a login, rate-limit or CAPTCHA page, resolve it and retry.",
 			);
@@ -1435,6 +1532,18 @@ async function streamCompletionFromPage(input: {
 
 	return result;
 }
+
+/**
+ * The prompt never reached the composer, so nothing was submitted.
+ *
+ * Retrying this by editing the previous user message is wrong: that resends an
+ * OLD turn on a new branch, which the page happily answers while our capture is
+ * still waiting for a reply to a message we never sent — the "the browser keeps
+ * sending, the terminal never gets a response" hang. The right recovery is to
+ * reload the chat and send the same prompt again, which cannot duplicate
+ * anything because nothing was submitted.
+ */
+class ComposerSendNotStartedError extends Error {}
 
 /**
  * Edit the last user message on the page by appending a period "." to the text.
@@ -1657,26 +1766,10 @@ async function runCompletion(input: {
 	// even if the URL already matches the target chat.
 	const existingDeepSeekSession = lookupChatSession(config.chatsFile, chatKey);
 	const forceReload = consumeThrottleRecoveryReload();
-	if (existingDeepSeekSession) {
-		await navigateDeepSeekChat(
-			cdp,
-			sessionId,
-			{
-				sessionId: existingDeepSeekSession,
-				fresh: false,
-			},
-			logger,
-			forceReload,
-		);
-	} else {
-		await navigateDeepSeekChat(
-			cdp,
-			sessionId,
-			{ fresh: true },
-			logger,
-			forceReload,
-		);
-	}
+	const chatTarget = existingDeepSeekSession
+		? { sessionId: existingDeepSeekSession, fresh: false }
+		: { fresh: true };
+	await navigateDeepSeekChat(cdp, sessionId, chatTarget, logger, forceReload);
 
 	await waitForComposerReady(cdp, sessionId, config, logger);
 
@@ -1727,11 +1820,32 @@ async function runCompletion(input: {
 			break;
 		} catch (err) {
 			lastError = err instanceof Error ? err : new Error(String(err));
+			// The user pressed Escape. Retrying would edit the last message and
+			// send it again — the browser keeps answering a turn the CLI already
+			// gave up on, and the CLI stays stuck as "running" until that reply
+			// lands. A cancelled turn is done; hand the abort up.
+			if (isAbortError(lastError) || signal?.aborted) {
+				throw lastError;
+			}
 			if (attempt < maxAttempts) {
 				logger?.log(
 					`[deepseek-web-v2] Error during completion (attempt ${attempt}/${maxAttempts}): ${lastError.message}`,
 					{ severity: "warn" },
 				);
+				if (lastError instanceof ComposerSendNotStartedError) {
+					// Nothing was submitted, so there is no message to edit — and
+					// editing the previous one would answer an old turn on a new
+					// branch while we wait for a reply that never comes. Reload the
+					// chat (the usual cause is a page left in a blocked or
+					// half-hydrated state) and send the same prompt again.
+					logger?.log(
+						"[deepseek-web-v2] the prompt never reached the composer — reloading the chat and resending",
+						{ severity: "warn" },
+					);
+					await navigateDeepSeekChat(cdp, sessionId, chatTarget, logger, true);
+					await waitForComposerReady(cdp, sessionId, config, logger);
+					continue;
+				}
 				const edited = await editLastUserMessage(cdp, sessionId, logger);
 				if (!edited) {
 					logger?.log("[deepseek-web-v2] Failed to edit message for retry", {
@@ -2000,13 +2114,14 @@ function messageText(message: LanguageModelV2Prompt[number]): string {
 	return typeof content === "string" ? content.trim() : "";
 }
 
-/** True for the runtime's synthetic post-tool continuation message. */
+/**
+ * True for a user message the runtime wrote rather than the user: the post-tool
+ * continuation note, or the carrier text `/paste` starts its turn with.
+ */
 function isToolContinuationMessage(
 	message: LanguageModelV2Prompt[number],
 ): boolean {
-	return (
-		message.role === "user" && isContinuationNoteText(messageText(message))
-	);
+	return message.role === "user" && isSyntheticUserText(messageText(message));
 }
 
 /**
@@ -2071,6 +2186,16 @@ export function buildLeanConversation(
 	const isContinuationTurn =
 		lastUserIndex > 0 && nonSystem[lastUserIndex - 1]?.role === "tool";
 
+	// A queued user message after a tool round: the synthetic continuation
+	// note sits between the tool result and the queued message, so the
+	// last-user predecessor is a USER (the note) instead of the tool result.
+	// Without this case the fallback branch below keeps only the queued
+	// message and drops the pending tool output the model still needs.
+	const isQueuedAfterToolTurn =
+		lastUserIndex > 1 &&
+		isToolContinuationMessage(nonSystem[lastUserIndex - 1]) &&
+		nonSystem[lastUserIndex - 2]?.role === "tool";
+
 	// Keep the last user message plus every tool result after it.
 	const kept: LanguageModelV2Prompt = [];
 	if (hasCompactionSummary && lastUserIndex > firstUserIndex) {
@@ -2090,6 +2215,19 @@ export function buildLeanConversation(
 			: prevUserIndex;
 		if (anchorIndex >= 0) kept.push(nonSystem[anchorIndex]);
 		for (let i = prevUserIndex + 1; i < nonSystem.length; i++) {
+			if (nonSystem[i].role === "tool") kept.push(nonSystem[i]);
+		}
+		kept.push(nonSystem[lastUserIndex]);
+	} else if (isQueuedAfterToolTurn) {
+		// Keep the pending tool output AND the queued message. The synthetic
+		// continuation note sits between them, so a regular continuation turn
+		// would never match (the last user's predecessor is the note, not the
+		// tool). Anchor to the nearest REAL user message before the note, keep
+		// every tool result that follows it, then append the queued message as
+		// the final turn so it is sent as the new ask instead of dropped.
+		const anchorIndex = findPriorRealUserIndex(nonSystem, lastUserIndex);
+		if (anchorIndex >= 0) kept.push(nonSystem[anchorIndex]);
+		for (let i = anchorIndex + 1; i < lastUserIndex; i++) {
 			if (nonSystem[i].role === "tool") kept.push(nonSystem[i]);
 		}
 		kept.push(nonSystem[lastUserIndex]);
@@ -2156,14 +2294,14 @@ export function buildPrompt(
 		return messagesToPrompt([systemMessage, ...conversation], {
 			historyWindow: 10,
 			userLabel: "Previous user message",
-			lastUserLabel: continuationLabel(conversation),
+			lastUserLabel: currentUserLabel(conversation),
 			toolResultLabel: "Tool result",
 		});
 	}
 	return messagesToPrompt(conversation, {
 		historyWindow: 10,
 		userLabel: "Previous user message",
-		lastUserLabel: continuationLabel(conversation),
+		lastUserLabel: currentUserLabel(conversation),
 		toolResultLabel: "Tool result",
 	});
 }
@@ -2175,12 +2313,42 @@ export function buildPrompt(
  * current directive — frame it as "Note:" instead of "Previous user message:"
  * (stale context). Any other final user message keeps the generic label.
  */
+/**
+ * Label for the final user message when it is the CURRENT directive.
+ *
+ * `continuationLabel` covers the runtime's synthetic "Use tool to continue..."
+ * note. This adds the other case: a turn whose last message is something the
+ * user just typed. That is a fresh ask, so it must not be labeled
+ * `Previous user message:` — every provider strips those blocks before
+ * sending, and stripping the current instruction would send a turn with
+ * nothing in it.
+ *
+ * A user message followed by tool results is the agent iterating, not a new
+ * ask: that keeps the stale label and is stripped.
+ */
+export function currentUserLabel(
+	conversation: LanguageModelV2Prompt,
+): string | undefined {
+	const continuation = continuationLabel(conversation);
+	if (continuation) return continuation;
+	return conversation[conversation.length - 1]?.role === "user"
+		? "User"
+		: undefined;
+}
+
 export function continuationLabel(
 	conversation: LanguageModelV2Prompt,
 ): string | undefined {
 	const last = conversation[conversation.length - 1];
 	const beforeLast = conversation[conversation.length - 2];
 	if (last?.role !== "user" || beforeLast?.role !== "tool") {
+		return undefined;
+	}
+	// Only the runtime's synthetic post-tool continuation note gets the "Note"
+	// label. A REAL user message queued right after a tool round must keep
+	// going out as a normal user message, not be relabeled (and then dropped
+	// by the provider's "Note:" cleaner) as if it were the synthetic note.
+	if (!isToolContinuationMessage(last)) {
 		return undefined;
 	}
 	return "Note";
@@ -2257,6 +2425,16 @@ function buildCompletionFromText(
 		};
 	}
 
+	const unparsedError = detectUnparsedToolBlock(text, toolNames);
+	if (unparsedError) {
+		return {
+			text: `${text}\n\n${unparsedError}`,
+			reasoning: "",
+			toolCalls: [],
+			usage,
+		};
+	}
+
 	const fallback = parseFallbackToolUses(
 		cleanedContent,
 		lastUserText(options.prompt),
@@ -2286,12 +2464,6 @@ function createDeepSeekWebV2Model(
 	let lastAccumulatedTokenUsage: number | undefined;
 	// Highest threshold already re-injected, so each threshold fires once.
 	let reinjectedThroughThreshold = 0;
-	// The text of the last user message we placed in a prompt, for dedup: when
-	// the agent iterates after a tool call and the user hasn't typed a NEW
-	// message, the same `Previous user message:` block would otherwise be
-	// re-sent every turn and confuse the model. We drop it once it's unchanged.
-	let lastSentUserMessage = "";
-
 	const doCompletion = async (
 		options: LanguageModelV2CallOptions,
 		onText?: (text: string) => void,
@@ -2311,7 +2483,7 @@ function createDeepSeekWebV2Model(
 		// already the model's answer, it just needs the same tool parsing a
 		// captured reply gets. No retry loop — a paste is a fixed string, so
 		// resending a correction into the chat would be meaningless here.
-		const injectedReply = consumePendingInjectedReply();
+		const injectedReply = consumePendingInjectedReply("deepseek-web-v2");
 		if (injectedReply) {
 			return buildCompletionFromText(injectedReply, options, functionTools);
 		}
@@ -2359,21 +2531,14 @@ function createDeepSeekWebV2Model(
 			// state, so it must not be re-sent.
 			isNewChat,
 		);
-		// Dedup: if the last user-authored message is identical to the one we
-		// already sent (the agent is iterating after a tool call and the user
-		// hasn't typed anything new), drop the stale `Previous user message:`
-		// block so it isn't re-sent over and over. Fresh tool results from this
-		// turn are still included because they change each iteration.
-		// Key on the last message the USER actually typed, not the last user
-		// message: on an iteration turn that is the runtime's synthetic
-		// continuation note, which would flip the key and let the instruction
-		// go out one extra time. See `tool-pipeline/previous-user-dedupe.ts`.
-		const currentUserText = realUserMessageKey(options.prompt);
-		let dedupedPrompt = prompt;
-		if (currentUserText && currentUserText === lastSentUserMessage) {
-			dedupedPrompt = stripPreviousUserBlock(prompt);
-		}
-		lastSentUserMessage = currentUserText;
+		// The web chat is stateful: everything the user typed is
+		// still in it, so an older `Previous user message:` block teaches the
+		// model nothing and grows the chat's context every round. The current
+		// instruction still goes out — `messagesToPrompt` labels it `User:`, or
+		// `Note:` on an iteration turn — and fresh tool results are untouched
+		// because they change each iteration. Anything the user wants restated
+		// goes through `/note`.
+		const dedupedPrompt = stripPreviousUserBlock(prompt);
 
 		// Bounded retry: when EVERY tool call in a reply gets rejected (e.g.
 		// invalid Python in an `editor` call), the rejection note is OUR
@@ -2471,6 +2636,18 @@ function createDeepSeekWebV2Model(
 			if (invoked.toolCalls.length > 0) {
 				const { tools: validatedInvoked, retryPrompt: invokedRetry } =
 					validateToolCalls(invoked.toolCalls);
+				if (
+					validatedInvoked.length === 0 &&
+					invokedRetry &&
+					attempt < MAX_TOOL_REJECTION_RETRIES
+				) {
+					logger?.log(
+						`[deepseek-web-v2] all <invoke> tool calls rejected, resending correction into chat (attempt ${attempt + 1}/${MAX_TOOL_REJECTION_RETRIES})`,
+						{ severity: "warn" },
+					);
+					sendPrompt = invokedRetry;
+					continue;
+				}
 				finalText = invokedRetry
 					? `${invoked.cleanedContent}\n\n${invokedRetry}`.trim()
 					: invoked.cleanedContent;
@@ -2484,6 +2661,24 @@ function createDeepSeekWebV2Model(
 			const malformedError = detectMalformedToolTag(text);
 			if (malformedError) {
 				finalText = text + "\n\n" + malformedError;
+				finalToolCalls = [];
+				break;
+			}
+			// Last-chance invalid-tool detection: the reply still contains a
+			// <tool> block that none of the recovery parsers could turn into an
+			// executable call (typically literal newlines inside JSON string values).
+			// Surface a precise reason instead of leaking the raw block as text.
+			const unparsedError = detectUnparsedToolBlock(text, toolNames);
+			if (unparsedError) {
+				if (attempt < MAX_TOOL_REJECTION_RETRIES) {
+					logger?.log(
+						`[deepseek-web-v2] unparsed tool block detected, resending correction into chat (attempt ${attempt + 1}/${MAX_TOOL_REJECTION_RETRIES})`,
+						{ severity: "warn" },
+					);
+					sendPrompt = unparsedError;
+					continue;
+				}
+				finalText = text + "\n\n" + unparsedError;
 				finalToolCalls = [];
 				break;
 			}

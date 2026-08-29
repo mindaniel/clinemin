@@ -260,9 +260,14 @@ export function usePromptInputController(input: {
 	selectRef.current = selectAutocompleteOption;
 
 	const submitPrompt = useCallback(
-		async (delivery?: "queue" | "steer") => {
+		async (delivery?: "queue" | "steer", options?: { silent?: boolean }) => {
 			if (localCommandInFlightRef.current) return;
 
+			// `silent` hides the user bubble; it does NOT defer the turn. `delivery`
+			// is the opposite: the runtime enqueues those prompts and only drains the
+			// queue when a turn finishes, so a "steer" sent while idle never runs.
+			// `/paste` needs to run NOW, so it passes `silent` with no delivery.
+			const silent = options?.silent === true;
 			const prompt = inputValueRef.current.trim();
 			if (!prompt) return;
 
@@ -317,15 +322,17 @@ export function usePromptInputController(input: {
 				session.setIsStreaming(true);
 				session.setAbortRequested(false);
 				turnErrorReportedRef.current = false;
-				session.appendEntry({
-					kind: "user_submitted",
-					text: prompt,
-				});
+				if (!silent) {
+					session.appendEntry({
+						kind: "user_submitted",
+						text: prompt,
+					});
+				}
 			}
 			setInputKey((k) => k + 1);
 			setInputValue("");
 			clearPasteAttachments();
-			if (!delivery) {
+			if (!delivery && !silent) {
 				inputHistory.recordHistoryEntry(prompt);
 			}
 
@@ -422,28 +429,41 @@ export function usePromptInputController(input: {
 	 * Submit `text` as if the user had typed it. Used by local commands that
 	 * need to kick off a turn on their own (e.g. `/paste`, which queues a
 	 * manually recovered reply and then needs a turn to consume it).
+	 *
+	 * `delivery` hands the prompt to the runtime's pending-prompt queue instead
+	 * of running it. `options.silent` runs it right away but keeps the user
+	 * bubble and input history out of it — what `/paste` wants, since the text
+	 * it submits is only a carrier for a turn that consumes an already-queued
+	 * reply.
 	 */
-	const submitText = useCallback((text: string) => {
-		const prompt = text.trim();
-		if (!prompt) return;
-		inputValueRef.current = prompt;
-		setInputValue(prompt);
-		// `/paste` calls this from inside its own local-command handler, which is
-		// still in flight — and `submitPrompt` refuses to start a turn while a
-		// local command runs, so submitting here would be dropped silently and
-		// the queued reply would sit unused. Defer to the next macrotask, after
-		// `runSlashCommand`'s `finally` has cleared the flag.
-		if (localCommandInFlightRef.current) {
-			setTimeout(() => {
-				// A render in between resets the ref from state (which is now
-				// ""), so restore the text we are submitting.
-				inputValueRef.current = prompt;
-				submitRef.current();
-			}, 0);
-			return;
-		}
-		submitRef.current();
-	}, []);
+	const submitText = useCallback(
+		(
+			text: string,
+			delivery?: "queue" | "steer",
+			options?: { silent?: boolean },
+		) => {
+			const prompt = text.trim();
+			if (!prompt) return;
+			inputValueRef.current = prompt;
+			setInputValue(prompt);
+			// `/paste` calls this from inside its own local-command handler, which is
+			// still in flight — and `submitPrompt` refuses to start a turn while a
+			// local command runs, so submitting here would be dropped silently and
+			// the queued reply would sit unused. Defer to the next macrotask, after
+			// `runSlashCommand`'s `finally` has cleared the flag.
+			if (localCommandInFlightRef.current) {
+				setTimeout(() => {
+					// A render in between resets the ref from state (which is now
+					// ""), so restore the text we are submitting.
+					inputValueRef.current = prompt;
+					submitRef.current(delivery, options);
+				}, 0);
+				return;
+			}
+			submitRef.current(delivery, options);
+		},
+		[],
+	);
 
 	const handleSubmit = useCallback(() => {
 		if (autocomplete.mode) {

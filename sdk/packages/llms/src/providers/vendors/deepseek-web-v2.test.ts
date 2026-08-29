@@ -21,6 +21,10 @@ import {
 	resolveDeepSeekWebV2Config,
 	resolveV2ModelOptions,
 } from "./deepseek-web-v2";
+import {
+	DEFAULT_CONTINUATION_NOTE,
+	PASTE_CARRIER_PROMPT,
+} from "./tool-pipeline/continuation-note";
 
 afterEach(() => {
 	vi.unstubAllEnvs();
@@ -604,9 +608,12 @@ describe("deepseek-web-v2 buildPrompt (lean conversation on follow-up turns)", (
 		const prompt = [
 			msg("system", "sys"),
 			msg("user", "do the thing"),
-			msg("assistant", "<tool>{\"name\":\"read_file\"}</tool>"),
+			msg("assistant", '<tool>{"name":"read_file"}</tool>'),
 			msg("tool", "the latest result"),
-			msg("user", "Use tool to continue the task or if finish, then tell 'finish'."),
+			msg(
+				"user",
+				"Use tool to continue the task or if finish, then tell 'finish'.",
+			),
 		] as never;
 		// The agent runtime appends a synthetic continuation user message right
 		// after tool execution, so the trimmer must not reduce the prompt to the
@@ -631,11 +638,14 @@ describe("deepseek-web-v2 buildPrompt (lean conversation on follow-up turns)", (
 		const prompt = [
 			msg("system", "sys"),
 			msg("user", "run it"),
-			msg("assistant", "<tool>{\"name\":\"run\"}</tool>"),
+			msg("assistant", '<tool>{"name":"run"}</tool>'),
 			msg("tool", "first result"),
-			msg("assistant", "<tool>{\"name\":\"read\"}</tool>"),
+			msg("assistant", '<tool>{"name":"read"}</tool>'),
 			msg("tool", "second result"),
-			msg("user", "Use tool to continue the task or if finish, then tell 'finish'."),
+			msg(
+				"user",
+				"Use tool to continue the task or if finish, then tell 'finish'.",
+			),
 		] as never;
 		const built = buildPrompt(prompt, undefined);
 		expect(built).toContain("first result");
@@ -648,9 +658,12 @@ describe("deepseek-web-v2 buildPrompt (lean conversation on follow-up turns)", (
 		const prompt = [
 			msg("system", "sys"),
 			msg("user", "first request"),
-			msg("assistant", "<tool>{\"name\":\"read\"}</tool>"),
+			msg("assistant", '<tool>{"name":"read"}</tool>'),
 			msg("tool", "stale result"),
-			msg("user", "Use tool to continue the task or if finish, then tell 'finish'."),
+			msg(
+				"user",
+				"Use tool to continue the task or if finish, then tell 'finish'.",
+			),
 			msg("assistant", "done"),
 			msg("user", "second request"),
 		] as never;
@@ -832,5 +845,58 @@ describe("deepseek-web-v2 chat continuity (start_continue_chat.py parity)", () =
 			vi.unstubAllEnvs();
 			rmSync(dir, { recursive: true, force: true });
 		}
+	});
+});
+
+// `/paste` starts its turn with a carrier prompt the user never typed (the hub
+// rejects an empty one). The next round of the tool loop must not send that
+// carrier to the web chat as the user's instruction.
+describe("deepseek-web-v2 buildPrompt with a /paste carrier", () => {
+	const prompt = [
+		{ role: "system", content: "sys" },
+		{
+			role: "user",
+			content: [{ type: "text", text: "add a system prompt for qwen web" }],
+		},
+		{ role: "assistant", content: [{ type: "text", text: "ok" }] },
+		{ role: "user", content: [{ type: "text", text: PASTE_CARRIER_PROMPT }] },
+		{
+			role: "assistant",
+			content: [
+				{
+					type: "tool-call",
+					toolCallId: "1",
+					toolName: "search_codebase",
+					input: "{}",
+				},
+			],
+		},
+		{
+			role: "tool",
+			content: [
+				{
+					type: "tool-result",
+					toolCallId: "1",
+					toolName: "search_codebase",
+					output: { type: "text", value: "hits: qwen-web.ts" },
+				},
+			],
+		},
+		{
+			role: "user",
+			content: [{ type: "text", text: DEFAULT_CONTINUATION_NOTE }],
+		},
+	] as never;
+
+	it("sends the tool result, not the carrier text", () => {
+		const built = buildPrompt(prompt, undefined);
+		expect(built).toContain("hits: qwen-web.ts");
+		expect(built).not.toContain(PASTE_CARRIER_PROMPT);
+	});
+
+	it("anchors context to the message the user actually typed", () => {
+		expect(buildPrompt(prompt, undefined)).toContain(
+			"add a system prompt for qwen web",
+		);
 	});
 });

@@ -428,11 +428,8 @@ describe("deepseek-web estimateDeepSeekWebUsage", () => {
 
 describe("deepseek-web parseLooseDeepSeekToolCalls", () => {
 	it("recovers a bare <tool name=...> with a JSON body", () => {
-		const reply =
-			'<tool name="search_codebase">{"queries":["loop"]}</tool>';
-		const toolCalls = parseLooseDeepSeekToolCalls(reply, [
-			"search_codebase",
-		]);
+		const reply = '<tool name="search_codebase">{"queries":["loop"]}</tool>';
+		const toolCalls = parseLooseDeepSeekToolCalls(reply, ["search_codebase"]);
 		expect(toolCalls).toHaveLength(1);
 		expect(toolCalls[0]).toEqual({
 			name: "search_codebase",
@@ -441,12 +438,16 @@ describe("deepseek-web parseLooseDeepSeekToolCalls", () => {
 	});
 
 	it("recovers an unbalanced <tool> block with no closing tag", () => {
-		// The strict parser requires a paired </tool>; a truncated block slips
-		// through it but the loose parser still picks up the call.
+		// The block's extent now comes from its JSON envelope, so `</tool>` is an
+		// optional terminator and the strict parser recovers a truncated block on
+		// its own. The loose parser still covers it for the shapes with no
+		// envelope to scan.
 		const reply =
 			'<tool>{"name":"run_commands","arguments":{"commands":["ls"]}}';
 		const strict = parseDeepSeekToolCalls(reply, ["run_commands"]);
-		expect(strict.toolCalls).toHaveLength(0);
+		expect(strict.toolCalls).toEqual([
+			{ name: "run_commands", arguments: { commands: ["ls"] } },
+		]);
 
 		const loose = parseLooseDeepSeekToolCalls(reply, ["run_commands"]);
 		expect(loose).toHaveLength(1);
@@ -468,16 +469,14 @@ describe("deepseek-web parseLooseDeepSeekToolCalls", () => {
 	});
 
 	it("normalizes common aliases (bash -> run_commands)", () => {
-		const reply =
-			'<tool>{"name":"bash","arguments":{"commands":["echo hi"]}}';
+		const reply = '<tool>{"name":"bash","arguments":{"commands":["echo hi"]}}';
 		const loose = parseLooseDeepSeekToolCalls(reply, ["run_commands"]);
 		expect(loose).toHaveLength(1);
 		expect(loose[0].name).toBe("run_commands");
 	});
 
 	it("ignores prose that merely contains <tool and no real name", () => {
-		const reply =
-			"Please use the <tool> tag when you need to call a function.";
+		const reply = "Please use the <tool> tag when you need to call a function.";
 		const loose = parseLooseDeepSeekToolCalls(reply, ["search_codebase"]);
 		expect(loose).toHaveLength(0);
 	});

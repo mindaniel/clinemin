@@ -257,3 +257,29 @@ describe("tool-pipeline validateToolCalls (provider integration entry)", () => {
 		expect(retryPrompt).toBeUndefined();
 	});
 });
+
+describe("python fragment validation", () => {
+	it("accepts an indented method, which is what `editor` payloads are", () => {
+		// `new_text` is a fragment lifted out of a class body, not a module.
+		// Parsed as a module it used to come back as
+		// `IndentationError: unexpected indent` and the edit was rejected.
+		const fragment = [
+			"    def extract(self, body):",
+			'        """Docstring."""',
+			"        try:",
+			"            return json.loads(body)",
+			"        except ValueError:",
+			"            return ''",
+		].join("\n");
+		expect(validatePythonCode(fragment).valid).toBe(true);
+	});
+
+	it("still rejects genuinely broken Python", () => {
+		expect(validatePythonCode("    def f(:\n        pass").valid).toBe(false);
+	});
+
+	it("hands back the code with its original indentation intact", () => {
+		const fragment = "    x = 1\n    y = 2";
+		expect(validatePythonCode(fragment).sanitized).toBe(fragment);
+	});
+});

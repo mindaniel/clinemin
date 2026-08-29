@@ -59,9 +59,17 @@ function coerceParameterValue(raw: string): unknown {
 		try {
 			return JSON.parse(value);
 		} catch {
-			// Malformed JSON body — hand the raw text to the tool's own schema
-			// validation, which produces a better message than we could here.
-			return value;
+			// A Windows path written with single backslashes is the usual cause.
+			// JSON needs each backslash doubled, and a lone one in front of `U`
+			// (or any non-escape letter) is a parse error. Double the lone
+			// backslashes and retry once.
+			try {
+				return JSON.parse(value.replace(/\\(?![\\"/bfnrtu])/g, "\\\\"));
+			} catch {
+				// Still malformed — hand the raw text to the tool's own schema
+				// validation, which produces a better message than we could here.
+				return value;
+			}
 		}
 	}
 	return value;

@@ -16,6 +16,11 @@ export async function resolveSystemPrompt(input: {
 	rules?: string;
 	mode?: AgentMode;
 }): Promise<string> {
+	// Debug log: show exactly which providerId reaches the CLI system-prompt
+	// resolver, so we can confirm the claude-web diversion actually fires.
+	console.error(
+		`[debug:resolveSystemPrompt] providerId=${JSON.stringify(input.providerId)}`,
+	);
 	const metadata = await buildWorkspaceMetadata(input.cwd);
 	// Mode-tag and plan-mode instructions are appended by the shared prompt
 	// builder itself (see MODE_TAG_INSTRUCTIONS / PLAN_MODE_INSTRUCTIONS in

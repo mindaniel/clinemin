@@ -1,16 +1,22 @@
 import {
+	type BrowserProfile,
 	bindChatKey,
 	type ChatGPTWebChatEntry,
 	type ClaudeWebChatEntry,
+	createBrowserProfile,
 	DEFAULT_CONTINUATION_NOTE,
+	DEFAULT_PROFILE_NAME,
 	type DeepSeekWebV2ChatEntry,
+	deleteBrowserProfile,
 	deleteChatGPTChatSession,
 	deleteChatSession,
 	deleteClaudeChatSession,
 	deleteGeminiChatSession,
 	deleteQwenChatSession,
 	type GeminiWebChatEntry,
+	getActiveBrowserProfile,
 	getContinuationNote,
+	listBrowserProfiles,
 	listChatGPTWebChats,
 	listClaudeWebChats,
 	listDeepSeekWebV2Chats,
@@ -21,12 +27,14 @@ import {
 	openDeepSeekWebV2Chat,
 	openGeminiWebChat,
 	openQwenWebChat,
+	PASTE_CARRIER_PROMPT,
 	type QwenWebChatEntry,
 	resolveChatGPTWebV2Config,
 	resolveClaudeWebV2Config,
 	resolveDeepSeekWebV2Config,
 	resolveGeminiWebV2Config,
 	resolveQwenWebV2Config,
+	setActiveBrowserProfile,
 	setContinuationNote,
 	setPendingInjectedReply,
 } from "@cline/llms";
@@ -106,6 +114,8 @@ import { FindChatDialogContent } from "../components/dialogs/find-chat-dialog";
 import { ForkConfirmContent } from "../components/dialogs/fork-confirm";
 import { HelpDialogContent } from "../components/dialogs/help-dialog";
 import { withLoadingDialog } from "../components/dialogs/loading-dialog";
+import { PasteReplyDialogContent } from "../components/dialogs/paste-reply-dialog";
+import { ProfilePickerContent } from "../components/dialogs/profile-picker";
 import { useSession } from "../contexts/session-context";
 import type { AppView, TuiProps } from "../types";
 import { formatTokenCount } from "../utils/compaction-status";
@@ -140,7 +150,11 @@ export function useLocalCommandActions(input: {
 	/** Id of the running CLI session; used by `/findchat` to pin it to a chat. */
 	getSessionId: () => string | undefined;
 	/** Submit text as if the user typed it (used by `/paste` to start a turn). */
-	submitText: (text: string) => void;
+	submitText: (
+		text: string,
+		delivery?: "queue" | "steer",
+		options?: { silent?: boolean },
+	) => void;
 }) {
 	const dialog = useDialog();
 	const session = useSession();
@@ -446,18 +460,22 @@ export function useLocalCommandActions(input: {
 		// pick. Persisted, so resuming this session from `/history` restores the
 		// pairing. See utils/chat-binding.ts.
 		const cliSessionId = getSessionId();
-		const chosen = chats.find((entry) => entry.sessionId === dialogChoice);
+		let chosen = chats.find((entry) => entry.sessionId === dialogChoice);
+
+		// If not found in the registry, it might be a newly imported chat ID or URL.
+		// We synthesize an entry so it can still be pinned to this CLI session.
+		if (!chosen) {
+			chosen = {
+				chatKey: dialogChoice,
+				sessionId: dialogChoice,
+				lastActive: new Date().toISOString(),
+			} as WebChatEntry;
+		}
+
 		if (!cliSessionId) {
 			session.appendEntry({
 				kind: "status",
 				text: "/findchat: opened the chat, but this CLI session has no id yet, so it was not pinned. Send a message first, then run /findchat again.",
-			});
-			return true;
-		}
-		if (!chosen) {
-			session.appendEntry({
-				kind: "status",
-				text: `/findchat: opened the chat, but it is missing from ${providerConfig.name}'s registry, so it was not pinned.`,
 			});
 			return true;
 		}
@@ -492,23 +510,132 @@ export function useLocalCommandActions(input: {
 			return true;
 		}
 
+		// Confirm before queueing. The clipboard is easy to get wrong — an old
+		// copy, a URL, half a reply — and a wrong one only fails seconds later
+		// from inside a turn, where it reads as a model error rather than a bad
+		// paste. The dialog can re-read the clipboard, so a bad copy is fixed by
+		// copying again and pressing `r`, without restarting the command.
 		const clipboard = await readClipboardText();
-		if (!clipboard) {
+		const confirmed = await dialog.choice<string>({
+			closeOnEscape: true,
+			content: (ctx: ChoiceContext<string>) => (
+				<PasteReplyDialogContent
+					{...ctx}
+					initialText={clipboard}
+					readClipboard={readClipboardText}
+					providerName={webProviderConfigs[providerId]?.name ?? providerId}
+				/>
+			),
+		});
+		refocusTextarea();
+		if (!confirmed) {
 			session.appendEntry({
-				kind: "error",
-				text: "/paste: clipboard is empty. Copy the model's reply from the browser first.",
+				kind: "status",
+				text: "/paste: cancelled, nothing was queued.",
 			});
 			return true;
 		}
 
-		setPendingInjectedReply(clipboard);
+		setPendingInjectedReply(confirmed, providerId);
 		session.appendEntry({
 			kind: "status",
-			text: `/paste: queued ${clipboard.length} chars from the clipboard as the model's reply.`,
+			text: `/paste: executing pasted reply (${confirmed.length} chars)...`,
 		});
-		submitText("(recovering a reply that was pasted in manually)");
+		// Run the turn NOW, not through the pending-prompt queue: the queue is
+		// only drained when a turn finishes, so a queued paste sent while idle
+		// would sit there forever. `silent` keeps the carrier text out of the
+		// visible history and out of input history — the pasted reply is already
+		// queued for the provider, so this turn consumes it instead of calling
+		// the model, and the tools in it run straight away.
+		submitText(PASTE_CARRIER_PROMPT, undefined, { silent: true });
 		return true;
-	}, [providerId, session, submitText]);
+	}, [dialog, providerId, refocusTextarea, session, submitText]);
+
+	/**
+	 * `/profile` — choose which named Chrome profile the web providers use.
+	 *
+	 * A profile is a Chrome `--user-data-dir`, which IS the logged-in account,
+	 * so switching profiles switches accounts. It also shifts the DevTools debug
+	 * port: without that, the next launch would find the other profile's Chrome
+	 * already listening and quietly drive it instead.
+	 *
+	 * The choice is global rather than per-provider, so one selection moves
+	 * every web provider to its own copy of that profile.
+	 */
+	const switchProfile = useCallback(async (): Promise<boolean> => {
+		let profiles: BrowserProfile[];
+		let active: string;
+		try {
+			profiles = listBrowserProfiles();
+			active = getActiveBrowserProfile();
+		} catch (error) {
+			session.appendEntry({
+				kind: "error",
+				text: `/profile: could not read the profile list: ${error instanceof Error ? error.message : String(error)}`,
+			});
+			return true;
+		}
+
+		const choice = await dialog.choice<string>({
+			closeOnEscape: true,
+			content: (ctx: ChoiceContext<string>) => (
+				<ProfilePickerContent
+					{...ctx}
+					profiles={profiles}
+					active={active}
+					defaultProfileName={DEFAULT_PROFILE_NAME}
+					onDelete={deleteBrowserProfile}
+				/>
+			),
+		});
+		refocusTextarea();
+		if (!choice) return true;
+
+		let name = choice;
+		if (choice.startsWith("__create__:")) {
+			try {
+				name = createBrowserProfile(choice.slice("__create__:".length)).name;
+			} catch (error) {
+				session.appendEntry({
+					kind: "error",
+					text: `/profile: ${error instanceof Error ? error.message : String(error)}`,
+				});
+				return true;
+			}
+		}
+
+		if (name === active) {
+			session.appendEntry({
+				kind: "status",
+				text: `/profile: already on "${name}".`,
+			});
+			return true;
+		}
+
+		try {
+			setActiveBrowserProfile(name);
+		} catch (error) {
+			session.appendEntry({
+				kind: "error",
+				text: `/profile: ${error instanceof Error ? error.message : String(error)}`,
+			});
+			return true;
+		}
+
+		// The provider re-reads the active profile at the start of every turn, so
+		// this takes effect on the next message with no restart. A brand-new
+		// profile starts signed out: the provider opens its own Chrome window and
+		// waits for the login the same way a first run does. The switch is pinned
+		// to THIS terminal — another CLI already running stays on its own profile,
+		// so two profiles can be driven side by side.
+		session.appendEntry({
+			kind: "status",
+			text:
+				`/profile: this terminal now uses profile "${name}". ` +
+				"The next turn opens its browser; sign in there if it is new.",
+		});
+		return true;
+	}, [dialog, refocusTextarea, session]);
 
 	/**
 	 * `/note` — show or set the note the runtime appends after each round of
@@ -582,6 +709,7 @@ export function useLocalCommandActions(input: {
 				findChat,
 				pasteReply,
 				setNote,
+				switchProfile,
 			});
 		},
 		[
@@ -601,6 +729,7 @@ export function useLocalCommandActions(input: {
 			findChat,
 			pasteReply,
 			setNote,
+			switchProfile,
 			session.isRunning,
 			slashCommandRegistry,
 		],

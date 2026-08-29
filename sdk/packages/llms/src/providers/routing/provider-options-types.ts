@@ -24,7 +24,9 @@ export type AiSdkProviderOptionsTarget =
 	| "gemini-web"
 	| "sapaicore"
 	| "deepseek-web"
-	| "deepseek-web-v2";
+	| "deepseek-web-v2"
+	| "kimi-web"
+	| "grok-web";
 
 export type ProviderOptionSuppression = {
 	genericThinking?: boolean;
@@ -107,6 +109,10 @@ export function inferProviderOptionsTarget(
 			return "claude-web";
 		case "gemini-web":
 			return "gemini-web";
+		case "kimi-web":
+			return "kimi-web";
+		case "grok-web":
+			return "grok-web";
 
 		default:
 			return "openai-compatible";

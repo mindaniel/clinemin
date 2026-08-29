@@ -12,7 +12,9 @@ import type {
 	GatewayResolvedProviderConfig,
 } from "@cline/shared";
 import { estimateTokens } from "@cline/shared";
+import { jsonrepair } from "jsonrepair";
 import { ensureFetch } from "../http";
+import { scanToolBlocks } from "./tool-pipeline/tool-block-scanner";
 import type { ProviderFactoryResult } from "./types";
 
 /**
@@ -681,7 +683,9 @@ export interface MessagesToPromptOptions {
 
 export function messagesToPrompt(
 	messages: LanguageModelV2Message[],
-	historyWindowOrOptions: number | MessagesToPromptOptions = DEFAULT_AUTO_HISTORY_WINDOW,
+	historyWindowOrOptions:
+		| number
+		| MessagesToPromptOptions = DEFAULT_AUTO_HISTORY_WINDOW,
 ): string {
 	const options: MessagesToPromptOptions =
 		typeof historyWindowOrOptions === "number"
@@ -732,8 +736,7 @@ export function messagesToPrompt(
 	const outputParts: string[] = [];
 	if (systemParts.length > 0) outputParts.push(systemParts.join("\n\n"));
 
-	const effectiveWindow =
-		conversation.length > 1 ? historyWindow : 0;
+	const effectiveWindow = conversation.length > 1 ? historyWindow : 0;
 	if (effectiveWindow > 0 && conversation.length > 1) {
 		const recent = conversation.slice(-effectiveWindow);
 		outputParts.push(
@@ -950,9 +953,17 @@ export async function consumeDeepSeekSse(
 					// If this is a hint event, check for context_length_exceeded
 					if (currentEventType === "hint") {
 						try {
-							const hintData = JSON.parse(payload) as { type?: string; finish_reason?: string };
-							if (hintData.type === "error" && hintData.finish_reason === "context_length_exceeded") {
-								throw new ContextLengthExceededError("Length limit reached. Please start a new chat.");
+							const hintData = JSON.parse(payload) as {
+								type?: string;
+								finish_reason?: string;
+							};
+							if (
+								hintData.type === "error" &&
+								hintData.finish_reason === "context_length_exceeded"
+							) {
+								throw new ContextLengthExceededError(
+									"Length limit reached. Please start a new chat.",
+								);
 							}
 						} catch (e) {
 							if (e instanceof ContextLengthExceededError) throw e;
@@ -1083,22 +1094,21 @@ export function parseDeepSeekToolCalls(
 	const toolCalls: ParsedToolCall[] = [];
 	const cleanedParts: string[] = [];
 	let cursor = 0;
-	// `\s*` around `tool` tolerates `< tool>` / `</tool >`; marker handling lets
-	// only ACTUAL blocks match (not stray `<tool` inside prose).
-	const tagPattern =
-		/(?:\*|-)??\s*<\s*tool(?::([\w-]+))?([^>]*)>\s*([\s\S]*?)\s*<\s*\/\s*tool(?::[\w-]+)?\s*>/gi;
-	let match: RegExpExecArray | null;
-
-	while ((match = tagPattern.exec(content)) !== null) {
-		const full = match[0];
-		const tagName = match[1] ?? "";
-		const attrs = (match[2] ?? "").trim();
-		let inner = (match[3] ?? "").trim();
-		const matchIndex = match.index;
-		// The leading `\*`/`-` bullet (if any) was consumed by the match; the tag
-		// itself is stripped while surrounding prose stays as visible text.
+	// Where each block ENDS is decided by a string-aware scan of its JSON
+	// envelope, not by the first `</tool>` in the text. A payload is allowed to
+	// contain that tag verbatim — an `editor` call writing a line like
+	// `const example = '<tool>' + json + '</tool>';` does — and a non-greedy
+	// regex would stop inside the string, truncate the JSON, and drop a call
+	// that was perfectly well-formed. See tool-block-scanner.ts.
+	for (const block of scanToolBlocks(content)) {
+		const full = content.slice(block.start, block.end);
+		const tagName = block.tagName;
+		const attrs = block.attrs;
+		let inner = block.body;
+		const matchIndex = block.start;
+		// The tag itself is stripped while surrounding prose stays visible text.
 		cleanedParts.push(content.slice(cursor, matchIndex));
-		cursor = matchIndex + full.length;
+		cursor = block.end;
 
 		// Extract the tool name from tag suffix, id/name attributes, XML, or the
 		// JSON body.
@@ -1177,61 +1187,60 @@ export function parseDeepSeekToolCalls(
  * it returns an empty list so the caller falls through to its other handling.
  */
 export function parseLooseDeepSeekToolCalls(
-content: string,
-toolNames: string[],
+	content: string,
+	toolNames: string[],
 ): ParsedToolCall[] {
-// See the matching repair pass in parseDeepSeekToolCalls: recover a `<tool`
-// tag whose `>` was dropped before a newline/space-then-`{` JSON body.
-content = content.replace(
-	/<tool(:[\w-]+)?\s+(?=\{)/gi,
-	(_m, suffix: string | undefined) => `<tool${suffix ?? ""}>`,
-);
+	// See the matching repair pass in parseDeepSeekToolCalls: recover a `<tool`
+	// tag whose `>` was dropped before a newline/space-then-`{` JSON body.
+	content = content.replace(
+		/<tool(:[\w-]+)?\s+(?=\{)/gi,
+		(_m, suffix: string | undefined) => `<tool${suffix ?? ""}>`,
+	);
 
-const accepted = new Set(toolNames.map(normalizeToolName));
-const toolCalls: ParsedToolCall[] = [];
+	const accepted = new Set(toolNames.map(normalizeToolName));
+	const toolCalls: ParsedToolCall[] = [];
 
-const openTagRe = /<\s*tool[\w:-]*\b([^>]*)>/gi;
-let match: RegExpExecArray | null;
-while ((match = openTagRe.exec(content)) !== null) {
-const attrs = (match[1] ?? "").trim();
-const afterTag = content.slice(match.index + match[0].length);
+	const openTagRe = /<\s*tool[\w:-]*\b([^>]*)>/gi;
+	let match: RegExpExecArray | null;
+	while ((match = openTagRe.exec(content)) !== null) {
+		const attrs = (match[1] ?? "").trim();
+		const afterTag = content.slice(match.index + match[0].length);
 
-let name =
-/(?:id|name)\s*=\s*["']([^"']+)["']/i.exec(attrs)?.[1] ?? "";
+		let name = /(?:id|name)\s*=\s*["']([^"']+)["']/i.exec(attrs)?.[1] ?? "";
 
-let args: Record<string, unknown> = {};
-const bodyText = extractBalancedJsonValue(afterTag) ?? afterTag;
-const parsed = parseRepairedToolJson(bodyText);
-if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) {
-const record = parsed as Record<string, unknown>;
-if (!name) {
-name =
-typeof record.name === "string"
-? record.name
-: typeof record.type === "string"
-? record.type
-: "";
-}
-const candidate =
-record.arguments ?? record.params ?? record.arguments_json ?? record;
-if (
-candidate &&
-typeof candidate === "object" &&
-!Array.isArray(candidate)
-) {
-args = candidate as Record<string, unknown>;
-}
-}
+		let args: Record<string, unknown> = {};
+		const bodyText = extractBalancedJsonValue(afterTag) ?? afterTag;
+		const parsed = parseRepairedToolJson(bodyText);
+		if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) {
+			const record = parsed as Record<string, unknown>;
+			if (!name) {
+				name =
+					typeof record.name === "string"
+						? record.name
+						: typeof record.type === "string"
+							? record.type
+							: "";
+			}
+			const candidate =
+				record.arguments ?? record.params ?? record.arguments_json ?? record;
+			if (
+				candidate &&
+				typeof candidate === "object" &&
+				!Array.isArray(candidate)
+			) {
+				args = candidate as Record<string, unknown>;
+			}
+		}
 
-const normalizedName = normalizeToolName(name);
-if (!normalizedName || !accepted.has(normalizedName)) continue;
+		const normalizedName = normalizeToolName(name);
+		if (!normalizedName || !accepted.has(normalizedName)) continue;
 
-if (toolCalls.some((c) => c.name === normalizedName)) continue;
+		if (toolCalls.some((c) => c.name === normalizedName)) continue;
 
-toolCalls.push({ name: normalizedName, arguments: args });
-}
+		toolCalls.push({ name: normalizedName, arguments: args });
+	}
 
-return toolCalls;
+	return toolCalls;
 }
 
 /**
@@ -1241,7 +1250,7 @@ return toolCalls;
  * (e.g. a stray `</tool>`) that would otherwise break the JSON repair parser.
  */
 function extractBalancedJsonValue(text: string): string | null {
-	const start = text.search(/[\[{]/);
+	const start = text.search(/[[{]/);
 	if (start === -1) return null;
 	const openChar = text[start];
 	const closeChar = openChar === "{" ? "}" : "]";
@@ -1332,7 +1341,17 @@ export function parseRepairedToolJson(raw: string): unknown {
 	try {
 		return JSON.parse(repairedFinal);
 	} catch {
-		return undefined;
+		// Last rung: structural repair. The passes above fix characters inside an
+		// otherwise well-formed envelope; they cannot close an object the model
+		// never closed. Dropping the final `}` of a long `editor` call is one of
+		// the most common ways a web reply arrives broken, and `jsonrepair`
+		// completes the missing bracket. It is syntax-only — it never edits the
+		// code carried inside `new_text`.
+		try {
+			return JSON.parse(jsonrepair(repairedFinal));
+		} catch {
+			return undefined;
+		}
 	}
 }
 

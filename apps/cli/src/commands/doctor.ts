@@ -80,20 +80,84 @@ function parsePids(raw: string): number[] {
 		.filter((pid) => Number.isInteger(pid) && pid > 0);
 }
 
-function listMatchingProcesses(pattern: string): ProcessRecord[] {
-	if (process.platform === "win32") {
-		return [];
+/**
+ * One Win32_Process snapshot per status pass.
+ *
+ * `doctor` asks about a dozen patterns, and a PowerShell round trip costs a
+ * few hundred ms each, so the table is fetched once and filtered in-process.
+ * `collectDoctorStatus` clears it so a re-check after killing sees reality.
+ */
+let windowsProcessSnapshot: ProcessRecord[] | undefined;
+
+function listWindowsProcesses(): ProcessRecord[] {
+	if (windowsProcessSnapshot) {
+		return windowsProcessSnapshot;
 	}
-	// "--" stops pgrep's option parsing so patterns that start with dashes
-	// (e.g. the "--cline-hub-daemon" marker) are treated as patterns.
-	const result = spawnSync("pgrep", ["-fal", "--", pattern], {
-		encoding: "utf8",
-	});
-	if (result.status !== 0 && result.status !== 1) {
-		return [];
-	}
-	const records = new Map<number, ProcessRecord>();
+	// `pid<space>ppid<space>commandline`. The parent is what lets us leave our
+	// own process tree alone below.
+	const script =
+		"Get-CimInstance Win32_Process | ForEach-Object { if ($_.CommandLine) " +
+		'{ "$($_.ProcessId) $($_.ParentProcessId) $($_.CommandLine)" } }';
+	const result = spawnSync(
+		"powershell.exe",
+		["-NoProfile", "-NonInteractive", "-Command", script],
+		{ encoding: "utf8", windowsHide: true },
+	);
+
+	const parents = new Map<number, number>();
+	const records: ProcessRecord[] = [];
 	for (const line of (result.stdout || "").split(/\r?\n/)) {
+		const match = line.trim().match(/^(\d+)\s+(\d+)\s+(.*)$/);
+		if (!match) {
+			continue;
+		}
+		const pid = Number.parseInt(match[1] || "", 10);
+		const ppid = Number.parseInt(match[2] || "", 10);
+		const command = match[3]?.trim();
+		if (!Number.isInteger(pid) || pid <= 0 || !command) {
+			continue;
+		}
+		parents.set(pid, Number.isInteger(ppid) ? ppid : 0);
+		records.push({ pid, command });
+	}
+
+	// Everything that is us: our ancestors (the shell and any `bun run`
+	// wrapper, which match the CLI patterns) and our descendants (the hub this
+	// very run may have just spawned, which is not stale — it is ours). Killing
+	// either would mean `doctor fix` shooting itself.
+	const ours = new Set<number>([process.pid]);
+	for (
+		let cursor = parents.get(process.pid) ?? 0;
+		cursor > 0 && !ours.has(cursor);
+		cursor = parents.get(cursor) ?? 0
+	) {
+		ours.add(cursor);
+	}
+	let grew = true;
+	while (grew) {
+		grew = false;
+		for (const [pid, ppid] of parents) {
+			if (!ours.has(pid) && ours.has(ppid)) {
+				ours.add(pid);
+				grew = true;
+			}
+		}
+	}
+
+	windowsProcessSnapshot = records
+		.filter((record) => !ours.has(record.pid))
+		.sort((a, b) => a.pid - b.pid);
+	return windowsProcessSnapshot;
+}
+
+/** Compare paths without caring about separator or case, as Windows does. */
+function normalizeCommandLine(command: string): string {
+	return command.replace(/\\/g, "/").toLowerCase();
+}
+
+function parseProcessRecords(stdout: string): ProcessRecord[] {
+	const records = new Map<number, ProcessRecord>();
+	for (const line of stdout.split(/\r?\n/)) {
 		const trimmed = line.trim();
 		if (!trimmed) {
 			continue;
@@ -118,6 +182,28 @@ function listMatchingProcesses(pattern: string): ProcessRecord[] {
 	return [...records.values()].sort((a, b) => a.pid - b.pid);
 }
 
+function listMatchingProcesses(pattern: string): ProcessRecord[] {
+	if (process.platform === "win32") {
+		// Without this, every `doctor` check on Windows reported "nothing stale"
+		// and `doctor fix` killed nothing — so a hub daemon left over from an
+		// earlier run kept serving the OLD build, and a rebuild appeared to have
+		// no effect until the process was killed by hand.
+		const needle = normalizeCommandLine(pattern);
+		return listWindowsProcesses().filter((record) =>
+			normalizeCommandLine(record.command).includes(needle),
+		);
+	}
+	// "--" stops pgrep's option parsing so patterns that start with dashes
+	// (e.g. the "--cline-hub-daemon" marker) are treated as patterns.
+	const result = spawnSync("pgrep", ["-fal", "--", pattern], {
+		encoding: "utf8",
+	});
+	if (result.status !== 0 && result.status !== 1) {
+		return [];
+	}
+	return parseProcessRecords(result.stdout || "");
+}
+
 function resolveCliLogPath(): string {
 	const { name } = getCliBuildInfo();
 	return join(resolveClineDataDir(), "logs", `${name}.log`);
@@ -127,9 +213,38 @@ async function defaultOpenPath(target: string): Promise<void> {
 	await open(target, { wait: false });
 }
 
-function listListeningPids(port: number | undefined): number[] {
-	if (!port || process.platform === "win32") {
+function listWindowsListeningPids(port: number): number[] {
+	const result = spawnSync("netstat", ["-ano", "-p", "TCP"], {
+		encoding: "utf8",
+		windowsHide: true,
+	});
+	if (result.status !== 0) {
 		return [];
+	}
+	const pids = new Set<number>();
+	for (const line of (result.stdout || "").split(/\r?\n/)) {
+		// Proto  Local Address  Foreign Address  State  PID
+		const parts = line.trim().split(/\s+/);
+		if (parts.length < 5 || parts[3] !== "LISTENING") {
+			continue;
+		}
+		if (!(parts[1] ?? "").endsWith(`:${port}`)) {
+			continue;
+		}
+		const pid = Number.parseInt(parts[4] || "", 10);
+		if (Number.isInteger(pid) && pid > 0) {
+			pids.add(pid);
+		}
+	}
+	return [...pids];
+}
+
+function listListeningPids(port: number | undefined): number[] {
+	if (!port) {
+		return [];
+	}
+	if (process.platform === "win32") {
+		return listWindowsListeningPids(port);
 	}
 	const result = spawnSync("lsof", ["-nP", `-tiTCP:${port}`, "-sTCP:LISTEN"], {
 		encoding: "utf8",
@@ -328,6 +443,10 @@ function resolveCliHubOwnerContext() {
 }
 
 async function collectDoctorStatus(cwd: string): Promise<DoctorStatus> {
+	// `doctor fix` collects the status again after killing things, so the
+	// snapshot must not outlive one pass or the second report would still list
+	// processes that are already gone.
+	windowsProcessSnapshot = undefined;
 	const owner = resolveCliHubOwnerContext();
 	const discovery = await readHubDiscovery(owner.discoveryPath);
 	const health = discovery?.url
@@ -404,6 +523,19 @@ function killPids(pids: number[]): number {
 	let killed = 0;
 	for (const pid of pids) {
 		try {
+			if (process.platform === "win32") {
+				// A hub daemon or sidecar is a process tree; `/T` takes the children
+				// with it, which `process.kill` cannot do on Windows.
+				const result = spawnSync(
+					"taskkill",
+					["/pid", String(pid), "/T", "/F"],
+					{ encoding: "utf8", windowsHide: true },
+				);
+				if (result.status === 0) {
+					killed += 1;
+				}
+				continue;
+			}
 			process.kill(pid, "SIGKILL");
 			killed += 1;
 		} catch {

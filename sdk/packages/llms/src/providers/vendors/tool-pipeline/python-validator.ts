@@ -115,7 +115,9 @@ export interface UnsupportedUnicodeError {
  * Return the first lone (unpaired) surrogate in `text`, or `undefined` when the
  * string contains no malformed code points.
  */
-export function findInvalidUnicode(text: string): UnsupportedUnicodeError | undefined {
+export function findInvalidUnicode(
+	text: string,
+): UnsupportedUnicodeError | undefined {
 	for (let i = 0; i < text.length; i++) {
 		const code = text.charCodeAt(i);
 		// High surrogate requires a following low surrogate...
@@ -134,43 +136,21 @@ export function findInvalidUnicode(text: string): UnsupportedUnicodeError | unde
 	return undefined;
 }
 
-/*
- * Validate that `code` is syntactically valid Python using an external Python
- * interpreter driven over stdin. Prefers `python3`; falls back to `python` /
- * `py` (covers the Windows Store-alias trap where `python3` is a dead stub).
- *
- * Handles malformed Unicode by sanitizing, not rejecting: if the AI's response
- * embeds a lone surrogate (`\ud800`-`\udfff` — typically a CJK character split
- * during transport) Node's UTF-8 encoder cannot write it, which used to crash
- * with a cryptic `UnicodeEncodeError`. We replace lone surrogates with the
- * replacement char (U+FFFD) via `sanitizeSurrogates` before parsing, so an
- * otherwise-valid payload still passes. Only genuinely malformed Python is
- * rejected (with a line-precise message).
- *
- * @param code The Python source to validate.
- * @returns `{ valid: true }` on success (including when no real interpreter is
- *          available, in which case a `warning` is attached); or
- *          `{ valid: false, error }` with a line-precise message on failure.
+/**
+ * Parse `code` as a whole Python module. Raw check — callers go through
+ * `validatePythonCode`, which also retries this dedented so a valid but
+ * indented fragment is not reported as an IndentationError.
  */
-export function validatePythonCode(code: string): ValidationResult {
+function validateAsModule(code: string): ValidationResult {
 	if (!code.trim()) {
 		// Empty payload is trivially parseable; treat as valid with no fanfare.
 		return { valid: true };
 	}
 
-	// Lone surrogates are NOT the model's fault — a valid CJK character can get
-	// split during text capture (e.g. CDP) and arrive here as an orphaned
-	// \ud800-\udfff code unit. Node can't UTF-8-encode those, which used to
-	// crash the subprocess with a cryptic "surrogates not allowed". Instead of
-	// rejecting otherwise-correct Python, we sanitize lone surrogates to the
-	// Unicode replacement char (U+FFFD) before parsing. This keeps the validator
-	// non-aggressive: it only rejects genuinely malformed Python.
-	const sanitized = sanitizeLoneSurrogates(code);
-
 	let lastUnavailable: string | undefined;
 
 	for (const candidate of PYTHON_CANDIDATES) {
-		const run = runAstCheck(candidate, sanitized);
+		const run = runAstCheck(candidate, code);
 
 		// The interpreter binary could not be launched at all (ENOENT).
 		if (run.kind === "unavailable") {
@@ -186,7 +166,9 @@ export function validatePythonCode(code: string): ValidationResult {
 		if (run.kind === "encodeError") {
 			return {
 				valid: true,
-				warning: run.stderr ?? "surrogate encoding error, but ignoring for tool execution",
+				warning:
+					run.stderr ??
+					"surrogate encoding error, but ignoring for tool execution",
 			};
 		}
 		if (run.kind === "spawnError") {
@@ -206,7 +188,7 @@ export function validatePythonCode(code: string): ValidationResult {
 
 		// Clean parse.
 		if (run.status === 0) {
-			return { valid: true, sanitized };
+			return { valid: true };
 		}
 
 		// Nonzero exit. If the error is about surrogates, treat as valid with a warning.
@@ -214,7 +196,8 @@ export function validatePythonCode(code: string): ValidationResult {
 		if (/surrogates? not allowed/i.test(stderr)) {
 			return {
 				valid: true,
-				warning: "Python validation skipped due to surrogate encoding error; the tool will be executed.",
+				warning:
+					"Python validation skipped due to surrogate encoding error; the tool will be executed.",
 			};
 		}
 
@@ -238,6 +221,62 @@ export function validatePythonCode(code: string): ValidationResult {
 		valid: true,
 		warning: `Python validation skipped: ${lastUnavailable ?? PYTHON_CANDIDATES[0]} not found`,
 	};
+}
+
+/**
+ * Strip the indentation every non-blank line shares.
+ *
+ * An `editor` call's `new_text` is a FRAGMENT — typically a method lifted
+ * out of a class body — not a module. `ast.parse` reads it as a module, so a
+ * perfectly good `    def foo(self):` fragment comes back as
+ * `IndentationError: unexpected indent`. Removing the shared indent gives the
+ * module parser something it accepts, without changing what we write to disk.
+ *
+ * Returns `code` unchanged when some non-blank line already starts at column
+ * 0 (nothing is shared, so there is nothing to strip).
+ */
+function dedentFragment(code: string): string {
+	const lines = code.split("\n");
+	let min = Number.POSITIVE_INFINITY;
+	for (const line of lines) {
+		if (!line.trim()) continue;
+		const indent = /^[ \t]*/.exec(line)?.[0].length ?? 0;
+		if (indent === 0) return code;
+		if (indent < min) min = indent;
+	}
+	if (!Number.isFinite(min)) return code;
+	return lines.map((line) => (line.trim() ? line.slice(min) : line)).join("\n");
+}
+
+/**
+ * Validate that `code` is syntactically valid Python.
+ *
+ * Runs the module parse twice when it has to: once on the code as given,
+ * then — only if that failed and every non-blank line shares a leading
+ * indent — once more with that indent stripped. The dedented text is used
+ * ONLY for the parse; `sanitized` (what actually reaches the executor) keeps
+ * the original indentation.
+ *
+ * @param code The Python source to validate.
+ * @returns `{ valid: true }` on success (including when no real interpreter
+ *          is available, in which case a `warning` is attached); or
+ *          `{ valid: false, error }` with a line-precise message on failure.
+ */
+export function validatePythonCode(code: string): ValidationResult {
+	if (!code.trim()) return { valid: true };
+
+	const sanitized = sanitizeLoneSurrogates(code);
+	const asWritten = validateAsModule(sanitized);
+	if (asWritten.valid) {
+		return { ...asWritten, sanitized };
+	}
+
+	const dedented = dedentFragment(sanitized);
+	if (dedented !== sanitized && validateAsModule(dedented).valid) {
+		return { valid: true, sanitized };
+	}
+
+	return asWritten;
 }
 
 interface InterpretedResult {
@@ -268,7 +307,10 @@ function runAstCheck(command: string, code: string): InterpretedResult {
 		// surrogates up front in `validatePythonCode`, so this is a
 		// belt-and-suspenders path that surfaces a clear message instead of a
 		// cryptic one.
-		if (error instanceof TypeError && /surrogates? not allowed/i.test(String(error))) {
+		if (
+			error instanceof TypeError &&
+			/surrogates? not allowed/i.test(String(error))
+		) {
 			return {
 				kind: "encodeError",
 				status: 1,
