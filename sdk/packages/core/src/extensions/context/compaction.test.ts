@@ -3904,6 +3904,14 @@ describe("compaction-shared isLeanSummaryProvider", () => {
 		expect(isLeanSummaryProvider("deepseek-web-v2")).toBe(true);
 	});
 
+	it("returns true for stateful web chat providers", () => {
+		expect(isLeanSummaryProvider("qwen-web")).toBe(true);
+		expect(isLeanSummaryProvider("claude-web")).toBe(true);
+		expect(isLeanSummaryProvider("chatgpt-web")).toBe(true);
+		expect(isLeanSummaryProvider("grok-web")).toBe(true);
+		expect(isLeanSummaryProvider("kimi-web")).toBe(true);
+	});
+
 	it("returns true for llama.cpp and other local providers", () => {
 		expect(isLeanSummaryProvider("llamacpp")).toBe(true);
 		expect(isLeanSummaryProvider("llamacpp-model-b")).toBe(true);
