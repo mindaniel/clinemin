@@ -1634,6 +1634,60 @@ describe("SessionRuntime.shutdown", () => {
 		});
 		expect(session.canStartRun()).toBe(false);
 	});
+
+	it("does not re-throw the abort it asked for", async () => {
+		// The test above lets the aborted run RESOLVE, which is not what a real
+		// abort does: `AgentRuntime.abort` rejects the in-flight run with an
+		// `AgentRuntimeAbortError`. Shutdown used to await that promise bare, so a
+		// plain Ctrl+C surfaced as
+		//   `error: AgentRuntimeAbortError: session_stop`
+		// plus a stack trace, travelling stop() -> cleanup() -> runInteractive()
+		// with nothing catching it. The session had shut down correctly; only the
+		// reporting was wrong, which is the kind of thing that teaches a user to
+		// distrust a clean exit.
+		let rejectRun: ((reason: unknown) => void) | undefined;
+		let markRunEntered: (() => void) | undefined;
+		const runEntered = new Promise<void>((resolve) => {
+			markRunEntered = resolve;
+		});
+		const runtime = {
+			async run() {
+				return await new Promise((_resolve, reject) => {
+					rejectRun = reject;
+					markRunEntered?.();
+				});
+			},
+			async continue() {
+				throw new Error("not used");
+			},
+			abort(reason?: unknown) {
+				rejectRun?.(new Error(String(reason)));
+			},
+			subscribe() {
+				return () => {};
+			},
+			snapshot() {
+				return makeSnapshot();
+			},
+		} as unknown as AgentRuntime;
+
+		const session = new SessionRuntime(makeAgentConfig(), {
+			createAgentRuntimeImpl: () => runtime,
+		});
+
+		const runPromise = session.run("slow");
+		// The run's own caller still owns the rejection, so observe it here or the
+		// assertion below would pass for the wrong reason.
+		const runOutcome = runPromise.then(
+			() => "resolved",
+			() => "rejected",
+		);
+		await runEntered;
+		session.abort("session_stop");
+
+		await expect(session.shutdown("session_stop")).resolves.toBeUndefined();
+		expect(await runOutcome).toBe("rejected");
+	});
 });
 
 // ---------------------------------------------------------------------------

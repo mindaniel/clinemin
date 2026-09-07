@@ -653,7 +653,20 @@ export class SessionRuntime {
 					`SessionRuntime.shutdown called while a run is in progress (agentId=${this.agentId})`,
 				);
 			}
-			await this.activeRunPromise;
+			// Drained, not inspected. We only get here when `abort()` was already
+			// called, so the run rejecting with `AgentRuntimeAbortError` IS the
+			// expected outcome of shutting down — it is not a shutdown failure.
+			//
+			// Re-throwing it made Ctrl+C look like a crash: the abort travelled
+			// stop() -> cleanup() -> runInteractive() with nothing catching it, and
+			// the user got `error: AgentRuntimeAbortError: session_stop` and a stack
+			// trace on a clean exit, as if the session had died rather than stopped.
+			//
+			// Swallowing here is the same rule `abort()` states at length above: the
+			// run's result belongs to whoever called `run()` / `continue()`, and this
+			// class must not convert it into something else. That caller still sees
+			// the rejection; shutdown just stops pretending it owns it.
+			await this.activeRunPromise.catch(() => {});
 		}
 		if (this.shutdownCalled) {
 			return;
