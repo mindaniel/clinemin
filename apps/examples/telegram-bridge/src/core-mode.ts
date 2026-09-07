@@ -1,6 +1,6 @@
 import {
-	ClineCore,
 	type AgentEvent,
+	ClineCore,
 	type CoreSessionEvent,
 	type ToolApprovalRequest,
 	type ToolApprovalResult,
@@ -31,7 +31,6 @@ export interface CoreModeConfig {
 const DEFAULT_SYSTEM_PROMPT = `You are a helpful coding assistant running through a Telegram bridge.
 You can use built-in tools to inspect files, search the workspace, and run shell commands when helpful.
 Be concise and report results clearly.`;
-
 
 export interface CoreTurnUI {
 	onDelta: (text: string) => void;
@@ -166,6 +165,43 @@ export class CoreMode {
 		this.sessionId = null;
 	}
 
+	async getRecentMessages(count: number = 10): Promise<string> {
+		if (!this.cline || !this.sessionId) {
+			return "No active session.";
+		}
+		try {
+			const messages = await this.cline.readMessages(this.sessionId);
+			const recent = messages.slice(-count);
+			if (recent.length === 0) return "No messages in this session yet.";
+
+			const formatted = recent
+				.map((msg: any) => {
+					const role = msg.role === "user" ? "👤 You" : "🤖 Assistant";
+					let content = "";
+					if (typeof msg.content === "string") {
+						content = msg.content;
+					} else if (Array.isArray(msg.content)) {
+						content = msg.content
+							.map((c: any) => (typeof c === "string" ? c : c.text || ""))
+							.join("");
+					} else {
+						content = String(msg.content || "");
+					}
+					const maxLen = 800;
+					const truncated =
+						content.length > maxLen
+							? content.slice(0, maxLen) + "..."
+							: content;
+					return `${role}:\n\`\`\`\n${truncated}\n\`\`\``;
+				})
+				.join("\n");
+
+			return `Last ${Math.min(count, recent.length)} messages:\n\n${formatted}`;
+		} catch (error) {
+			return `Failed to read messages: ${error instanceof Error ? error.message : String(error)}`;
+		}
+	}
+
 	async dispose(): Promise<void> {
 		await this.reset();
 		if (this.unsubscribe) {
@@ -177,7 +213,9 @@ export class CoreMode {
 			this.unsubscribe = null;
 		}
 		if (this.cline) {
-			await this.cline.dispose("telegram-bridge shutdown").catch(() => undefined);
+			await this.cline
+				.dispose("telegram-bridge shutdown")
+				.catch(() => undefined);
 			this.cline = null;
 		}
 	}

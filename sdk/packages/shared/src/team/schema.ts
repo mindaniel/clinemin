@@ -48,8 +48,15 @@ const TeamMemberSnapshotSchema = z.object({
 export const TeamTeammateSpecSchema = z.object({
 	agentId: z.string(),
 	rolePrompt: z.string(),
+	providerId: z.string().optional(),
 	modelId: z.string().optional(),
 	maxIterations: z.number().optional(),
+	/**
+	 * Tool names this worker may use, or undefined for "everything the session
+	 * has". A role prompt saying "do not edit anything" is advice; this is the
+	 * part that holds when the worker decides otherwise.
+	 */
+	tools: z.array(z.string()).optional(),
 });
 
 function nullableOptional<T extends z.ZodTypeAny>(schema: T) {
@@ -66,6 +73,20 @@ export const TeamSpawnTeammateInputSchema = z
 			.string()
 			.min(1)
 			.describe("System prompt describing teammate role"),
+		providerId: z
+			.string()
+			.optional()
+			.describe("Optional provider ID for the teammate"),
+		modelId: z
+			.string()
+			.optional()
+			.describe("Optional model ID for the teammate"),
+		tools: z
+			.array(z.string())
+			.optional()
+			.describe(
+				"Optional allow-list of tool names this teammate may use. Omit to give it every tool the session has.",
+			),
 	})
 	.strict();
 
@@ -132,6 +153,9 @@ export const TeamRunTaskInputSchema = z.object({
 	),
 	continueConversation: nullableOptional(z.boolean()).describe(
 		"If true, continue the teammate conversation; otherwise start fresh",
+	),
+	tools: nullableOptional(z.array(z.string())).describe(
+		"Optional allow-list of tool names to re-scope this teammate to before the run. The new scope persists until changed. Omit to leave its current tools alone.",
 	),
 });
 
@@ -334,6 +358,11 @@ export const TeamRunTaskToolResultSchema = z.object({
 	runId: z.string().optional(),
 	text: z.string().optional(),
 	iterations: z.number().optional(),
+	stoppedWithoutCompletion: z.boolean().optional(),
+	contextUsedTokens: z.number().optional(),
+	contextWindow: z.number().optional(),
+	contextUsedPct: z.number().optional(),
+	note: z.string().optional(),
 });
 
 export const TeamRunResultSummarySchema = z.object({
@@ -348,6 +377,15 @@ export const TeamRunResultSummarySchema = z.object({
 		cacheWriteTokens: z.number().optional(),
 		totalCost: z.number().optional(),
 	}),
+	stoppedWithoutCompletion: z.boolean().optional(),
+	contextUsedTokens: z.number().optional(),
+	contextWindow: z.number().optional(),
+	contextUsedPct: z.number().optional(),
+	// Plain-language restatement of the flags above. Zod strips unknown keys, so
+	// every field a lead is meant to act on has to be declared here; a summary is
+	// only useful to the lead if the model actually reads it, and a sentence in
+	// `note` survives skimming better than a bare boolean.
+	note: z.string().optional(),
 });
 
 export const TeamRunToolSummarySchema = z.object({
@@ -370,6 +408,16 @@ export const TeamRunToolSummarySchema = z.object({
 	currentActivity: z.string().optional(),
 	error: z.string().optional(),
 	resultSummary: TeamRunResultSummarySchema.optional(),
+	/**
+	 * The teammate's full reply, untruncated.
+	 *
+	 * Only `team_await_runs` fills this in. A lead that awaits a run is about to
+	 * judge its output, and `resultSummary.textPreview` is capped at
+	 * TEAM_RUN_TEXT_PREVIEW_LIMIT characters — far too little to evaluate real
+	 * work. `team_list_runs` is a polling call and deliberately leaves this
+	 * unset, so listing many runs cannot flood the lead's context.
+	 */
+	text: z.string().optional(),
 });
 
 export const TeamMailboxMessageToolResultSchema = z.object({

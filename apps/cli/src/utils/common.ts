@@ -67,11 +67,10 @@ export function resolveBuildFingerprint(): string {
 
 		let branch = "";
 		try {
-			branch = execFileSync(
-				"git",
-				["-C", root, "branch", "--show-current"],
-				{ encoding: "utf8", windowsHide: true },
-			).trim();
+			branch = execFileSync("git", ["-C", root, "branch", "--show-current"], {
+				encoding: "utf8",
+				windowsHide: true,
+			}).trim();
 		} catch {
 			// Detached HEAD or not on a branch — omit the branch part.
 		}

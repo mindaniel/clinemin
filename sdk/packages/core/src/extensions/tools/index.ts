@@ -203,8 +203,7 @@ export function createBuiltinTools(
 			// process independently of the tool wrapper, so raising only the
 			// tool wrapper (e.g. for claude-web) would still die at the
 			// executor's 60s default.
-			timeoutMs:
-				executorOptions.bash?.timeoutMs ?? toolsConfig.bashTimeoutMs,
+			timeoutMs: executorOptions.bash?.timeoutMs ?? toolsConfig.bashTimeoutMs,
 		},
 	};
 

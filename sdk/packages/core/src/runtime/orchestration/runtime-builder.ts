@@ -33,6 +33,8 @@ import {
 	AgentTeamsRuntime,
 	bootstrapAgentTeams,
 	createDelegatedAgentConfigProvider,
+	loadTeamRoster,
+	mergeRosterIntoTeammateSpecs,
 	type TeamEvent,
 } from "../../extensions/tools/team";
 import type { ConfiguredAgentConfig } from "../../extensions/tools/team/configured-agent-config";
@@ -56,6 +58,14 @@ import type {
  * turns around them can take much longer than the SDK's normal 60s default.
  */
 const CLAUDE_WEB_COMMAND_TIMEOUT_MS = 1_200_000; // 20 minutes, matching the web provider's response timeout
+
+/**
+ * The project's rule files, concatenated, for handing to delegated agents.
+ *
+ * Read from the instruction service rather than the contribution registry: the
+ * registry is assembled later, inside the orchestrator, and a teammate's config
+ * is built here. Disabled rules are skipped, matching what the lead would see.
+ */
 
 function hasConfigExtension(
 	extensions: ReadonlyArray<RuntimeConfigExtensionKind> | undefined,
@@ -128,6 +138,50 @@ function filterToolsForConfiguredAgent(
 		allowedToolNames.add("skills");
 	}
 	return tools.filter((tool) => allowedToolNames.has(tool.name));
+}
+
+/**
+ * Tools a manager keeps: delegation, and a way to ask the user something.
+ *
+ * Reading, searching, editing, running commands, MCP — all gone. The manager's
+ * whole contract is that it does not touch the work, and a tool it can see is
+ * a tool it will eventually call.
+ *
+ * `ask_question` stays because talking is the manager's entire job and the
+ * user is one of the parties it talks to. Stripping it did not stop a manager
+ * from asking — claude.ai has its own question widget, which the provider maps
+ * onto this tool — it only removed the thing that carried the question, so the
+ * turn ended with no content and surfaced as an error while the user waited on
+ * a question they never saw.
+ *
+ * The completion tools do go, which also settles how a manager ends its turn.
+ * Keeping `submit_and_exit` switched on `requireCompletionTool`, and a manager
+ * on a web provider cannot call a tool at all — it writes prose that the
+ * runtime turns into delegations. So its final answer never counted as
+ * finishing: the loop kept prompting it to continue and it repeated its report
+ * turn after turn. A reply carrying no delegation is the finish signal, which
+ * is exactly what the manager prompt tells it.
+ */
+const MANAGER_EXTRA_TOOL_NAMES = new Set([
+	"ask_question",
+	// A manager cannot read or edit, but it can check. Workers report their own
+	// work, and a worker that says "those files are already deleted" when they
+	// are not leaves the manager with nothing to test the claim against. This is
+	// the manager's own pair of eyes — `<verify>` blocks run through it.
+	"run_commands",
+]);
+
+function restrictToolsForManager(
+	tools: AgentTool[],
+	managerMode: boolean,
+): AgentTool[] {
+	if (!managerMode) {
+		return tools;
+	}
+	return tools.filter(
+		(tool) =>
+			tool.name.startsWith("team_") || MANAGER_EXTRA_TOOL_NAMES.has(tool.name),
+	);
 }
 
 export function createTeamName(): string {
@@ -330,8 +384,12 @@ function normalizeConfig(
 		enableTools: config.enableTools !== false,
 		enableSpawnAgent:
 			config.enableSpawnAgent ?? preset.enableSpawnAgent ?? true,
+		// Manager mode is delegation and nothing else, so the team tools are the
+		// only tools it has. Letting a preset switch them off would leave a
+		// manager with no way to reach a worker at all.
 		enableAgentTeams:
-			config.enableAgentTeams ?? preset.enableAgentTeams ?? true,
+			config.managerMode === true ||
+			(config.enableAgentTeams ?? preset.enableAgentTeams ?? true),
 		disableMcpSettingsTools: config.disableMcpSettingsTools === true,
 		yolo: config.yolo === true,
 		missionLogIntervalSteps:
@@ -489,7 +547,27 @@ export class DefaultRuntimeBuilder implements RuntimeBuilder {
 			: undefined;
 		const restoredTeam = teamStore?.loadRuntime(teamStoreKey);
 		const restoredTeamState = restoredTeam?.state;
-		const restoredTeammateSpecs = restoredTeam?.teammates ?? [];
+		// A declared roster fills in workers that persistence does not already
+		// know about, so a team resumes with its full line-up — and its
+		// per-worker providers — without the lead re-spawning anyone by hand.
+		//
+		// Only a manager reads that roster: it is the list it delegates from. A
+		// plain session that never delegates would otherwise spawn every worker
+		// in `.cline/team.json` at startup and tear them down at exit, which is
+		// visible noise ("teammate spawned/shutdown" for workers nothing ever
+		// addressed) and a runtime per worker held open for nothing. Teammates a
+		// session really did spawn still come back through persistence above.
+		const teamRosterLoad =
+			normalized.enableAgentTeams && config.managerMode === true
+				? loadTeamRoster({ workspaceRoot: workspaceConfigRoot })
+				: {};
+		if (teamRosterLoad.error) {
+			config.logger?.error?.(`Ignoring team roster: ${teamRosterLoad.error}`);
+		}
+		const restoredTeammateSpecs = mergeRosterIntoTeammateSpecs(
+			restoredTeam?.teammates ?? [],
+			teamRosterLoad.roster,
+		);
 		const teammateSpecs = new Map(
 			restoredTeammateSpecs.map((spec) => [spec.agentId, spec] as const),
 		);
@@ -521,6 +599,9 @@ export class DefaultRuntimeBuilder implements RuntimeBuilder {
 			logger: logger ?? config.logger,
 			telemetry: input.telemetry ?? config.telemetry,
 			workspaceMetadata: config.workspaceMetadata,
+			// Teammates do the file work, so the project rules go to them. The
+			// lead's own prompt drops them on web providers — see the rules slot in
+			// `buildClineSystemPrompt`.
 		});
 		if (normalized.enableSpawnAgent) {
 			if (configuredAgents.configs.length > 0) {
@@ -596,8 +677,10 @@ export class DefaultRuntimeBuilder implements RuntimeBuilder {
 								const spec: TeamTeammateSpec = {
 									agentId: event.agentId,
 									rolePrompt: event.teammate.rolePrompt,
+									providerId: event.teammate.providerId,
 									modelId: event.teammate.modelId,
 									maxIterations: event.teammate.maxIterations,
+									tools: event.teammate.tools,
 								};
 								teammateSpecs.set(spec.agentId, spec);
 							}
@@ -641,12 +724,14 @@ export class DefaultRuntimeBuilder implements RuntimeBuilder {
 						leadAgentInstance?.addTools(teamTools);
 					},
 					createBaseTools: normalized.enableTools
-						? () =>
+						? (agent) =>
 								createBuiltinToolsList(
 									config.cwd,
-									config.providerId,
+									// The teammate's own provider and model, not the lead's:
+									// these pick the command timeout and the edit tool.
+									agent?.providerId ?? config.providerId,
 									normalized.mode,
-									config.modelId,
+									agent?.modelId ?? config.modelId,
 									config.toolRoutingRules,
 									effectiveToolPolicies,
 									undefined,
@@ -685,7 +770,10 @@ export class DefaultRuntimeBuilder implements RuntimeBuilder {
 			ensureTeamRuntime();
 		}
 
-		const finalTools = filterAvailableTools(tools, effectiveToolPolicies);
+		const finalTools = restrictToolsForManager(
+			filterAvailableTools(tools, effectiveToolPolicies),
+			config.managerMode === true,
+		);
 		const requiresCompletionTool = finalTools.some(
 			(tool) =>
 				tool.name === "submit_and_exit" &&

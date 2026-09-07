@@ -37,7 +37,6 @@ export const SessionSource = {
 	CLI: "cli",
 	SUBAGENT: "subagent",
 	DESKTOP: "desktop",
-	KANBAN: "kanban",
 	API: "api",
 	WEB: "web",
 	VSCODE: "vscode",

@@ -22,3 +22,11 @@ export type {
 	SubAgentEndContext,
 	SubAgentStartContext,
 } from "./spawn-agent-tool";
+export {
+	listManagerWorkers,
+	loadTeamRoster,
+	mergeRosterIntoTeammateSpecs,
+	resolveTeamRosterSearchPaths,
+	type TeamRosterLoadResult,
+	writeTeamRoster,
+} from "./team-roster-config";

@@ -95,6 +95,14 @@ async function loadFamilyFactory(
 				const module = await import("./ai-sdk");
 				return module.createGeminiWebProvider;
 			}
+			case "kimi-web": {
+				const module = await import("./ai-sdk");
+				return module.createKimiWebProvider;
+			}
+			case "grok-web": {
+				const module = await import("./ai-sdk");
+				return module.createGrokWebProvider;
+			}
 			default: {
 				throw new Error(`Unsupported provider family: ${family}`);
 			}

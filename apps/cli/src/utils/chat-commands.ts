@@ -423,6 +423,17 @@ function createDefaultChatCommandHost(): ChatCommandHost {
 			},
 		})
 		.register("command", {
+			names: ["/manager"],
+			run: async (_parsed, context) => {
+				// Like /team, the interactive runtime intercepts this before the host
+				// sees it: switching into manager mode rebuilds the system prompt and
+				// restarts the session, which only the runtime can do.
+				await context.reply(
+					"The /manager command must be entered directly as a prompt at the start of a session, not via a chat command.",
+				);
+			},
+		})
+		.register("command", {
 			names: ["/team"],
 			run: async ({ args }, context) => {
 				const taskBody = args.join(" ").trim();

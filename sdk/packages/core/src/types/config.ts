@@ -57,6 +57,17 @@ export interface CoreRuntimeFeatures {
 	enableAgentTeams: boolean;
 	disableMcpSettingsTools?: boolean;
 	yolo?: boolean;
+	/**
+	 * Run this session as a team manager: it coordinates workers and does none
+	 * of the work itself.
+	 *
+	 * Two effects, and both are needed for the role to hold. The system prompt
+	 * becomes the manager prompt (`buildManagerSystemPrompt`), and the lead's
+	 * file and shell tools are removed, leaving only delegation. Prompting alone
+	 * does not work — a model told it has `run_commands` will use it, whatever
+	 * the prompt says about coordinating.
+	 */
+	managerMode?: boolean;
 }
 
 export type CoreCompactionMode = "auto" | "manual";

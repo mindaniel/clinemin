@@ -22,6 +22,8 @@ import {
 } from "./context";
 
 const HUB_RUN_HEARTBEAT_MS = 30_000;
+/** Floor on how often a heartbeat is written to the log, as opposed to published. */
+const HUB_RUN_HEARTBEAT_LOG_INTERVAL_MS = 5 * 60_000;
 
 function terminalRunEventForReason(
 	reason: string,
@@ -95,13 +97,26 @@ async function runTurnWithRuntimeHealth(
 		sessionId: input.sessionId,
 		timeoutMs,
 	};
+	// The heartbeat EVENT goes out on every tick — clients use it to tell a slow
+	// turn from a dead one. The LOG LINE does not: at one line per tick per
+	// active run it was the bulk of a 1.27 GB daemon log, and a long run says
+	// nothing new every thirty seconds. Log the first tick, then throttle, which
+	// still leaves a clear trail of a run that is stuck.
+	let lastLoggedAt: number | undefined;
 	const heartbeat = setInterval(() => {
 		if (settled) return;
 		const elapsedMs = Math.round(performance.now() - startedAt);
-		logHubMessage("warn", "run.heartbeat", {
-			...baseContext,
-			elapsedMs,
-		});
+		const now = performance.now();
+		if (
+			lastLoggedAt === undefined ||
+			now - lastLoggedAt >= HUB_RUN_HEARTBEAT_LOG_INTERVAL_MS
+		) {
+			lastLoggedAt = now;
+			logHubMessage("warn", "run.heartbeat", {
+				...baseContext,
+				elapsedMs,
+			});
+		}
 		ctx.publish(
 			ctx.buildEvent(
 				"run.heartbeat",

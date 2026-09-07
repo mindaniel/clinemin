@@ -1,6 +1,7 @@
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
+import { shutdownLaunchedBrowsers } from "./browser-processes";
 import { processGlobal } from "./process-global";
 
 /**
@@ -288,6 +289,147 @@ export interface ResolvedProfilePaths {
  * `defaultDebugPort` its stock port. On the default profile both come back
  * exactly as they were before profiles existed.
  */
+/**
+ * Every browser-driven provider, with the debug port it uses on the default
+ * profile.
+ *
+ * The ports live on the providers themselves; this table repeats them because
+ * resetting a profile has to reach all seven directories at once, and importing
+ * seven provider modules to read one constant each would drag their Chrome
+ * launch machinery in with it. `browser-profiles.reset.test.ts` reads the
+ * provider sources and fails if the two ever disagree, so the copy cannot rot
+ * silently.
+ */
+export const WEB_PROVIDER_BROWSERS = [
+	{ providerId: "deepseek-web-v2", defaultDebugPort: 9222 },
+	{ providerId: "qwen-web", defaultDebugPort: 9223 },
+	{ providerId: "chatgpt-web", defaultDebugPort: 9224 },
+	{ providerId: "claude-web", defaultDebugPort: 9225 },
+	{ providerId: "gemini-web", defaultDebugPort: 9226 },
+	{ providerId: "kimi-web", defaultDebugPort: 9227 },
+	{ providerId: "grok-web", defaultDebugPort: 9228 },
+] as const;
+
+/** Where one provider keeps its browser state under a NAMED profile. */
+export interface ProfileBrowserTarget extends ResolvedProfilePaths {
+	providerId: string;
+}
+
+function profileConfigDir(providerId: string): string {
+	return path.join(os.homedir(), ".cline", providerId);
+}
+
+/**
+ * Resolve one provider's paths for `name`, whether or not it is active.
+ *
+ * `resolveActiveProfilePaths` answers for the profile this process is on, which
+ * is the right question at turn time and the wrong one for `/profile`, where
+ * the user is pointing at a row that is usually NOT the active profile.
+ */
+export function resolveProfilePaths(
+	name: string,
+	configDir: string,
+	defaultDebugPort: number,
+): ResolvedProfilePaths {
+	if (name === DEFAULT_PROFILE_NAME) {
+		return {
+			profileName: name,
+			profileDir: path.join(configDir, "profile"),
+			debugPort: defaultDebugPort,
+			chatsFile: path.join(configDir, "chats.json"),
+		};
+	}
+	const store = readStore();
+	const entry = store.profiles.find((profile) => profile.name === name);
+	const base = path.join(configDir, "profiles", name);
+	return {
+		profileName: name,
+		profileDir: path.join(base, "profile"),
+		debugPort: defaultDebugPort + (entry?.portOffset ?? 0) * PORT_STEP,
+		chatsFile: path.join(base, "chats.json"),
+	};
+}
+
+/** Every provider's browser state for `name`. */
+export function listProfileBrowserTargets(
+	name: string,
+): ProfileBrowserTarget[] {
+	return WEB_PROVIDER_BROWSERS.map((browser) => ({
+		providerId: browser.providerId,
+		...resolveProfilePaths(
+			name,
+			profileConfigDir(browser.providerId),
+			browser.defaultDebugPort,
+		),
+	}));
+}
+
+/** Is something still listening on this provider's DevTools port? */
+async function isDebugPortUp(port: number): Promise<boolean> {
+	try {
+		const response = await fetch(`http://127.0.0.1:${port}/json/version`, {
+			signal: AbortSignal.timeout(600),
+		});
+		return response.ok;
+	} catch {
+		return false;
+	}
+}
+
+export interface ProfileResetResult {
+	/** Directories and files actually removed. */
+	removed: string[];
+	/**
+	 * Providers left alone because their Chrome was still listening. Deleting a
+	 * live `--user-data-dir` does not sign the user out — Chrome holds the
+	 * profile in memory, rewrites parts of it, and the next launch comes back on
+	 * a half-written directory.
+	 */
+	busy: { providerId: string; debugPort: number }[];
+}
+
+/**
+ * Sign a profile out of every web provider by deleting its Chrome directories.
+ *
+ * The `--user-data-dir` IS the login, so this is the only way to clear cookies
+ * short of doing it inside each browser by hand. It is deliberately separate
+ * from `deleteBrowserProfile`, which only forgets the list entry: one is "I do
+ * not use this profile any more", the other is "sign me out".
+ *
+ * Browsers this process launched are closed first. One the user started
+ * themselves is not ours to kill, so its provider is reported as busy and its
+ * directory is left intact rather than corrupted.
+ */
+export async function resetBrowserProfileData(
+	name: string,
+	options: { includeChats?: boolean } = {},
+): Promise<ProfileResetResult> {
+	await shutdownLaunchedBrowsers();
+
+	const removed: string[] = [];
+	const busy: ProfileResetResult["busy"] = [];
+
+	for (const target of listProfileBrowserTargets(name)) {
+		if (await isDebugPortUp(target.debugPort)) {
+			busy.push({
+				providerId: target.providerId,
+				debugPort: target.debugPort,
+			});
+			continue;
+		}
+		for (const victim of [
+			target.profileDir,
+			...(options.includeChats ? [target.chatsFile] : []),
+		]) {
+			if (!fs.existsSync(victim)) continue;
+			fs.rmSync(victim, { recursive: true, force: true });
+			removed.push(victim);
+		}
+	}
+
+	return { removed, busy };
+}
+
 export function resolveActiveProfilePaths(
 	configDir: string,
 	defaultDebugPort: number,

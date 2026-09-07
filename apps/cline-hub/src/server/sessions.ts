@@ -1,10 +1,12 @@
 import process from "node:process";
 import {
 	type ClineCoreStartInput,
+	listManagerWorkers,
 	type SessionRecord,
 	SessionSource,
 } from "@cline/core";
 import type { Message } from "@cline/llms";
+import { buildManagerSystemPrompt } from "@cline/shared";
 import type { WebviewConfig, WebviewReasonLevel } from "../webview-protocol";
 import { rejectPendingApprovalsForSession } from "./approvals";
 import { providerSettingsManager, workspaceRoot } from "./deps";
@@ -85,6 +87,7 @@ function buildSessionStartInput(
 		enableTools?: boolean;
 		enableSpawn?: boolean;
 		enableTeams?: boolean;
+		managerMode?: boolean;
 		autoApproveTools?: boolean;
 		teamName?: string;
 		source?: SessionSource;
@@ -94,6 +97,20 @@ function buildSessionStartInput(
 ): ClineCoreStartInput {
 	const mode = options?.mode === "plan" ? "plan" : "act";
 	const reasoningOptions = toRuntimeReasoningOptions(options?.reasonLevel);
+	const managerMode = options?.managerMode === true;
+	// A manager coordinates and delegates; the prompt has to be built here
+	// because @cline/shared cannot read the roster off disk. An explicit system
+	// prompt still wins — that is the user typing their own.
+	const systemPrompt =
+		managerMode && !options?.systemPrompt?.trim()
+			? buildManagerSystemPrompt({
+					workers: listManagerWorkers({
+						workspaceRoot: context.workspaceRoot,
+					}),
+					workspaceRoot: context.cwd,
+					platform: process.platform,
+				})
+			: (options?.systemPrompt ?? "");
 	return {
 		source: options?.source ?? SessionSource.WEB,
 		interactive: true,
@@ -102,13 +119,14 @@ function buildSessionStartInput(
 			cwd: context.cwd,
 			providerId: context.providerId,
 			modelId: context.modelId,
-			systemPrompt: options?.systemPrompt ?? "",
+			systemPrompt,
 			mode,
 			...reasoningOptions,
 			maxIterations: options?.maxIterations,
 			enableTools: options?.enableTools !== false,
 			enableSpawnAgent: options?.enableSpawn !== false,
-			enableAgentTeams: options?.enableTeams === true,
+			enableAgentTeams: options?.enableTeams === true || managerMode,
+			managerMode,
 			teamName: options?.teamName ?? "cline-hub",
 			missionLogIntervalSteps: 3,
 			missionLogIntervalMs: 120000,
@@ -118,6 +136,7 @@ function buildSessionStartInput(
 			source: options?.source ?? SessionSource.WEB,
 			mode,
 			systemPrompt: options?.systemPrompt,
+			managerMode,
 			maxIterations: options?.maxIterations,
 			reasonLevel: options?.reasonLevel,
 			autoApproveTools: options?.autoApproveTools,
@@ -223,6 +242,7 @@ export async function createSession(
 			enableTools: config?.enableTools,
 			enableSpawn: config?.enableSpawn,
 			enableTeams: config?.enableTeams,
+			managerMode: config?.managerMode,
 			autoApproveTools: config?.autoApproveTools,
 		}),
 	);

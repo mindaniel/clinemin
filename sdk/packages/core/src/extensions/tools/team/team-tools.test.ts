@@ -1,4 +1,5 @@
 import { join } from "node:path";
+import type { AgentTool } from "@cline/shared";
 import { resolveTeamDataDir } from "@cline/shared/storage";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { createDelegatedAgentConfigProvider } from "./delegated-agent";
@@ -509,6 +510,154 @@ describe("createAgentTeamsTools runtime behavior", () => {
 		);
 	});
 
+	it("cuts a teammate down to the tools it was granted", async () => {
+		const spawnTeammate = vi.fn();
+		const runtime = {
+			getMemberRole: vi.fn(() => "lead"),
+			isTeammateActive: vi.fn(() => false),
+			spawnTeammate,
+		} as unknown as AgentTeamsRuntime;
+		const baseTools = [
+			"read_files",
+			"search_codebase",
+			"editor",
+			"run_commands",
+		].map(
+			(name) =>
+				({
+					name,
+					description: name,
+					inputSchema: {},
+					execute: async () => "",
+				}) as unknown as AgentTool,
+		);
+
+		const tools = createAgentTeamsTools({
+			runtime,
+			requesterId: "lead",
+			teammateConfigProvider: makeTeammateConfigProvider({
+				providerId: "cline",
+				modelId: "anthropic/claude-sonnet-4.6",
+			}),
+			createBaseTools: () => baseTools,
+			includeManagementTools: false,
+		});
+
+		await tools
+			.find((tool) => tool.name === "team_spawn_teammate")
+			?.execute(
+				{
+					agentId: "extractor",
+					rolePrompt: "Read files. Do not edit anything.",
+					tools: ["read_files", "search_codebase"],
+				},
+				{ agentId: "lead", conversationId: "conv-1", iteration: 1 },
+			);
+
+		const spawned = (spawnTeammate.mock.calls[0]?.[0]?.config?.tools ??
+			[]) as AgentTool[];
+		const names = spawned.map((tool) => tool.name);
+		// "Do not edit anything" is advice; this is the part that holds.
+		expect(names).toContain("read_files");
+		expect(names).toContain("search_codebase");
+		expect(names).not.toContain("editor");
+		expect(names).not.toContain("run_commands");
+		// A scoped worker still has to be able to report back and ask.
+		expect(names).toContain("ask_question");
+		expect(names.some((name) => name.startsWith("team_"))).toBe(true);
+	});
+
+	it("gives a teammate an ask_question that reaches its manager", async () => {
+		const spawnTeammate = vi.fn();
+		const runtime = {
+			getMemberRole: vi.fn(() => "lead"),
+			isTeammateActive: vi.fn(() => false),
+			spawnTeammate,
+		} as unknown as AgentTeamsRuntime;
+
+		const tools = createAgentTeamsTools({
+			runtime,
+			requesterId: "lead",
+			teammateConfigProvider: makeTeammateConfigProvider({
+				providerId: "cline",
+				modelId: "anthropic/claude-sonnet-4.6",
+			}),
+			// The host's own ask_question asks a human who is not watching.
+			createBaseTools: () => [
+				{
+					name: "ask_question",
+					description: "host version",
+					inputSchema: {},
+					execute: async () => "user answered",
+				} as unknown as AgentTool,
+			],
+			includeManagementTools: false,
+		});
+
+		await tools
+			.find((tool) => tool.name === "team_spawn_teammate")
+			?.execute(
+				{ agentId: "extractor", rolePrompt: "Read files." },
+				{ agentId: "lead", conversationId: "conv-1", iteration: 1 },
+			);
+
+		const spawned = spawnTeammate.mock.calls[0]?.[0]?.config?.tools as
+			| AgentTool[]
+			| undefined;
+		const askTools = spawned?.filter((tool) => tool.name === "ask_question");
+		expect(askTools).toHaveLength(1);
+		expect(askTools?.[0]?.lifecycle?.completesRun).toBe(true);
+
+		const answer = await askTools?.[0]?.execute(
+			{ question: "Delete dependencies too?", options: ["Yes", "No"] },
+			{ agentId: "extractor", conversationId: "conv-2", iteration: 1 },
+		);
+		expect(String(answer)).toContain("extractor needs an answer");
+		expect(String(answer)).toContain("Delete dependencies too?");
+		expect(String(answer)).toContain("- Yes");
+	});
+
+	it("builds a teammate's tools from its own provider, not the lead's", async () => {
+		const spawnTeammate = vi.fn();
+		const runtime = {
+			getMemberRole: vi.fn(() => "lead"),
+			isTeammateActive: vi.fn(() => false),
+			spawnTeammate,
+		} as unknown as AgentTeamsRuntime;
+		const createBaseTools = vi.fn(() => []);
+
+		const tools = createAgentTeamsTools({
+			runtime,
+			requesterId: "lead",
+			teammateConfigProvider: makeTeammateConfigProvider({
+				providerId: "claude-web",
+				modelId: "claude-auto",
+			}),
+			createBaseTools,
+			includeManagementTools: false,
+		});
+
+		await tools
+			.find((tool) => tool.name === "team_spawn_teammate")
+			?.execute(
+				{
+					agentId: "extractor",
+					rolePrompt: "Read files.",
+					providerId: "deepseek-web-v2",
+					modelId: "deepseek-reasoner",
+				},
+				{ agentId: "lead", conversationId: "conv-1", iteration: 1 },
+			);
+
+		// The lead is claude-web, which carries a 20-minute command timeout and
+		// its own edit-tool routing. A worker on another provider must not
+		// inherit either.
+		expect(createBaseTools).toHaveBeenCalledWith({
+			providerId: "deepseek-web-v2",
+			modelId: "deepseek-reasoner",
+		});
+	});
+
 	it("injects workspace metadata into cline teammate system prompt", async () => {
 		const spawnTeammate = vi.fn();
 		const runtime = {
@@ -632,7 +781,7 @@ describe("createAgentTeamsTools runtime behavior", () => {
 		);
 	});
 
-	it("returns compact summaries from team_await_runs without full teammate transcripts", async () => {
+	it("returns the teammate's final text from team_await_runs, but not its transcript", async () => {
 		const runtime = {
 			awaitRun: vi.fn(async () => ({
 				id: "run_0001",
@@ -657,7 +806,17 @@ describe("createAgentTeamsTools runtime behavior", () => {
 						cacheWriteTokens: 120,
 						totalCost: 0.12,
 					},
-					messages: [{ role: "user", content: "huge transcript omitted" }],
+					messages: [
+						{ role: "user", content: "huge transcript omitted" },
+						// The last turn's own input tokens are the teammate's context.
+						// `usage.inputTokens` above is the run total across all three
+						// iterations, which is a different and much larger number.
+						{
+							role: "assistant",
+							content: "omitted",
+							metrics: { inputTokens: 900 },
+						},
+					],
 					toolCalls: [{ name: "read_file", input: {}, output: "omitted" }],
 					iterations: 3,
 					finishReason: "completed",
@@ -689,6 +848,10 @@ describe("createAgentTeamsTools runtime behavior", () => {
 			id: "run_0001",
 			agentId: "models-investigator",
 			status: "completed",
+			// A lead that awaited a run is about to judge its output, so it gets the
+			// full reply. The `messages` transcript is still left out.
+			text: "Models are the public catalog and provider files are provider-specific defaults.",
+			taskId: undefined,
 			messagePreview:
 				"Investigate the models directory and summarize the boundaries",
 			priority: 0,
@@ -699,6 +862,11 @@ describe("createAgentTeamsTools runtime behavior", () => {
 			lastProgressAt: "2026-03-24T09:00:59.000Z",
 			lastProgressMessage: "completed",
 			currentActivity: "completed",
+			leaseOwner: undefined,
+			heartbeatAt: undefined,
+			nextAttemptAt: undefined,
+			continueConversation: undefined,
+			error: undefined,
 			resultSummary: {
 				textPreview:
 					"Models are the public catalog and provider files are provider-specific defaults.",
@@ -712,6 +880,12 @@ describe("createAgentTeamsTools runtime behavior", () => {
 					cacheWriteTokens: 120,
 					totalCost: 0.12,
 				},
+				// This fixture's teammate called `read_file` and then stopped on
+				// prose, which is precisely the run a lead must not mistake for a
+				// finished one.
+				stoppedWithoutCompletion: true,
+				contextUsedTokens: 900,
+				note: "models-investigator stopped by replying with text instead of calling a completion tool, so the task is NOT confirmed done. Read its text below, then either send the next instruction with team_run_task (continueConversation=true) or mark the shared task complete yourself if the work is actually finished.",
 			},
 		});
 	});

@@ -25,6 +25,8 @@ export type LocalSlashCommandName =
 	| "clear"
 	| "history"
 	| "findchat"
+	| "workers"
+	| "manager"
 	| "paste"
 	| "note"
 	| "profile"
@@ -114,6 +116,19 @@ const TUI_LOCAL_COMMANDS: Array<{
 		description: "Find and reopen a DeepSeek Web v2 chat (web provider)",
 	},
 	{
+		name: "workers",
+		description: "Set up the workers a manager can delegate to",
+	},
+	{
+		name: "manager",
+		description:
+			"Start manager mode (pick a model), or /manager <task> to go straight in",
+		// Only the bare word is handled here. `/manager fix the build` still has
+		// to reach the chat runner — the one place that can rebuild the system
+		// prompt for a task — so the local action declines it and the input is
+		// submitted as a prompt instead.
+	},
+	{
 		name: "paste",
 		description:
 			"Preview the clipboard, then use it as the model reply (web provider recovery)",
@@ -124,7 +139,8 @@ const TUI_LOCAL_COMMANDS: Array<{
 	},
 	{
 		name: "profile",
-		description: "Switch the browser profile web providers log in with",
+		description:
+			"Switch the browser profile web providers log in with, or sign one out",
 	},
 	{
 		name: "help",
@@ -149,6 +165,8 @@ const SYSTEM_COMMAND_ORDER = [
 	"undo",
 	"clear",
 	"team",
+	"manager",
+	"workers",
 	"history",
 	"findchat",
 	"paste",

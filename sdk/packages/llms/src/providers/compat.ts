@@ -22,6 +22,8 @@ import {
 	createDifyProvider,
 	createGeminiWebProvider,
 	createGoogleProvider,
+	createGrokWebProvider,
+	createKimiWebProvider,
 	createMistralProvider,
 	createOllamaProvider,
 	createOpenAICodexProvider,
@@ -186,6 +188,10 @@ function resolveFactory(
 
 		case "gemini-web":
 			return createGeminiWebProvider;
+		case "kimi-web":
+			return createKimiWebProvider;
+		case "grok-web":
+			return createGrokWebProvider;
 		default:
 			return createOpenAICompatibleProvider;
 	}

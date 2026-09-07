@@ -10,7 +10,6 @@ import type {
 	ToolApprovalRequest,
 	ToolApprovalResult,
 } from "@cline/shared";
-import type { CliMigrationNotice } from "../kanban-migration/notice";
 import type {
 	PendingPromptSnapshot,
 	PendingPromptSubmittedEvent,
@@ -147,8 +146,6 @@ export interface TuiProps {
 	config: Config;
 	startupTarget?: TuiStartupTarget;
 	initialPrompt?: string;
-	initialNotice?: CliMigrationNotice;
-	onInitialNoticeShown?: (notice: CliMigrationNotice) => void | Promise<void>;
 	initialMessages?: Message[];
 	loadDeferredInitialMessages?: () => Promise<ResumedSessionResult>;
 	initialRepoStatus?: RepoStatus;
@@ -197,6 +194,12 @@ export interface TuiProps {
 	onModeChange: (mode: AgentMode) => Promise<void>;
 	onNewSession: () => Promise<void>;
 	onSessionRestart: () => Promise<void>;
+	/**
+	 * Start manager mode on the given provider, restarting the session empty.
+	 * A manager's system prompt replaces the coding-agent one, and that is fixed
+	 * for a session's life — so this cannot convert a conversation in flight.
+	 */
+	onStartManager: (providerId: string) => Promise<void>;
 	onAccountChange: () => Promise<void>;
 	onResumeSession: (sessionId: string) => Promise<ResumedSessionResult>;
 	onExportHistorySession: (

@@ -170,6 +170,11 @@ describe("ensureDetachedHubServer", () => {
 		expect(spawnOptions?.env?.CLINE_CONNECTOR_CLI_LAUNCH).toBe(
 			process.env.CLINE_CONNECTOR_CLI_LAUNCH,
 		);
+		// A daemon nobody asked for exits once nothing needs it, so a rebuild is
+		// not silently served by the modules this process loaded at startup.
+		expect(
+			Number(spawnOptions?.env?.CLINE_HUB_IDLE_SHUTDOWN_MS),
+		).toBeGreaterThan(0);
 	});
 
 	it("retries a transient ETXTBSY spawn failure while starting the detached daemon", async () => {

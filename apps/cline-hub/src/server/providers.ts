@@ -91,6 +91,9 @@ export async function loadModels(
 		name: model.name,
 		supportsReasoning: model.supportsReasoning,
 		supportsThinking: model.supportsReasoning,
+		contextWindow: model.contextWindow,
+		maxInputTokens: model.maxInputTokens,
+		maxTokens: model.maxTokens,
 	}));
 	ctx.send(peer, { type: "models", providerId: provider, models });
 }

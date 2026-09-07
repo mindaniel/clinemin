@@ -198,6 +198,45 @@ Use the review guidance.`,
 		expect(runtime.telemetry).toBe(telemetry);
 	});
 
+	it("leaves a manager only what it needs to delegate and check", async () => {
+		const runtime = await new DefaultRuntimeBuilder().build({
+			config: makeBaseConfig({ managerMode: true }),
+			// `ask_question` only exists when the host can actually put a question
+			// to someone, so the manager test has to supply that the same way an
+			// interactive host does.
+			toolExecutors: { askQuestion: async () => "answer" },
+		});
+
+		const names = runtime.tools.map((tool) => tool.name);
+		expect(names).toContain("team_run_task");
+		expect(names).toContain("team_spawn_teammate");
+		// Asking the user something is talking, which is the manager's job.
+		expect(names).toContain("ask_question");
+		// No completion tool, so the runtime does not demand one to end a turn —
+		// a manager on a web provider could never call it.
+		expect(names).not.toContain("submit_and_exit");
+		expect(runtime.completionPolicy?.requireCompletionTool).not.toBe(true);
+		// A manager can look — a worker reporting on its own work is not evidence,
+		// and `<verify>` blocks run through this tool.
+		expect(names).toContain("run_commands");
+		// But it cannot do the work: a manager that can read and edit will do the
+		// job itself instead of delegating it.
+		for (const toolName of ["read_files", "search_codebase", "editor"]) {
+			expect(names).not.toContain(toolName);
+		}
+	});
+
+	it("turns the team tools on for a manager even when teams are off", async () => {
+		const runtime = await new DefaultRuntimeBuilder().build({
+			config: makeBaseConfig({
+				managerMode: true,
+				enableAgentTeams: false,
+			}),
+		});
+
+		expect(runtime.tools.map((tool) => tool.name)).toContain("team_run_task");
+	});
+
 	it("uses readonly preset in plan mode", async () => {
 		const runtime = await new DefaultRuntimeBuilder().build({
 			config: makeBaseConfig({

@@ -3,6 +3,7 @@ import { homedir } from "node:os";
 import { basename, resolve } from "node:path";
 import {
 	buildWorkspaceMetadata,
+	listManagerWorkers,
 	mergeRulesForSystemPrompt,
 	type UserInstructionConfigService,
 } from "@cline/core";
@@ -15,12 +16,8 @@ export async function resolveSystemPrompt(input: {
 	providerId?: string;
 	rules?: string;
 	mode?: AgentMode;
+	managerMode?: boolean;
 }): Promise<string> {
-	// Debug log: show exactly which providerId reaches the CLI system-prompt
-	// resolver, so we can confirm the claude-web diversion actually fires.
-	console.error(
-		`[debug:resolveSystemPrompt] providerId=${JSON.stringify(input.providerId)}`,
-	);
 	const metadata = await buildWorkspaceMetadata(input.cwd);
 	// Mode-tag and plan-mode instructions are appended by the shared prompt
 	// builder itself (see MODE_TAG_INSTRUCTIONS / PLAN_MODE_INSTRUCTIONS in
@@ -34,6 +31,12 @@ export async function resolveSystemPrompt(input: {
 		rules,
 		mode: input.mode,
 		providerId: input.providerId,
+		managerMode: input.managerMode,
+		// The roster is read here rather than inside the prompt builder because
+		// @cline/shared also builds for the browser and cannot touch the disk.
+		managerWorkers: input.managerMode
+			? listManagerWorkers({ workspaceRoot: input.cwd })
+			: undefined,
 		overridePrompt: input.explicitSystemPrompt,
 		platform:
 			(typeof process !== "undefined" && process?.platform) || "unknown",

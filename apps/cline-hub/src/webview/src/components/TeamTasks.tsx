@@ -147,12 +147,18 @@ function describeTeamTool(event: TeamToolEvent): string | undefined {
 			}
 			return undefined;
 		}
-		case "team_run_task":
-			return (
-				asString(output?.message) ??
-				asString(output?.runId) ??
-				asString(output?.text)
-			);
+		case "team_run_task": {
+			// A sync run carries the worker's whole reply plus a plain-language
+			// note about how it ended. Showing only `message` meant the one thing
+			// worth reading — what the worker actually said — was invisible
+			// unless you went digging through the run rows.
+			const parts = [
+				asString(output?.message) ?? asString(output?.runId),
+				asString(output?.note),
+				asString(output?.text),
+			].filter((part): part is string => Boolean(part?.trim()));
+			return parts.length > 0 ? parts.join("\n\n") : undefined;
+		}
 		case "team_send_message":
 		case "team_broadcast":
 			return asString(input?.body);
@@ -228,7 +234,7 @@ export default function TeamTasks({
 						<TaskItem className="space-y-1" key={event.id}>
 							<div>{summarizeTeamTool(event)}</div>
 							{description ? (
-								<div className="line-clamp-3 text-xs text-muted-foreground/90">
+								<div className="max-h-64 overflow-y-auto whitespace-pre-wrap text-xs text-muted-foreground/90">
 									{description}
 								</div>
 							) : null}

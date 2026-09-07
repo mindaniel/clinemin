@@ -65,6 +65,9 @@ function parseTeammatesJson(raw: string): TeamTeammateSpec[] {
 			agentId: agentId.trim(),
 			rolePrompt,
 		};
+		if (typeof rec.providerId === "string" && rec.providerId.trim()) {
+			spec.providerId = rec.providerId.trim();
+		}
 		if (typeof rec.modelId === "string" && rec.modelId.trim()) {
 			spec.modelId = rec.modelId.trim();
 		}
@@ -73,6 +76,13 @@ function parseTeammatesJson(raw: string): TeamTeammateSpec[] {
 			Number.isFinite(rec.maxIterations)
 		) {
 			spec.maxIterations = Math.max(1, Math.floor(rec.maxIterations));
+		}
+		if (Array.isArray(rec.tools)) {
+			// An empty array is a real scope ("team tools only"), so it survives
+			// the round trip; only a non-array is treated as "never scoped".
+			spec.tools = rec.tools.filter(
+				(name): name is string => typeof name === "string" && !!name.trim(),
+			);
 		}
 		out.push(spec);
 	}

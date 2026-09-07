@@ -138,6 +138,11 @@ export function listInteractiveSlashCommands(
 			instructions: "/team [prompt]",
 			description: "Start the task with agent team",
 		},
+		{
+			name: "manager",
+			instructions: "/manager [task]",
+			description: "Delegate the task to the workers in .cline/team.json",
+		},
 	];
 	if (!userInstructionService) {
 		return builtins;

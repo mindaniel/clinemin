@@ -2,6 +2,7 @@ import {
 	getCurrentContextSize,
 	type ProviderSettings,
 	ProviderSettingsManager,
+	resolveProviderConfig,
 	setCompactionModeGlobally,
 	setPlanActModeGlobally,
 	setToolAutoApproveGlobally,
@@ -9,7 +10,6 @@ import {
 } from "@cline/core";
 import { setContinuationNote, shutdownLaunchedBrowsers } from "@cline/llms";
 import { formatModeSwitchNotice } from "@cline/shared";
-import type { CliMigrationNotice } from "../kanban-migration/notice";
 import { logCliError } from "../logging/errors";
 import { exportHistorySession } from "../session/history-export";
 import { deleteSession } from "../session/session";
@@ -38,6 +38,7 @@ import {
 	zeroCliAgentEventCost,
 	zeroCliUsageCost,
 } from "../utils/free-model-cost";
+import { enableManagerForPrompt } from "../utils/manager-command";
 import {
 	prepareTerminalForPostTuiOutput,
 	writeErr,
@@ -185,8 +186,6 @@ export async function runInteractive(
 		clineProviderSettings?: ProviderSettings;
 		startupTarget?: TuiStartupTarget;
 		initialPrompt?: string;
-		initialNotice?: CliMigrationNotice;
-		onInitialNoticeShown?: (notice: CliMigrationNotice) => void | Promise<void>;
 	},
 ): Promise<void> {
 	assertInteractivePreflight(config);
@@ -530,8 +529,6 @@ export async function runInteractive(
 		config,
 		startupTarget: options?.startupTarget,
 		initialPrompt: options?.initialPrompt,
-		initialNotice: options?.initialNotice,
-		onInitialNoticeShown: options?.onInitialNoticeShown,
 		loadDeferredInitialMessages,
 		initialRepoStatus,
 		workflowSlashCommands,
@@ -806,6 +803,41 @@ export async function runInteractive(
 			}),
 		onSessionRestart: async () => {
 			await sessionRuntime.ensureReady();
+			await sessionRuntime.restartEmpty();
+		},
+		onStartManager: async (managerProviderId: string) => {
+			await sessionRuntime.ensureReady();
+			if (managerProviderId !== config.providerId) {
+				config.providerId = managerProviderId;
+				// A provider switch brings its own model list with it. Taking the
+				// model from that provider's saved settings — and its catalogue when
+				// there are none — keeps the session off the previous provider's
+				// model id, which would fail on the first turn.
+				const settings =
+					providerSettingsManager.getProviderSettings(managerProviderId);
+				const resolved = await resolveProviderConfig(
+					managerProviderId,
+					{
+						loadLatestOnInit: true,
+						loadPrivateOnAuth: true,
+						failOnError: false,
+					},
+					providerSettingsManager.getProviderConfig(managerProviderId, {
+						includeKnownModels: false,
+					}),
+				).catch(() => undefined);
+				if (resolved?.knownModels) {
+					config.knownModels = resolved.knownModels;
+				}
+				config.modelId =
+					settings?.model?.trim() ||
+					Object.keys(config.knownModels ?? {})[0] ||
+					config.modelId;
+				await onProviderChange({ config, providerId: managerProviderId });
+			}
+			// Rebuilds the system prompt as a manager's and turns teams on, which
+			// is what makes the roster load and the delegation tools exist.
+			await enableManagerForPrompt(config);
 			await sessionRuntime.restartEmpty();
 		},
 		onAccountChange: async () => {

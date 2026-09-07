@@ -4,9 +4,9 @@ import { useDialogKeyboard } from "@opentui-ui/dialog/react";
 import { useCallback, useState } from "react";
 import { palette } from "../../palette";
 import {
+	type CreateSearchableItem,
 	getSearchableListRowsWindow,
 	type SearchableItem,
-	type CreateSearchableItem,
 	useSearchableList,
 } from "../searchable-list";
 
@@ -45,26 +45,31 @@ export function FindChatDialogContent(
 		searchText: `${chat.sessionId} ${chat.chatKey} ${chat.lastActive}`,
 	}));
 
-	const createImportItem = useCallback<CreateSearchableItem>((search, baseItems) => {
-		if (!search) return null;
-		// Don't show the import action when the search matches an existing chat
-		const exists = baseItems.some((item) => item.key === search);
-		if (exists) return null;
+	const createImportItem = useCallback<CreateSearchableItem>(
+		(search, baseItems) => {
+			if (!search) return undefined;
+			// Don't show the import action when the search matches an existing chat
+			const exists = baseItems.some((item) => item.key === search);
+			if (exists) return undefined;
 
-		// Try to extract a chat ID from a URL (DeepSeek / Qwen / ChatGPT / Claude patterns)
-		let extractedId = search.trim();
-		const urlMatch = search.match(/\/(?:a\/chat\/s|c|chat|s|share)\/([a-zA-Z0-9_-]+)/i);
-		if (urlMatch) {
-			extractedId = urlMatch[1];
-		}
+			// Try to extract a chat ID from a URL (DeepSeek / Qwen / ChatGPT / Claude patterns)
+			let extractedId = search.trim();
+			const urlMatch = search.match(
+				/\/(?:a\/chat\/s|c|chat|s|share)\/([a-zA-Z0-9_-]+)/i,
+			);
+			if (urlMatch) {
+				extractedId = urlMatch[1];
+			}
 
-		return {
-			key: `__import__:${extractedId}`,
-			label: `Import Chat ID: ${extractedId}`,
-			section: "Action",
-			searchText: search,
-		};
-	}, []);
+			return {
+				key: `__import__:${extractedId}`,
+				label: `Import Chat ID: ${extractedId}`,
+				section: "Action",
+				searchText: search,
+			};
+		},
+		[],
+	);
 
 	const list = useSearchableList(items, createImportItem);
 
@@ -76,7 +81,9 @@ export function FindChatDialogContent(
 		if (key.name === "return") {
 			if (list.selectedItem) {
 				const key = list.selectedItem.key;
-				resolve(key.startsWith("__import__:") ? key.slice("__import__:".length) : key);
+				resolve(
+					key.startsWith("__import__:") ? key.slice("__import__:".length) : key,
+				);
 			}
 			return;
 		}
@@ -183,9 +190,13 @@ export function FindChatDialogContent(
 								gap={1}
 								backgroundColor={isSel ? palette.selection : undefined}
 								onMouseDown={() => {
-								const key = row.item.key;
-							resolve(key.startsWith("__import__:") ? key.slice("__import__:".length) : key);
-						}}
+									const key = row.item.key;
+									resolve(
+										key.startsWith("__import__:")
+											? key.slice("__import__:".length)
+											: key,
+									);
+								}}
 								overflow="hidden"
 								height={1}
 							>

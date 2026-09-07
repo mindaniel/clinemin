@@ -183,6 +183,27 @@ export class HubServerTransport implements NativeHubTransport {
 	private readonly hubId = createSessionId("hub_");
 	private readonly ctx: HubTransportContext;
 
+	/**
+	 * Is any session still working?
+	 *
+	 * Used by idle shutdown to tell "nobody is connected" from "nothing is
+	 * happening". A detached session keeps running with no client attached, and
+	 * killing the hub out from under it would lose the run.
+	 */
+	async hasActiveSessions(): Promise<boolean> {
+		try {
+			const sessions = await this.sessionHost.listSessions();
+			return sessions.some(
+				(session) =>
+					session.status === "running" || session.status === "pending",
+			);
+		} catch {
+			// If the status cannot be read, assume something is running. Staying
+			// up costs a stale process; shutting down could kill live work.
+			return true;
+		}
+	}
+
 	constructor(readonly options: HubWebSocketServerOptions) {
 		this.sessionHost =
 			options.sessionHost ??

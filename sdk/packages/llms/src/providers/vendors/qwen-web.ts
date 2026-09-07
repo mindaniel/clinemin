@@ -43,14 +43,19 @@ import {
 	abortRace,
 	throwIfAborted,
 } from "./tool-pipeline/abort";
+import { claimBrowserPort } from "./tool-pipeline/browser-claims";
+import { withBrowserLock } from "./tool-pipeline/browser-lock";
 import {
 	browserNotFoundMessage,
 	findChromePath,
 } from "./tool-pipeline/browser-path";
 import { registerLaunchedBrowser } from "./tool-pipeline/browser-processes";
 import { resolveActiveProfilePaths } from "./tool-pipeline/browser-profiles";
-import { resolveChatKey } from "./tool-pipeline/chat-target";
+import { retryOnMissingExecutionContext } from "./tool-pipeline/cdp-execution-context";
+import { getBoundChatKey, resolveChatKey } from "./tool-pipeline/chat-target";
+import { logConversationTurn } from "./tool-pipeline/conversation-logger";
 import { consumePendingInjectedReply } from "./tool-pipeline/injected-reply";
+import { parseManagerBlocks } from "./tool-pipeline/manager-block";
 import { stripPreviousUserBlock } from "./tool-pipeline/previous-user-dedupe";
 import { validateToolCalls } from "./tool-pipeline/tool-dispatcher";
 import type { ProviderFactoryResult } from "./types";
@@ -264,7 +269,23 @@ class CdpClient {
 		});
 	}
 
+	// Wrapped so a page that is mid-navigation — no execution context yet —
+	// waits the moment out instead of failing the turn with nothing typed.
+	// See tool-pipeline/cdp-execution-context.ts.
 	send(method: string, params: any = {}, sessionId?: string): Promise<any> {
+		return retryOnMissingExecutionContext(
+			method,
+			() => this.sendOnce(method, params, sessionId),
+			sleep,
+			"qwen-web",
+		);
+	}
+
+	private sendOnce(
+		method: string,
+		params: any = {},
+		sessionId?: string,
+	): Promise<any> {
 		const id = ++this.id;
 		return new Promise((resolve, reject) => {
 			this.pending.set(id, { resolve, reject });
@@ -370,6 +391,10 @@ async function connectBrowser(
 	const connectTimeoutMs = Math.max(config.launchTimeoutMs, 30000);
 
 	if (await isEndpointUp(config.debugPort)) {
+		// Attaching to a browser someone else launched. We do not own it and
+		// must never kill it, but the claim tells whoever DOES own it not to
+		// close it out from under this session. See browser-claims.ts.
+		claimBrowserPort(config.debugPort);
 		activeCdp = await connectCdp(config.debugPort, connectTimeoutMs);
 		activeCdpKey = key;
 		return activeCdp;
@@ -1072,6 +1097,7 @@ async function sendAndCapture(
 	finishReason: LanguageModelV2FinishReason;
 	usage: { inputTokens: number; outputTokens: number; totalTokens: number };
 	rateLimited?: boolean;
+	rawBody: string;
 }> {
 	const debugLog = (msg: string) => {
 		if (config.debug) logger?.debug(`[qwen-web] ${msg}`);
@@ -1160,6 +1186,7 @@ async function sendAndCapture(
 				text: "",
 				finishReason: "stop",
 				usage: { inputTokens: 0, outputTokens: 0, totalTokens: 0 },
+				rawBody: "",
 			};
 		}
 
@@ -1192,7 +1219,13 @@ async function sendAndCapture(
 					"Consider raising QWEN_WEB_MIN/MAX_SEND_DELAY_MS.",
 			);
 		}
-		return { text: fullText, finishReason, usage, rateLimited };
+		return {
+			text: fullText,
+			finishReason,
+			usage,
+			rateLimited,
+			rawBody: capturedBody,
+		};
 	} finally {
 		cdp.off("Network.responseReceived", onResponseReceived);
 		cdp.off("Network.loadingFinished", onLoadingFinished);
@@ -1325,7 +1358,14 @@ function createQwenWebModel(
 			runtimeConfig.chatsFile,
 			chatKey,
 		);
-		if (!existingQwenSession && chatKey.length !== 16) {
+		// Only a sticky `/findchat` binding holds a real web conversation id; a
+		// hash-derived key never does. This used to test `chatKey.length !== 16`,
+		// but `chatKeyFromPrompt` returns 24 characters, so EVERY new chat took
+		// this branch: the hash was navigated to as though it were a conversation
+		// id (a 404 page), and then recorded, so the same dead chat came back on
+		// every later turn. Ask where the key came from instead of guessing from
+		// its shape.
+		if (!existingQwenSession && getBoundChatKey("qwen-web") === chatKey) {
 			existingQwenSession = chatKey;
 			recordQwenChatSession(runtimeConfig.chatsFile, chatKey, chatKey);
 		}
@@ -1409,6 +1449,38 @@ function createQwenWebModel(
 				break;
 			}
 
+			// `<manager>` blocks come first, and only when the session actually has
+			// the team tool to dispatch them with. A lead on a web provider is
+			// prompted to write delegations as prose rather than tool calls — see
+			// `tool-pipeline/manager-block.ts` for why that framing is what keeps
+			// it out of tool machinery it cannot use.
+			if (toolNames.includes("team_run_task")) {
+				const manager = parseManagerBlocks(result.text, {
+					// Only when the session actually has the shell tool to run it with.
+					allowCommands: toolNames.includes("run_commands"),
+				});
+				if (manager.delegations.length > 0) {
+					finalText = manager.cleanedContent;
+					finalToolCalls = manager.delegations.map((delegation) => ({
+						name: delegation.name,
+						arguments: delegation.arguments as Record<string, unknown>,
+					}));
+					break;
+				}
+				if (manager.problems.length > 0) {
+					// Malformed blocks go back into the same chat as a correction, the
+					// same way a rejected tool call does.
+					if (attempt < MAX_TOOL_REJECTION_RETRIES) {
+						sendPrompt = manager.problems.join("\n");
+						continue;
+					}
+					finalText =
+						`${manager.cleanedContent}\n\n${manager.problems.join("\n")}`.trim();
+					finalToolCalls = [];
+					break;
+				}
+			}
+
 			const { cleanedContent, toolCalls } = parseDeepSeekToolCalls(
 				result.text,
 				toolNames,
@@ -1459,6 +1531,18 @@ function createQwenWebModel(
 		const qwenSession = extractQwenSessionId(pageUrl);
 		if (qwenSession) {
 			recordQwenChatSession(runtimeConfig.chatsFile, chatKey, qwenSession);
+		}
+
+		// Log raw and parsed response per conversation
+		try {
+			logConversationTurn("qwen-web", chatKey, result.rawBody, {
+				text: finalText,
+				toolCalls: finalToolCalls.length > 0 ? finalToolCalls : undefined,
+				usage: result.usage,
+				finishReason: result.finishReason,
+			});
+		} catch (logErr) {
+			// Ignore logging failures
 		}
 
 		return { text: finalText, toolCalls: finalToolCalls, usage: result.usage };
@@ -1526,7 +1610,11 @@ function createQwenWebModel(
 
 		async doGenerate(options: LanguageModelV2CallOptions) {
 			try {
-				const { text, toolCalls, usage } = await runCompletion(options);
+				const { text, toolCalls, usage } = await withBrowserLock(
+					"qwen-web",
+					options.abortSignal,
+					() => runCompletion(options),
+				);
 
 				const content: LanguageModelV2Content[] = [];
 				if (text) content.push({ type: "text", text });
@@ -1553,7 +1641,11 @@ function createQwenWebModel(
 		},
 
 		async doStream(options: LanguageModelV2CallOptions) {
-			const { text, toolCalls, usage } = await runCompletion(options);
+			const { text, toolCalls, usage } = await withBrowserLock(
+				"qwen-web",
+				options.abortSignal,
+				() => runCompletion(options),
+			);
 			const id = `qwen-web-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
 
 			const parts: LanguageModelV2StreamPart[] = [

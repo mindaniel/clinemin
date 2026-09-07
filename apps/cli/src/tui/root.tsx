@@ -10,8 +10,6 @@ import {
 	useDialogState,
 } from "@opentui-ui/dialog/react";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { shouldSuppressClineCliMigrationNoticeForActiveProvider } from "../kanban-migration/notice";
-import { MigrationNoticeContent } from "../kanban-migration/notice-dialog";
 import type { RepoStatus } from "../utils/repo-status";
 import { readRepoStatus } from "../utils/repo-status";
 import type { TranscriptScrollHandle } from "./components/chat-message-list";
@@ -160,7 +158,6 @@ function App(props: TuiProps) {
 		(invocation: LocalSlashCommandInvocation) => void
 	>(() => {});
 	const transcriptScrollRef = useRef<TranscriptScrollHandle | null>(null);
-	const initialNoticeShownRef = useRef(false);
 	const editingQueuedPrompt = useMemo(
 		() =>
 			editingQueuedPromptId
@@ -551,36 +548,6 @@ function App(props: TuiProps) {
 		[props, showToast],
 	);
 
-	const notice = props.initialNotice;
-	const onInitialNoticeShown = props.onInitialNoticeShown;
-	const currentProviderId = props.config.providerId;
-	useEffect(() => {
-		if (!notice) return;
-		if (initialNoticeShownRef.current) return;
-		if (appView !== "home") return;
-		if (
-			shouldSuppressClineCliMigrationNoticeForActiveProvider(currentProviderId)
-		) {
-			initialNoticeShownRef.current = true;
-			return;
-		}
-
-		initialNoticeShownRef.current = true;
-		const timeout = setTimeout(() => {
-			void dialog
-				.choice<boolean>({
-					content: (ctx: ChoiceContext<boolean>) => (
-						<MigrationNoticeContent {...ctx} notice={notice} />
-					),
-				})
-				.finally(() => {
-					Promise.resolve(onInitialNoticeShown?.(notice)).catch(() => {});
-					refocusTextareaRef.current();
-				});
-		}, 0);
-		return () => clearTimeout(timeout);
-	}, [appView, currentProviderId, dialog, notice, onInitialNoticeShown]);
-
 	const {
 		appendEntry: appendSessionEntry,
 		replaceEntries: replaceSessionEntries,
@@ -666,6 +633,7 @@ function App(props: TuiProps) {
 		providerId: props.config.providerId,
 		cwd: props.config.cwd,
 		getSessionId: props.getSessionId,
+		onStartManager: props.onStartManager,
 		submitText: (
 			text: string,
 			delivery?: "queue" | "steer",

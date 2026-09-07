@@ -11,7 +11,9 @@ import { palette } from "../../palette";
  * Enter (or click) selects the highlighted profile. `n` opens an inline name
  * field that creates a profile and selects it in one step. `d` deletes the
  * highlighted profile (list entry only — the on-disk Chrome directory, and so
- * the login, is kept). Escape dismisses without changing anything.
+ * the login, is kept). `r` does the opposite: keeps the entry and deletes the
+ * Chrome directories, signing that profile out of every web provider. Escape
+ * dismisses without changing anything.
  */
 export function ProfilePickerContent(
 	props: ChoiceContext<string> & {
@@ -39,6 +41,7 @@ export function ProfilePickerContent(
 	const [creating, setCreating] = useState(false);
 	const [draft, setDraft] = useState("");
 	const [confirmDelete, setConfirmDelete] = useState<string | null>(null);
+	const [confirmReset, setConfirmReset] = useState<string | null>(null);
 	const [error, setError] = useState<string | null>(null);
 
 	const safeSelected = Math.min(selected, Math.max(profiles.length - 1, 0));
@@ -61,6 +64,15 @@ export function ProfilePickerContent(
 				}
 				resolve(`__create__:${draft.trim()}`);
 			}
+			return;
+		}
+
+		if (confirmReset) {
+			if (key.name === "y") {
+				resolve(`__reset__:${confirmReset}`);
+				return;
+			}
+			setConfirmReset(null);
 			return;
 		}
 
@@ -102,6 +114,12 @@ export function ProfilePickerContent(
 			setCreating(true);
 			setDraft("");
 			setError(null);
+			return;
+		}
+		if (key.name === "r") {
+			if (!current) return;
+			setError(null);
+			setConfirmReset(current.name);
 			return;
 		}
 		if (key.name === "d") {
@@ -177,6 +195,24 @@ export function ProfilePickerContent(
 				</box>
 			)}
 
+			{confirmReset && (
+				<box
+					border
+					borderStyle="rounded"
+					borderColor="red"
+					paddingX={1}
+					flexDirection="column"
+				>
+					<text fg="red">
+						Sign profile {confirmReset} out of every web provider? (y/n)
+					</text>
+					<text fg="gray">
+						This permanently deletes its Chrome directories — cookies, logins,
+						all of them. You will have to sign in again in each browser window.
+					</text>
+				</box>
+			)}
+
 			{confirmDelete && (
 				<box border borderStyle="rounded" borderColor="red" paddingX={1}>
 					<text fg="red">
@@ -190,7 +226,10 @@ export function ProfilePickerContent(
 
 			{!creating && (
 				<text fg="gray" marginTop={1}>
-					<em>Enter to switch, n for new, d to forget, Esc to cancel</em>
+					<em>
+						Enter to switch, n for new, d to forget, r to sign out, Esc to
+						cancel
+					</em>
 				</text>
 			)}
 		</box>

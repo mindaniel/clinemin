@@ -43,24 +43,34 @@ import {
 	abortRace,
 	throwIfAborted,
 } from "./tool-pipeline/abort";
+import { claimBrowserPort } from "./tool-pipeline/browser-claims";
+import { withBrowserLock } from "./tool-pipeline/browser-lock";
 import {
 	browserNotFoundMessage,
 	findChromePath,
 } from "./tool-pipeline/browser-path";
 import { registerLaunchedBrowser } from "./tool-pipeline/browser-processes";
 import { resolveActiveProfilePaths } from "./tool-pipeline/browser-profiles";
-import { resolveChatKey } from "./tool-pipeline/chat-target";
+import { retryOnMissingExecutionContext } from "./tool-pipeline/cdp-execution-context";
+import { getBoundChatKey, resolveChatKey } from "./tool-pipeline/chat-target";
+import { logConversationTurn } from "./tool-pipeline/conversation-logger";
 import { consumePendingInjectedReply } from "./tool-pipeline/injected-reply";
+import { parseManagerBlocks } from "./tool-pipeline/manager-block";
+import {
+	parsePatchBlocks,
+	unappliedPatchNotice,
+} from "./tool-pipeline/patch-block";
 import { stripPreviousUserBlock } from "./tool-pipeline/previous-user-dedupe";
+import { applySimpleWebSystemPrompt } from "./tool-pipeline/simple-system-prompt";
 import { validateToolCalls } from "./tool-pipeline/tool-dispatcher";
 import type { ProviderFactoryResult } from "./types";
 
 const CONFIG_DIR = path.join(os.homedir(), ".cline", "grok-web");
 const CONFIG_FILE = path.join(CONFIG_DIR, "config.json");
-const Grok_WEB_URL = "https://chat.Grok.ai/";
-const Grok_API_ENDPOINT = "/api/v2/chat/completions";
+const Grok_WEB_URL = "https://grok.com/";
+const Grok_RATE_LIMIT_ENDPOINT = "/rest/rate-limits";
 
-const DEFAULT_DEBUG_PORT = 9223;
+const DEFAULT_DEBUG_PORT = 9228;
 const DEFAULT_LAUNCH_TIMEOUT_MS = 30000;
 const DEFAULT_RESPONSE_TIMEOUT_MS = 1200000; // Increased to 1200s (20 mins) to prevent premature timeout on long thinking/tool calls
 const DEFAULT_LOGIN_TIMEOUT_MS = 120000;
@@ -106,12 +116,22 @@ export interface GrokWebV2RuntimeConfig {
 	/** Extra randomized delay added on turns that themselves request tools. */
 	toolTurnExtraMinMs: number;
 	toolTurnExtraMaxMs: number;
+	/** Callback fired when rate limit info is captured from the /rest/rate-limits endpoint. */
+	onRateLimitUpdate?: (info: GrokRateLimitInfo) => void;
 }
 
 interface ChatSessionRecord {
 	session_id: string;
 	first_seen: string;
 	last_active: string;
+}
+
+export interface GrokRateLimitInfo {
+	windowSizeSeconds: number;
+	remainingQueries: number;
+	totalQueries: number;
+	lowEffortRateLimits: any | null;
+	highEffortRateLimits: any | null;
 }
 
 export interface GrokWebChatEntry {
@@ -264,7 +284,23 @@ class CdpClient {
 		});
 	}
 
+	// Wrapped so a page that is mid-navigation — no execution context yet —
+	// waits the moment out instead of failing the turn with nothing typed.
+	// See tool-pipeline/cdp-execution-context.ts.
 	send(method: string, params: any = {}, sessionId?: string): Promise<any> {
+		return retryOnMissingExecutionContext(
+			method,
+			() => this.sendOnce(method, params, sessionId),
+			sleep,
+			"grok-web",
+		);
+	}
+
+	private sendOnce(
+		method: string,
+		params: any = {},
+		sessionId?: string,
+	): Promise<any> {
 		const id = ++this.id;
 		return new Promise((resolve, reject) => {
 			this.pending.set(id, { resolve, reject });
@@ -370,6 +406,10 @@ async function connectBrowser(
 	const connectTimeoutMs = Math.max(config.launchTimeoutMs, 30000);
 
 	if (await isEndpointUp(config.debugPort)) {
+		// Attaching to a browser someone else launched. We do not own it and
+		// must never kill it, but the claim tells whoever DOES own it not to
+		// close it out from under this session. See browser-claims.ts.
+		claimBrowserPort(config.debugPort);
 		activeCdp = await connectCdp(config.debugPort, connectTimeoutMs);
 		activeCdpKey = key;
 		return activeCdp;
@@ -528,7 +568,13 @@ async function clickSendButton(timeout) {
             '.ant-btn-primary',
             'button[class*="ant-btn-primary"]',
             '[role="button"][aria-label*="Send" i]',
-            '[role="button"][aria-label*="发送" i]'
+            '[role="button"][aria-label*="发送" i]',
+            // Grok-specific send button selectors from the Python script
+            'button[data-testid="send-button"]',
+            'button[aria-label="Send message"]',
+            'button:has(svg[data-icon="arrow-up"])',
+            // Button with arrow icon in Grok's UI
+            'button svg[viewBox*="arrow"]:not([viewBox*="arrow-left"]):not([viewBox*="arrow-right"])'
         ];
         for (const sel of selectors) {
             const btn = document.querySelector(sel);
@@ -540,7 +586,7 @@ async function clickSendButton(timeout) {
                 return true;
             }
         }
-        // Check for button with icon arrow up
+        // Check for button with icon arrow up (more specific)
         const arrowButton = document.querySelector('button svg[class*="send"]')?.closest('button');
         if (arrowButton && arrowButton.offsetWidth > 0) {
             arrowButton.click();
@@ -573,16 +619,28 @@ async function sendMessageToGrok(message, options) {
     // }
     void model;
 
-    // Find input field. IMPORTANT: never pick a textarea that belongs to a
-    // rendered code block (Grok wraps those in .Grok-markdown-code / Monaco and
-    // embeds a readonly .ime-text-area). Falling through to a bare textarea is
-    // what made the assistant code box get mistaken for the composer.
+    // Find input field. Grok uses a tiptap ProseMirror editor.
+    // IMPORTANT: never pick a textarea that belongs to a rendered code block
+    // (Grok wraps those in .Grok-markdown-code / Monaco and embeds a readonly
+    // .ime-text-area). Falling through to a bare textarea is what made the
+    // assistant code box get mistaken for the composer.
     const inputField = (() => {
-        const preferred = document.querySelector('textarea[placeholder*="消息" i], textarea[placeholder*="Message" i], [contenteditable="true"]');
-        if (preferred && !preferred.disabled && !preferred.readOnly) {
-            const bad = preferred.closest && preferred.closest('.Grok-markdown-code, .monaco-editor, [class*="markdown-code"], pre');
-            if (!bad) return preferred;
+        // Primary selectors that match Grok's actual UI (from the Python script)
+        const primarySelectors = [
+            '.tiptap.ProseMirror[contenteditable="true"]',
+            '[contenteditable="true"][role="textbox"]',
+            '.ProseMirror[contenteditable="true"]',
+            'textarea[placeholder*="消息" i], textarea[placeholder*="Message" i]',
+            '[contenteditable="true"]'
+        ];
+        for (const selector of primarySelectors) {
+            const el = document.querySelector(selector);
+            if (el && !el.disabled && !el.readOnly) {
+                const bad = el.closest && el.closest('.Grok-markdown-code, .monaco-editor, [class*="markdown-code"], pre');
+                if (!bad) return el;
+            }
         }
+        // Fallback: scan all editable elements
         const all = Array.from(document.querySelectorAll('textarea, [contenteditable="true"]'));
         for (const el of all) {
             if (el.disabled || el.readOnly) continue;
@@ -751,6 +809,14 @@ export function listGrokWebChats(): GrokWebChatEntry[] {
 }
 
 /**
+ * Retrieves the most recently captured rate limit info from the `/rest/rate-limits` endpoint.
+ * Returns undefined if no rate limit response has been captured yet.
+ */
+export function getGrokRateLimitInfo(): GrokRateLimitInfo | undefined {
+	return (globalThis as any).__grok_rate_limit;
+}
+
+/**
  * Opens an existing Grok Web chat in the browser driven by this provider.
  * This is what the CLI `/findchat` command calls after you pick a chat.
  */
@@ -761,7 +827,7 @@ export async function openGrokWebChat(
 	const cdp = await connectBrowser(config);
 	const targets = await cdp.send("Target.getTargets");
 	let pageTarget = targets.targetInfos?.find(
-		(t: any) => t.type === "page" && t.url?.startsWith("https://chat.Grok.ai"),
+		(t: any) => t.type === "page" && t.url?.startsWith("https://grok.com"),
 	);
 	if (!pageTarget) {
 		const result = await cdp.send("Target.createTarget", { url: Grok_WEB_URL });
@@ -782,99 +848,8 @@ export async function openGrokWebChat(
 	await navigateGrokChat(cdp, cdpSessionId, { fresh: false, sessionId });
 	return {
 		sessionId,
-		url: `https://chat.Grok.ai/c/${sessionId}`,
+		url: `https://grok.com/c/${sessionId}`,
 	};
-}
-
-// ── SSE parser for Grok ──────────────────────────────────────────────────────
-
-function consumeGrokSse(
-	body: string,
-	onChunk: (text: string) => void,
-	onDone: () => void,
-	onError: (err: Error) => void,
-	onUsage?: (usage: {
-		inputTokens: number;
-		outputTokens: number;
-		totalTokens: number;
-	}) => void,
-): void {
-	try {
-		// Thinking-enabled replies tag each delta with `phase` ("think" vs
-		// "answer"); prefer the answer-phase text, but also collect every
-		// delta regardless of phase as a fallback for replies that never set
-		// `phase` at all (thinking disabled, or a differently-shaped
-		// response) — matching a known-working reference capture that reads
-		// `delta.content` unconditionally instead of gating on `phase`.
-		let answerText = "";
-		let anyText = "";
-
-		for (const rawLine of body.split("\n")) {
-			const line = rawLine.trim();
-			if (!line.startsWith("data:")) continue;
-			const data = line.slice(5).trim();
-			if (!data) continue;
-			if (data === "[DONE]") break;
-
-			let parsed: any;
-			try {
-				parsed = JSON.parse(data);
-			} catch {
-				continue;
-			}
-
-			for (const choice of Array.isArray(parsed.choices)
-				? parsed.choices
-				: []) {
-				const delta = choice?.delta;
-				const deltaContent =
-					typeof delta?.content === "string" ? delta.content : "";
-				if (deltaContent) {
-					anyText += deltaContent;
-					if (delta.phase === "answer" || delta.phase === undefined) {
-						answerText += deltaContent;
-					}
-				}
-				const messageContent =
-					typeof choice?.message?.content === "string"
-						? choice.message.content
-						: "";
-				if (messageContent) {
-					anyText += messageContent;
-					answerText += messageContent;
-				}
-			}
-
-			if (typeof parsed.content === "string" && parsed.content) {
-				anyText += parsed.content;
-				answerText += parsed.content;
-			}
-			if (typeof parsed.output === "string" && parsed.output) {
-				anyText += parsed.output;
-				answerText += parsed.output;
-			} else if (
-				typeof parsed.output?.content === "string" &&
-				parsed.output.content
-			) {
-				anyText += parsed.output.content;
-				answerText += parsed.output.content;
-			}
-
-			if (parsed.usage && onUsage) {
-				onUsage({
-					inputTokens: parsed.usage.input_tokens || 0,
-					outputTokens: parsed.usage.output_tokens || 0,
-					totalTokens: parsed.usage.total_tokens || 0,
-				});
-			}
-		}
-
-		const finalText = answerText || anyText;
-		if (finalText) onChunk(finalText);
-		onDone();
-	} catch (err) {
-		onError(err instanceof Error ? err : new Error(String(err)));
-	}
 }
 
 // ── Composer ready ─────────────────────────────────────────────────────────────
@@ -932,7 +907,7 @@ async function waitForComposerReady(
 		if (!hintLogged) {
 			hintLogged = true;
 			logger?.log(
-				"Grok Web: waiting for the chat.Grok.ai page to finish loading " +
+				"Grok Web: waiting for the grok.com page to finish loading " +
 					`(up to ${Math.round(config.loginTimeoutMs / 1000)}s). If the Chrome window shows a login page, log in now.`,
 				{ severity: "info", providerId: "grok-web" },
 			);
@@ -940,8 +915,8 @@ async function waitForComposerReady(
 
 		if (Date.now() >= deadline) {
 			throw new Error(
-				"Grok Web: chat.Grok.ai did not finish loading within " +
-					`${Math.round(config.loginTimeoutMs / 1000)}s. Please log in to chat.Grok.ai in the Chrome window.`,
+				"Grok Web: grok.com did not finish loading within " +
+					`${Math.round(config.loginTimeoutMs / 1000)}s. Please log in to grok.com in the Chrome window.`,
 			);
 		}
 		await sleep(500);
@@ -985,7 +960,7 @@ async function navigateGrokChat(
 	const destination = target.fresh
 		? Grok_WEB_URL
 		: target.sessionId
-			? `https://chat.Grok.ai/c/${target.sessionId}`
+			? `https://grok.com/c/${target.sessionId}`
 			: Grok_WEB_URL;
 
 	const currentUrl = (await readPageUrl(cdp, cdpSessionId)) || "";
@@ -1072,132 +1047,279 @@ async function sendAndCapture(
 	finishReason: LanguageModelV2FinishReason;
 	usage: { inputTokens: number; outputTokens: number; totalTokens: number };
 	rateLimited?: boolean;
+	rawBody: string;
 }> {
 	const debugLog = (msg: string) => {
 		if (config.debug) logger?.debug(`[grok-web] ${msg}`);
 	};
 
-	let completionRequestId: string | undefined;
-	let capturedBody = "";
-	let bodyResolve: (() => void) | undefined;
-	const bodyCaptured = new Promise<void>((resolve) => {
-		bodyResolve = resolve;
+	// DOM-based response capture (similar to grok.py's approach) to reliably capture
+	// streaming responses, especially for subsequent messages in the same chat.
+	let fullText = "";
+	let responseResolve: (() => void) | undefined;
+	const responseReady = new Promise<void>((resolve) => {
+		responseResolve = resolve;
 	});
+
+	// Rate limit monitoring (network-based) for token usage tracking
+	let rateLimitRequestId: string | undefined;
 
 	const onResponseReceived = (event: any, eventSessionId?: string) => {
 		if (eventSessionId !== cdpSessionId) return;
 		const url: string = event.response?.url ?? "";
-		if (!url.includes(Grok_API_ENDPOINT)) return;
-		if (event.response?.status !== 200) return;
-		completionRequestId = event.requestId;
-		debugLog(`completion response received (${url})`);
+		// Check for rate-limit endpoint
+		if (url.includes(Grok_RATE_LIMIT_ENDPOINT)) {
+			if (event.response?.status === 200) {
+				rateLimitRequestId = event.requestId;
+				debugLog(`rate limit response received (${url})`);
+			}
+		}
 	};
+
 	const onLoadingFinished = async (event: any, eventSessionId?: string) => {
 		if (eventSessionId !== cdpSessionId) return;
-		if (event.requestId !== completionRequestId) return;
-		debugLog("completion body fully written — reading it");
-		try {
-			const { body, base64Encoded } = await cdp.send(
-				"Network.getResponseBody",
-				{ requestId: event.requestId },
-				cdpSessionId,
-			);
-			capturedBody = base64Encoded
-				? Buffer.from(body, "base64").toString("utf-8")
-				: body;
-			debugLog(`completion body captured (${capturedBody.length} chars)`);
-		} catch (err) {
-			logger?.error?.(
-				`[grok-web] failed to read response body: ${err instanceof Error ? err.message : String(err)}`,
-			);
-		} finally {
-			bodyResolve?.();
+		// Handle rate-limit response
+		if (event.requestId === rateLimitRequestId) {
+			debugLog("rate limit body fully written — reading it");
+			try {
+				const { body, base64Encoded } = await cdp.send(
+					"Network.getResponseBody",
+					{ requestId: event.requestId },
+					cdpSessionId,
+				);
+				const responseBody = base64Encoded
+					? Buffer.from(body, "base64").toString("utf-8")
+					: body;
+				const rateLimitInfo: GrokRateLimitInfo = JSON.parse(responseBody);
+				debugLog(
+					`Rate limit info: remaining=${rateLimitInfo.remainingQueries}, total=${rateLimitInfo.totalQueries}`,
+				);
+				// Store the rate limit info globally for later retrieval
+				(globalThis as any).__grok_rate_limit = rateLimitInfo;
+				// Call the config callback if provided
+				if ((config as any).onRateLimitUpdate) {
+					(config as any).onRateLimitUpdate(rateLimitInfo);
+				}
+			} catch (err) {
+				logger?.error?.(
+					`[grok-web] failed to read rate limit body: ${err instanceof Error ? err.message : String(err)}`,
+				);
+			} finally {
+				rateLimitRequestId = undefined;
+			}
 		}
 	};
 
 	cdp.on("Network.responseReceived", onResponseReceived);
 	cdp.on("Network.loadingFinished", onLoadingFinished);
+	await cdp.send("Network.enable", {}, cdpSessionId);
 
-	try {
-		await cdp.send("Network.enable", {}, cdpSessionId);
+	// Inject a DOM monitor that watches for assistant message content.
+	// It tracks text changes and resolves when the response stabilizes (no changes for 1.2s).
+	const monitorScript = `(() => {
+		let lastContent = '';
+		let lastChangeTime = Date.now();
+		let stableTimer = null;
+		let resolved = false;
 
-		// Randomized human-like pacing before sending, plus an extra random
-		// amount on tool-request turns (the fastest back-to-back pattern in an
-		// agent run) — dodges chat.Grok.ai's own anti-abuse frequency throttle
-		// the same way deepseek-web-v2 dodges DeepSeek's.
-		const sendDelay = computeSendDelay(config, { isToolTurn });
-		debugLog(
-			`pacing: waiting ${sendDelay}ms before send (toolTurn=${String(isToolTurn)})`,
-		);
-		await abortableSleep(sendDelay, signal);
+		const checkStability = () => {
+			if (resolved) return;
+			const now = Date.now();
+			if (now - lastChangeTime > 1200) {
+				resolved = true;
+				// Send final content back via console.log
+				console.log('__GROK_RESPONSE_COMPLETE__', lastContent);
+			}
+		};
 
-		await cdp.send(
-			"Runtime.evaluate",
-			{
-				expression: buildSendScript(prompt, sendOptions),
-				returnByValue: true,
-				awaitPromise: true,
-			},
-			cdpSessionId,
-		);
+		const getAssistantContent = () => {
+			// Try common selectors for assistant message content
+			const selectors = [
+				'.message.assistant .ProseMirror',
+				'.assistant-message .ProseMirror',
+				'[data-testid="assistant-message"]',
+				'.ProseMirror[contenteditable="false"]'
+			];
+			for (const sel of selectors) {
+				const el = document.querySelector(sel);
+				if (el) {
+					const text = el.textContent || '';
+					// Ignore transient status messages
+					if (text.includes('Working for') || text.includes('Thinking for') || text.trim() === '') {
+						return null;
+					}
+					return text;
+				}
+			}
+			// Fallback: look for any assistant message
+			const allMessages = document.querySelectorAll('[role="article"], .message');
+			for (const msg of allMessages) {
+				if (msg.classList.contains('assistant') || msg.getAttribute('data-role') === 'assistant') {
+					const text = msg.textContent || '';
+					if (!text.includes('Working for') && !text.includes('Thinking for') && text.trim() !== '') {
+						return text;
+					}
+				}
+			}
+			return null;
+		};
 
-		// A cancelled turn has to stop waiting here. Until this returns the CLI
-		// still counts the turn as running and refuses the next message, so
-		// without the abort in this race Escape looked like it worked and then
-		// the input stayed dead until the response timeout fired minutes later.
-		const cancelled = abortRace(signal);
-		const timeoutPromise = new Promise<void>((resolve) => {
-			setTimeout(resolve, config.responseTimeoutMs);
+		const checkForResponse = () => {
+			const content = getAssistantContent();
+			if (content !== null && content !== lastContent) {
+				lastContent = content;
+				lastChangeTime = Date.now();
+				if (stableTimer) clearTimeout(stableTimer);
+				stableTimer = setTimeout(checkStability, 1200);
+				return true;
+			}
+			return false;
+		};
+
+		const observer = new MutationObserver(() => {
+			checkForResponse();
 		});
-		try {
-			await Promise.race([bodyCaptured, timeoutPromise, cancelled.promise]);
-		} finally {
-			cancelled.dispose();
-		}
+		observer.observe(document.body, {
+			childList: true,
+			subtree: true,
+			characterData: true,
+		});
 
-		if (!capturedBody) {
-			return {
-				text: "",
-				finishReason: "stop",
-				usage: { inputTokens: 0, outputTokens: 0, totalTokens: 0 },
-			};
-		}
+		const pollInterval = setInterval(() => {
+			checkForResponse();
+		}, 200);
 
-		let fullText = "";
-		const finishReason: LanguageModelV2FinishReason = "stop";
-		let usage = { inputTokens: 0, outputTokens: 0, totalTokens: 0 };
-		consumeGrokSse(
-			capturedBody,
-			(chunk) => {
-				fullText += chunk;
-			},
-			() => {},
-			(err) => {
-				logger?.error?.(`[grok-web] SSE parse error: ${err.message}`);
-			},
-			(nextUsage) => {
-				usage = nextUsage;
-			},
-		);
+		// Cleanup after 5 minutes
+		setTimeout(() => {
+			observer.disconnect();
+			clearInterval(pollInterval);
+			if (stableTimer) clearTimeout(stableTimer);
+			if (!resolved) {
+				const content = getAssistantContent();
+				if (content !== null && content.trim() !== '') {
+					console.log('__GROK_RESPONSE_COMPLETE__', content);
+				}
+			}
+		}, 300000);
 
-		// Flag a throttled reply so the caller can back off / report it, and
-		// arm a one-shot recovery reload so the next turn forces a page
-		// refresh to clear the temporarily-blocked composer.
-		const rateLimited = isRateLimitText(fullText);
-		if (rateLimited) {
-			requestGrokThrottleRecoveryReload();
-			logger?.log?.(
-				"[grok-web] Grok throttled the request (rate-limit reply detected). " +
-					"Next message will reload the page to recover, and sending is paced. " +
-					"Consider raising Grok_WEB_MIN/MAX_SEND_DELAY_MS.",
-			);
+		return () => {
+			observer.disconnect();
+			clearInterval(pollInterval);
+			if (stableTimer) clearTimeout(stableTimer);
+		};
+	})();`;
+
+	debugLog("injecting DOM monitor script");
+	const monitorHandle = await cdp.send(
+		"Runtime.evaluate",
+		{
+			expression: monitorScript,
+			returnByValue: false,
+			awaitPromise: false,
+		},
+		cdpSessionId,
+	);
+
+	// Listen for console messages from the page to capture the response
+	const onConsoleMessage = (event: any, eventSessionId?: string) => {
+		if (eventSessionId !== cdpSessionId) return;
+		const msg = event?.args?.[0]?.value;
+		if (msg === "__GROK_RESPONSE_COMPLETE__") {
+			const content = event?.args?.[1]?.value;
+			if (content && typeof content === "string") {
+				debugLog(`DOM monitor captured response (${content.length} chars)`);
+				fullText = content;
+				responseResolve?.();
+			}
 		}
-		return { text: fullText, finishReason, usage, rateLimited };
+	};
+
+	cdp.on("Runtime.consoleAPICalled", onConsoleMessage);
+	await cdp.send("Runtime.enable", {}, cdpSessionId);
+
+	// Pace sends to avoid hitting Grok's rate limits.
+	const sendDelay = computeSendDelay(config, { isToolTurn });
+	debugLog(
+		`pacing: waiting ${sendDelay}ms before send (toolTurn=${String(isToolTurn)})`,
+	);
+	await abortableSleep(sendDelay, signal);
+
+	// Send the prompt using the existing send script
+	const sendScript = buildSendScript(prompt, sendOptions);
+	debugLog("sending prompt via CDP");
+	await cdp.send(
+		"Runtime.evaluate",
+		{
+			expression: sendScript,
+			returnByValue: true,
+			awaitPromise: true,
+		},
+		cdpSessionId,
+	);
+
+	// Wait for the response to be captured by the DOM monitor
+	const cancelled = abortRace(signal);
+	const timeoutPromise = new Promise<void>((resolve) => {
+		setTimeout(resolve, config.responseTimeoutMs);
+	});
+	try {
+		await Promise.race([responseReady, timeoutPromise, cancelled.promise]);
 	} finally {
+		cancelled.dispose();
+		// Clean up the monitor script
+		if (monitorHandle?.result?.objectId) {
+			try {
+				await cdp.send(
+					"Runtime.callFunctionOn",
+					{
+						functionDeclaration:
+							"() => { if (window.__grokMonitorCleanup) window.__grokMonitorCleanup(); }",
+						objectId: monitorHandle.result.objectId,
+						returnByValue: false,
+						awaitPromise: false,
+					},
+					cdpSessionId,
+				);
+			} catch {}
+		}
+		cdp.off("Runtime.consoleAPICalled", onConsoleMessage);
+		await cdp.send("Runtime.disable", {}, cdpSessionId).catch(() => {});
+		// Clean up network listeners
 		cdp.off("Network.responseReceived", onResponseReceived);
 		cdp.off("Network.loadingFinished", onLoadingFinished);
 		await cdp.send("Network.disable", {}, cdpSessionId).catch(() => {});
 	}
+
+	if (!fullText) {
+		return {
+			text: "",
+			finishReason: "stop",
+			usage: { inputTokens: 0, outputTokens: 0, totalTokens: 0 },
+			rawBody: "",
+		};
+	}
+
+	// Parse tool calls from the full text (reuse existing parsing logic later)
+	const finishReason: LanguageModelV2FinishReason = "stop";
+	const usage = { inputTokens: 0, outputTokens: 0, totalTokens: 0 };
+
+	// Flag a throttled reply so the caller can back off / report it
+	const rateLimited = isRateLimitText(fullText);
+	if (rateLimited) {
+		requestGrokThrottleRecoveryReload();
+		logger?.log?.(
+			"[grok-web] Grok throttled the request (rate-limit reply detected). " +
+				"Next message will reload the page to recover, and sending is paced. " +
+				"Consider raising Grok_WEB_MIN/MAX_SEND_DELAY_MS.",
+		);
+	}
+	return {
+		text: fullText,
+		finishReason,
+		usage,
+		rateLimited,
+		rawBody: fullText, // raw body not available via DOM, but we have the text
+	};
 }
 
 // ── Main provider ─────────────────────────────────────────────────────────────
@@ -1209,7 +1331,7 @@ interface GrokCompletionResult {
 }
 
 /**
- * Build the flat prompt sent to chat.Grok.ai, mirroring deepseek-web-v2's
+ * Build the flat prompt sent to grok.com, mirroring deepseek-web-v2's
  * `buildPrompt`: the real web client keeps its own server-side conversation
  * state, so the system prompt is sent verbatim on the conversation's first
  * turn (via `buildLeanConversation`'s own first-turn passthrough) and dropped
@@ -1222,8 +1344,13 @@ function buildGrokPrompt(
 	reInjectSystem: boolean,
 	preserveCompactionContext: boolean,
 ): string {
-	const conversation = buildLeanConversation(prompt, preserveCompactionContext);
-	const systemMessage = prompt.find((m) => m.role === "system");
+	const effectivePrompt = applySimpleWebSystemPrompt(prompt);
+
+	const conversation = buildLeanConversation(
+		effectivePrompt,
+		preserveCompactionContext,
+	);
+	const systemMessage = effectivePrompt.find((m) => m.role === "system");
 	const alreadyHasSystem = conversation.some((m) => m.role === "system");
 	const promptOptions = {
 		historyWindow: 10,
@@ -1285,8 +1412,7 @@ function createGrokWebModel(
 
 		const targets = await cdp.send("Target.getTargets");
 		let pageTarget = targets.targetInfos?.find(
-			(t: any) =>
-				t.type === "page" && t.url?.startsWith("https://chat.Grok.ai"),
+			(t: any) => t.type === "page" && t.url?.startsWith("https://grok.com"),
 		);
 
 		if (!pageTarget) {
@@ -1325,10 +1451,32 @@ function createGrokWebModel(
 			runtimeConfig.chatsFile,
 			chatKey,
 		);
-		if (!existingGrokSession && chatKey.length !== 16) {
-			existingGrokSession = chatKey;
-			recordGrokChatSession(runtimeConfig.chatsFile, chatKey, chatKey);
+
+		// If not found in the registry, try to recover the session ID to avoid
+		// unnecessary page reloads.
+		if (!existingGrokSession) {
+			// 1. Check for a sticky `/findchat` binding (holds the real session ID)
+			const boundSessionId = getBoundChatKey("grok-web");
+			if (boundSessionId) {
+				existingGrokSession = boundSessionId;
+				recordGrokChatSession(runtimeConfig.chatsFile, chatKey, boundSessionId);
+			} else {
+				// 2. Fallback: check the current page URL for a session ID.
+				// This prevents reloads if the registry write was missed/delayed,
+				// or if the user manually navigated to a chat.
+				const currentUrl = await readPageUrl(cdp, cdpSessionId);
+				const currentSessionId = extractGrokSessionId(currentUrl);
+				if (currentSessionId) {
+					existingGrokSession = currentSessionId;
+					recordGrokChatSession(
+						runtimeConfig.chatsFile,
+						chatKey,
+						currentSessionId,
+					);
+				}
+			}
 		}
+
 		const isNewChat = existingGrokSession === undefined;
 
 		const forceReload = consumeGrokThrottleRecoveryReload();
@@ -1409,6 +1557,38 @@ function createGrokWebModel(
 				break;
 			}
 
+			// `<manager>` blocks come first, and only when the session actually has
+			// the team tool to dispatch them with. A lead on a web provider is
+			// prompted to write delegations as prose rather than tool calls — see
+			// `tool-pipeline/manager-block.ts` for why that framing is what keeps
+			// it out of tool machinery it cannot use.
+			if (toolNames.includes("team_run_task")) {
+				const manager = parseManagerBlocks(result.text, {
+					// Only when the session actually has the shell tool to run it with.
+					allowCommands: toolNames.includes("run_commands"),
+				});
+				if (manager.delegations.length > 0) {
+					finalText = manager.cleanedContent;
+					finalToolCalls = manager.delegations.map((delegation) => ({
+						name: delegation.name,
+						arguments: delegation.arguments as Record<string, unknown>,
+					}));
+					break;
+				}
+				if (manager.problems.length > 0) {
+					// Malformed blocks go back into the same chat as a correction, the
+					// same way a rejected tool call does.
+					if (attempt < MAX_TOOL_REJECTION_RETRIES) {
+						sendPrompt = manager.problems.join("\n");
+						continue;
+					}
+					finalText =
+						`${manager.cleanedContent}\n\n${manager.problems.join("\n")}`.trim();
+					finalToolCalls = [];
+					break;
+				}
+			}
+
 			const { cleanedContent, toolCalls } = parseDeepSeekToolCalls(
 				result.text,
 				toolNames,
@@ -1439,6 +1619,31 @@ function createGrokWebModel(
 				break;
 			}
 
+			// A bare `*** Begin Patch` block is `apply_patch` written as text, which
+			// is the only way to send a patch body through a chat box — and exactly
+			// what SIMPLE_WEB_SYSTEM_PROMPT asks this provider for. It must run
+			// BEFORE the fallback below, which reads any code fence as a file write.
+			// Gated on the session actually having the tool, so a provider still on
+			// `editor` is untouched. See tool-pipeline/patch-block.ts.
+			const patched = parsePatchBlocks(cleanedContent, toolNames);
+			const patchNotice = unappliedPatchNotice(cleanedContent, toolNames);
+			if (patchNotice) {
+				if (attempt < MAX_TOOL_REJECTION_RETRIES) {
+					sendPrompt = patchNotice;
+					continue;
+				}
+				finalText = `${cleanedContent}
+
+${patchNotice}`.trim();
+				finalToolCalls = [];
+				break;
+			}
+			if (patched.toolCalls.length > 0) {
+				finalText = patched.cleanedContent;
+				finalToolCalls = patched.toolCalls;
+				break;
+			}
+
 			// The web model often ignores the `<tool>` contract and answers with
 			// plain text (a plan, code fences, install commands). Convert the
 			// visible structure of the reply into real tool calls so the agent
@@ -1459,6 +1664,18 @@ function createGrokWebModel(
 		const GrokSession = extractGrokSessionId(pageUrl);
 		if (GrokSession) {
 			recordGrokChatSession(runtimeConfig.chatsFile, chatKey, GrokSession);
+		}
+
+		// Log raw and parsed response per conversation
+		try {
+			logConversationTurn("grok-web", chatKey, result.rawBody, {
+				text: finalText,
+				toolCalls: finalToolCalls.length > 0 ? finalToolCalls : undefined,
+				usage: result.usage,
+				finishReason: result.finishReason,
+			});
+		} catch (logErr) {
+			// Ignore logging failures
 		}
 
 		return { text: finalText, toolCalls: finalToolCalls, usage: result.usage };
@@ -1503,6 +1720,31 @@ function createGrokWebModel(
 			};
 		}
 
+		// A bare `*** Begin Patch` block is `apply_patch` written as text, which
+		// is the only way to send a patch body through a chat box — and exactly
+		// what SIMPLE_WEB_SYSTEM_PROMPT asks this provider for. It must run
+		// BEFORE the fallback below, which reads any code fence as a file write.
+		// Gated on the session actually having the tool, so a provider still on
+		// `editor` is untouched. See tool-pipeline/patch-block.ts.
+		const patched = parsePatchBlocks(cleanedContent, toolNames);
+		const patchNotice = unappliedPatchNotice(cleanedContent, toolNames);
+		if (patchNotice) {
+			return {
+				text: `${cleanedContent}
+
+${patchNotice}`.trim(),
+				toolCalls: [],
+				usage,
+			};
+		}
+		if (patched.toolCalls.length > 0) {
+			return {
+				text: patched.cleanedContent,
+				toolCalls: patched.toolCalls,
+				usage,
+			};
+		}
+
 		const fallback = parseFallbackToolUses(
 			cleanedContent,
 			lastUserText(options.prompt),
@@ -1526,7 +1768,11 @@ function createGrokWebModel(
 
 		async doGenerate(options: LanguageModelV2CallOptions) {
 			try {
-				const { text, toolCalls, usage } = await runCompletion(options);
+				const { text, toolCalls, usage } = await withBrowserLock(
+					"grok-web",
+					options.abortSignal,
+					() => runCompletion(options),
+				);
 
 				const content: LanguageModelV2Content[] = [];
 				if (text) content.push({ type: "text", text });
@@ -1553,7 +1799,11 @@ function createGrokWebModel(
 		},
 
 		async doStream(options: LanguageModelV2CallOptions) {
-			const { text, toolCalls, usage } = await runCompletion(options);
+			const { text, toolCalls, usage } = await withBrowserLock(
+				"grok-web",
+				options.abortSignal,
+				() => runCompletion(options),
+			);
 			const id = `grok-web-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
 
 			const parts: LanguageModelV2StreamPart[] = [

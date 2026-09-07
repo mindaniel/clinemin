@@ -72,6 +72,30 @@ export const DEFAULT_MODEL_TOOL_ROUTING_RULES: ToolRoutingRule[] = [
 		enableTools: ["apply_patch"],
 		disableTools: ["editor"],
 	},
+	// These web providers are scraped chat boxes, not function-calling APIs, so an
+	// `editor` call has to survive being written as JSON: every newline escaped,
+	// every Windows path separator doubled. `apply_patch` takes one freeform
+	// string, which the provider reads straight out of a bare `*** Begin Patch`
+	// block with no escaping at all. See `llms/.../tool-pipeline/patch-block.ts`.
+	//
+	// This list must stay in step with the providers that get the
+	// human-in-the-loop prompt in `llms/.../tool-pipeline/simple-system-prompt.ts`:
+	// that prompt teaches the patch grammar, and `parsePatchBlocks` only reads a
+	// bare patch block when the session actually holds `apply_patch`. A provider
+	// on one list and not the other writes patches nothing parses.
+	{
+		name: "web-chat-providers-use-apply-patch",
+		mode: "act",
+		providerIdIncludes: [
+			"claude-web",
+			"chatgpt-web",
+			"grok-web",
+			"kimi-web",
+			"gemini-web",
+		],
+		enableTools: ["apply_patch"],
+		disableTools: ["editor"],
+	},
 ];
 
 function matchesModelId(

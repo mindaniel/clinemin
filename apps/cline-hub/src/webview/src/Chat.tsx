@@ -58,6 +58,7 @@ import type {
 	WebviewReasonLevel,
 	WebviewSessionSummary,
 	WebviewToolEvent,
+	WebviewUsage,
 } from "../../webview-protocol";
 import { Composer } from "./components/Composer";
 import { getVsCodeApi, postToHost } from "./vscode";
@@ -347,7 +348,37 @@ type ExpandedToolEvent = {
 	state: ToolEvent["state"];
 	output: string;
 	error?: string;
+	startedAt?: number;
 };
+
+/**
+ * A ticking clock for anything still running.
+ *
+ * Without it a call that is waiting on a slow browser turn and one that has
+ * wedged look identical — both just say "Running search_codebase..." forever.
+ * Seeing the number climb is the difference between "it is working" and "it is
+ * stuck", which is the question you cannot otherwise answer from the outside.
+ */
+function useElapsedTicker(active: boolean): number {
+	const [now, setNow] = useState(() => Date.now());
+	useEffect(() => {
+		if (!active) {
+			return;
+		}
+		const timer = setInterval(() => setNow(Date.now()), 1000);
+		return () => clearInterval(timer);
+	}, [active]);
+	return now;
+}
+
+function formatElapsed(ms: number): string {
+	const seconds = Math.max(0, Math.round(ms / 1000));
+	if (seconds < 60) {
+		return `${seconds}s`;
+	}
+	const minutes = Math.floor(seconds / 60);
+	return `${minutes}m ${String(seconds % 60).padStart(2, "0")}s`;
+}
 
 function formatInputSummary(input: unknown): string {
 	if (input == null) {
@@ -394,6 +425,7 @@ function expandToolEvent(toolEvent: ToolEvent): ExpandedToolEvent[] {
 				state,
 				output,
 				error,
+				startedAt: toolEvent.startedAt,
 			};
 		});
 	}
@@ -412,6 +444,7 @@ function expandToolEvent(toolEvent: ToolEvent): ExpandedToolEvent[] {
 			output:
 				toolEvent.error ?? formatRawOutput(toolEvent.output, toolEvent.text),
 			error: toolEvent.error,
+			startedAt: toolEvent.startedAt,
 		},
 	];
 }
@@ -476,6 +509,9 @@ function upsertToolEvent(events: ToolEvent[], next: ToolEvent): ToolEvent[] {
 					state: next.state,
 					output: next.output,
 					error: next.error,
+					// Keep the original start so the finished line can say how long
+					// the call actually took.
+					startedAt: event.startedAt ?? next.startedAt,
 				}
 			: event,
 	);
@@ -497,6 +533,7 @@ function appendToolEvent(
 		input: event?.input,
 		output: event?.output,
 		error: event?.error,
+		startedAt: Date.now(),
 	};
 
 	if (activeAssistantId) {
@@ -561,22 +598,86 @@ function mergeHydratedMessagesWithLive(
 	return next;
 }
 
-function renderToolEvent(
-	toolEvent: ToolEvent,
-	className: string,
-): ReactElement[] {
-	return expandToolEvent(toolEvent).map((expanded) => (
-		<Tool className={className} key={expanded.id}>
+const TOOL_PREVIEW_MAX_CHARS = 240;
+
+/**
+ * A one-line result, shown without expanding the tool.
+ *
+ * The full output already lives inside the collapsible body, but reading a run
+ * meant opening every tool one at a time. The CLI prints a short result line
+ * under each call so a run can be followed by scrolling; this is that line.
+ */
+function toolResultPreview(expanded: ExpandedToolEvent): string | undefined {
+	if (expanded.state === "input-available") {
+		// Still running — there is no result to preview yet.
+		return undefined;
+	}
+	const raw = expanded.error ?? expanded.output;
+	const text = typeof raw === "string" ? raw : JSON.stringify(raw);
+	const collapsed = text?.replace(/\s+/g, " ").trim();
+	if (!collapsed) {
+		return undefined;
+	}
+	return collapsed.length > TOOL_PREVIEW_MAX_CHARS
+		? `${collapsed.slice(0, TOOL_PREVIEW_MAX_CHARS)}…`
+		: collapsed;
+}
+
+function ToolEventCard({
+	className,
+	expanded,
+}: {
+	className: string;
+	expanded: ExpandedToolEvent;
+}) {
+	const running = expanded.state === "input-available";
+	const now = useElapsedTicker(running && expanded.startedAt !== undefined);
+	const preview = toolResultPreview(expanded);
+	const elapsed =
+		expanded.startedAt !== undefined && running
+			? formatElapsed(now - expanded.startedAt)
+			: undefined;
+
+	return (
+		<Tool className={className}>
 			<ToolHeader
 				state={expanded.state}
 				title={expanded.title}
 				type="dynamic-tool"
 				toolName={expanded.name}
 			/>
+			{elapsed ? (
+				<div className="px-4 pb-2 font-mono text-muted-foreground text-xs">
+					⏳ running — {elapsed}
+				</div>
+			) : null}
+			{preview ? (
+				<div
+					className={cn(
+						"line-clamp-2 px-4 pb-2 font-mono text-xs",
+						expanded.error ? "text-destructive" : "text-muted-foreground",
+					)}
+				>
+					⎿ {preview}
+				</div>
+			) : null}
 			<ToolContent>
 				<ToolOutput errorText={expanded.error} output={expanded.output} />
 			</ToolContent>
 		</Tool>
+	);
+}
+
+function renderToolEvent(
+	toolEvent: ToolEvent,
+	className: string,
+): ReactElement[] {
+	return expandToolEvent(toolEvent).map((expanded) => (
+		<ToolEventCard
+			className={className}
+			expanded={expanded}
+			key={expanded.id}
+		/>
 	));
 }
 
@@ -664,8 +765,37 @@ function finalizeAssistantTurn(
 		outputTokens?: number;
 	},
 ): ChatMessage[] {
+	// Nothing is running once the turn is over. A tool whose completion event
+	// never arrived — a teammate's, most often, where the ids do not line up
+	// with the ones the card was opened under — would otherwise sit there
+	// spinning forever, and a spinner that never stops is worse than no spinner
+	// at all: it says "stuck" when the turn simply moved on.
+	const settled = current.map((message) => {
+		const stillRunning = (message.toolEvents ?? []).some(
+			(toolEvent) => toolEvent.state === "input-available",
+		);
+		if (!stillRunning) {
+			return message;
+		}
+		const settleToolEvent = <T extends { state: ToolEvent["state"] }>(
+			toolEvent: T,
+		): T =>
+			toolEvent.state === "input-available"
+				? { ...toolEvent, state: "output-available" as const }
+				: toolEvent;
+		return {
+			...message,
+			toolEvents: message.toolEvents?.map(settleToolEvent),
+			blocks: message.blocks?.map((block) =>
+				block.type === "tool"
+					? { ...block, toolEvent: settleToolEvent(block.toolEvent) }
+					: block,
+			),
+		};
+	});
+
 	return [
-		...current,
+		...settled,
 		createMessage(
 			"meta",
 			`Done (${finishReason}) • iterations=${iterations} • input=${usage?.inputTokens ?? 0} output=${usage?.outputTokens ?? 0}`,
@@ -708,6 +838,11 @@ export default function Chat({
 	const [sessionId, setSessionId] = useState<string>();
 	const [hydratingSessionId, setHydratingSessionId] = useState<string>();
 	const [sending, setSending] = useState(false);
+	const [usage, setUsage] = useState<WebviewUsage | undefined>();
+	// When the current turn started, so the composer can say how long the model
+	// has been thinking. Tool calls have their own clock; this covers the gap
+	// between them, which is where the long silences actually are.
+	const [turnStartedAt, setTurnStartedAt] = useState<number | undefined>();
 	const [providers, setProviders] = useState<ProviderOption[]>([]);
 	const [modelsByProvider, setModelsByProvider] = useState<
 		Record<string, WebviewProviderModel[]>
@@ -731,6 +866,7 @@ export default function Chat({
 	const [enableTools, setEnableTools] = useState(true);
 	const [enableSpawn, setEnableSpawn] = useState(false);
 	const [enableTeams, setEnableTeams] = useState(true);
+	const [managerMode, setManagerMode] = useState(false);
 	const [autoApproveTools, setAutoApproveTools] = useState(true);
 	const [pendingApprovals, setPendingApprovals] = useState<PendingApproval[]>(
 		[],
@@ -763,6 +899,7 @@ export default function Chat({
 			setHydratingSessionId(nextSessionId);
 			setMessages([]);
 			setSending(false);
+			setTurnStartedAt(undefined);
 			setPendingApprovals([]);
 			activeAssistantIdRef.current = undefined;
 			setStatus(`Loading chat history for ${nextSessionId}...`);
@@ -809,6 +946,7 @@ export default function Chat({
 				case "error":
 					setStatus(`Error: ${message.text}`);
 					setSending(false);
+					setTurnStartedAt(undefined);
 					setHydratingSessionId(undefined);
 					hydratingSessionIdRef.current = undefined;
 					activeAssistantIdRef.current = undefined;
@@ -999,6 +1137,8 @@ export default function Chat({
 				case "turn_done":
 					setStatus(`Done (${message.finishReason})`);
 					setSending(false);
+					setUsage(message.usage);
+					setTurnStartedAt(undefined);
 					setPendingApprovals([]);
 					activeAssistantIdRef.current = undefined;
 					setMessages((current) =>
@@ -1016,6 +1156,7 @@ export default function Chat({
 					setSessionId(undefined);
 					setHydratingSessionId(undefined);
 					setSending(false);
+					setUsage(undefined);
 					setPendingApprovals([]);
 					setTitleEditing(false);
 					setSessionTitleDraft("");
@@ -1374,6 +1515,7 @@ export default function Chat({
 					enableSpawn={enableSpawn}
 					enableTeams={enableTeams}
 					enableTools={enableTools}
+					managerMode={managerMode}
 					maxIterations={maxIterations}
 					model={model}
 					mode={mode}
@@ -1419,6 +1561,8 @@ export default function Chat({
 							assistantMessage,
 						]);
 						setSending(true);
+						setUsage(undefined);
+						setTurnStartedAt(Date.now());
 						setStatus("Running...");
 						postToHost({
 							type: "send",
@@ -1429,6 +1573,7 @@ export default function Chat({
 								enableSpawn,
 								enableTeams,
 								enableTools,
+								managerMode,
 								maxIterations: parseMaxIterations(maxIterations),
 								model: model || undefined,
 								mode,
@@ -1438,14 +1583,17 @@ export default function Chat({
 							},
 						});
 					}}
+					onManagerModeChange={setManagerMode}
 					onSystemPromptChange={setSystemPrompt}
 					onReasonLevelChange={setReasonLevel}
 					provider={provider}
 					providers={providers}
 					sending={sending}
 					status={status}
+					turnStartedAt={turnStartedAt}
 					systemPrompt={systemPrompt}
 					reasonLevel={effectiveReasonLevel}
+					usage={usage}
 					workspaceRoot={defaults.workspaceRoot}
 				/>
 			</div>

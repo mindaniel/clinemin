@@ -5,6 +5,11 @@ import {
 	maybeHandleChatCommand,
 } from "../../utils/chat-commands";
 import {
+	enableManagerForPrompt,
+	MANAGER_COMMAND_USAGE,
+	rewriteManagerPrompt,
+} from "../../utils/manager-command";
+import {
 	enableTeamsForPrompt,
 	rewriteTeamPrompt,
 	TEAM_COMMAND_USAGE,
@@ -49,6 +54,24 @@ export async function runInteractiveChatCommand(input: {
 	onCommandOutput?: (text: string) => void;
 }): Promise<InteractiveChatCommandResult> {
 	let prompt = input.prompt;
+	const rewrittenManagerPrompt = rewriteManagerPrompt(prompt);
+	if (rewrittenManagerPrompt.kind !== "none") {
+		if (rewrittenManagerPrompt.kind === "usage") {
+			return {
+				handled: true,
+				turnResult: commandTurnResult(MANAGER_COMMAND_USAGE),
+			};
+		}
+		if (!input.config.managerMode) {
+			// The manager prompt replaces the system prompt, which is fixed once a
+			// session starts — so switching into manager mode restarts it. Anything
+			// already said in this chat is discarded, which is why this belongs on
+			// the first message.
+			await enableManagerForPrompt(input.config);
+			await input.sessionRuntime.restartEmpty();
+		}
+		prompt = rewrittenManagerPrompt.prompt;
+	}
 	const rewrittenTeamPrompt = rewriteTeamPrompt(prompt);
 	if (rewrittenTeamPrompt.kind !== "none") {
 		if (rewrittenTeamPrompt.kind === "usage") {

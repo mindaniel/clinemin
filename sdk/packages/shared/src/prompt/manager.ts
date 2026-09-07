@@ -1,0 +1,161 @@
+/**
+ * The manager's system prompt.
+ *
+ * A manager session is not an agent that happens to delegate — it is an agent
+ * with no hands. It cannot read a file or edit anything; the only thing it can
+ * do is write messages to its workers and run a command to check their claims.
+ * So it gets its own system prompt rather than the coding-agent one plus an
+ * instruction to please delegate: a prompt that advertises `read_files` makes
+ * the model reach for it, and on a web provider the turn then dies on a tool
+ * call the session has no executor for.
+ *
+ * The framing is deliberately human: the manager is told a person relays its
+ * messages to other assistants and pastes the answers back. That is true from
+ * the model's point of view, keeps it in prose (which web chat models are good
+ * at) and away from their own native tool UI (which fails here), and costs
+ * nothing in fidelity — `tool-pipeline/manager-block.ts` turns each block into
+ * the delegation the runtime would have made anyway.
+ *
+ * ## Workers are addressed by model name
+ *
+ * A manager picks the model it wants for a job, so the roster is short model
+ * names — `qwen`, `deepseek`, `gemini` — not invented worker names and not the
+ * `-web` provider ids. One less mapping for the manager to hold, and the name
+ * says what the worker actually is.
+ */
+
+export interface ManagerWorkerSummary {
+	agentId: string;
+	providerId?: string;
+	modelId?: string;
+	/** First line of the worker's role prompt, as a hint about what it is for. */
+	description?: string;
+	/** Tool names this worker may use, or undefined when it is unrestricted. */
+	tools?: string[];
+}
+
+export interface ManagerSystemPromptOptions {
+	workers?: ManagerWorkerSummary[];
+	workspaceRoot?: string;
+	platform?: string;
+	/** Extra instructions from the user, appended verbatim. */
+	rules?: string;
+}
+
+/**
+ * Short name for a provider: `qwen-web` -> `qwen`, `deepseek-web-v2` ->
+ * `deepseek`.
+ *
+ * A manager is choosing a model, not a transport. The `-web` suffix says how
+ * the CLI drives it, which is nothing the manager can act on, and the version
+ * suffix is worse — it invites `TO: deepseek-web` for a worker registered as
+ * `deepseek-web-v2`.
+ */
+export function shortProviderName(providerId: string): string {
+	return providerId.trim().replace(/-web(-v\d+)?$/i, "") || providerId.trim();
+}
+
+/**
+ * How a worker is addressed on a `TO:` line.
+ *
+ * This has to be the id the runtime dispatches on, so it is `agentId` and not a
+ * prettier version of it: a roster showing a name that does not dispatch is the
+ * one failure the manager cannot diagnose from its side.
+ */
+function workerName(worker: ManagerWorkerSummary): string {
+	return worker.agentId;
+}
+
+function formatWorkerLine(worker: ManagerWorkerSummary): string {
+	// No tool scope here on purpose. What a worker may do is the manager's call,
+	// made per job on a TOOLS: line — printing a fixed set from the roster reads
+	// as a permanent fact and stops it from asking for more.
+	return `- ${workerName(worker)}`;
+}
+
+export const MANAGER_DONE_TOKEN = "TEAM DONE";
+
+export function buildManagerSystemPrompt(
+	options: ManagerSystemPromptOptions = {},
+): string {
+	const workers = options.workers ?? [];
+	const roster = workers.length
+		? workers.map(formatWorkerLine).join("\n")
+		: "- (none yet — the roster in .cline/team.json is empty)";
+	const example = workers[0] ? workerName(workers[0]) : "qwen";
+
+	const sections = [
+		`I have a few AI assistants working for me. You are the manager. Everything goes through me: I relay your messages to them and paste their replies back.
+
+My assistants, addressed by the name shown here:
+${roster}
+
+They can't see this conversation and they can't see each other. Spell each job
+out in full: the goal, what they're working from, and what the answer should
+look like.`,
+		`Send a message like this. I copy what's inside straight to the assistant,
+so anything outside the block is for me:
+
+<manager>
+TO: ${example}
+Your message here.
+</manager>
+
+\`</manager>\` goes alone on its own line. One assistant per block; several
+blocks in one reply is fine, and they run in order.`,
+		`Each assistant can only use the tools you give it, granted on a TOOLS: line:
+
+<manager>
+TO: ${example}
+TOOLS: read_files, editor
+Your message here.
+</manager>
+
+The tools are \`read_files\`, \`search_codebase\`, \`run_commands\`, \`editor\`,
+\`apply_patch\` or you can tell them to search the web. A grant lasts until you change it, so
+send a TOOLS: line only when the answer changes. Give the smallest set that does
+the job: an assistant asked to look something up and handed \`editor\` may decide
+to fix what it finds, and you will not know until it has. \`TOOLS: none\` leaves
+an assistant able to talk to you and nothing else.`,
+		`To check something yourself, send me PowerShell commands to do that, and I
+will paste you the results:
+
+\`\`\`powershell
+Get-Content src/foo.ts -TotalCount 20
+\`\`\`
+
+Keep those read-only. Looking is yours; changing is theirs. An assistant
+reporting on its own work is not evidence.`,
+	];
+
+	const workspaceRoot = options.workspaceRoot?.trim();
+	if (workspaceRoot) {
+		sections.push(
+			`Your assistants work in this folder${
+				options.platform ? ` on ${options.platform}` : ""
+			}, and you do not — write paths the way they would find them from there:
+
+${workspaceRoot}`,
+		);
+	}
+
+	sections.push(
+		`Every reply you send me is either one or more <manager> blocks, or your
+final answer ending with ${MANAGER_DONE_TOKEN}. A reply that is only a status
+line — "Starting with ${example}" and nothing under it — leaves me nothing to
+pass on and the job stops dead.
+
+If an assistant says what it is *going* to do instead of showing it done, write
+again and say what is still missing. If it claims something you cannot check,
+ask for the proof: the line it read, the command it ran, the output it got.
+Their replies also say how much of their context they have used; past about 80%,
+start someone fresh and hand over what they produced.`,
+	);
+
+	const rules = options.rules?.trim();
+	if (rules) {
+		sections.push(rules);
+	}
+
+	return sections.join("\n\n");
+}

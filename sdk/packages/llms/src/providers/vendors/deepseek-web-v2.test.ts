@@ -1,4 +1,4 @@
-import { mkdtempSync, rmSync } from "node:fs";
+import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
@@ -178,6 +178,36 @@ describe("deepseek-web-v2 parseFallbackToolUses", () => {
 			name: "run_commands",
 			arguments: { commands: ["pip install yfinance pandas"] },
 		});
+	});
+
+	it("does not overwrite an existing file a fence is only quoting", () => {
+		// Qwen's habitual shape: a summary that names the file it just changed
+		// and quotes the old and new line. `inferFileName` picks the named file
+		// out of the prose, so emitting an editor call here would replace the
+		// whole file with the single line under discussion.
+		const existing = join(tmpdir(), `quote-guard-${Date.now()}.py`);
+		writeFileSync(existing, "line one\nline two\nline three\n", "utf8");
+		try {
+			const text = [
+				"### Summary of the Fix Applied",
+				"",
+				`**File:** \`${existing}\``,
+				"",
+				"**Old line (line 569):**",
+				"```python",
+				'if re.fullmatch(r"Working for \\d+s\\..", latest_text):',
+				"```",
+			].join("\n");
+			const { cleanedText, toolUses } = parseFallbackToolUses(text, "", [
+				"editor",
+			]);
+			expect(toolUses).toEqual([]);
+			// The quote stays visible, and the model is told why nothing ran.
+			expect(cleanedText).toContain("re.fullmatch");
+			expect(cleanedText).toContain("nothing was written");
+		} finally {
+			rmSync(existing, { force: true });
+		}
 	});
 
 	it("emits nothing when the tools are unavailable", () => {
@@ -651,6 +681,30 @@ describe("deepseek-web-v2 buildPrompt (lean conversation on follow-up turns)", (
 		expect(built).toContain("first result");
 		expect(built).toContain("second result");
 		expect(built).toContain("Previous user message: run it");
+		expect(built).not.toContain("sys");
+	});
+
+	it("keeps pending tool results when a real user message is queued after a tool turn", () => {
+		const prompt = [
+			msg("system", "sys"),
+			msg("user", "do the first task"),
+			msg("assistant", '<tool>{"name":"read_file"}</tool>'),
+			msg("tool", "pending tool result"),
+			msg(
+				"user",
+				"Use tool to continue the task or if finish, then tell 'finish'.",
+			),
+			msg("user", "now do the second task"),
+		] as never;
+		const built = buildPrompt(prompt, undefined);
+
+		expect(built).toContain("Previous user message: do the first task");
+		expect(built).toContain("Tool result:");
+		expect(built).toContain("pending tool result");
+		expect(built).toContain("User: now do the second task");
+		expect(built).not.toContain(
+			"Use tool to continue the task or if finish, then tell 'finish'.",
+		);
 		expect(built).not.toContain("sys");
 	});
 

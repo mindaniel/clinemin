@@ -16,7 +16,6 @@ import {
 	type UserInstructionConfigService,
 } from "@cline/core";
 import { bindChatKey, clearChatKeyBinding } from "@cline/llms";
-import { clearChatBinding } from "../../utils/chat-binding";
 import type { Message } from "@cline/shared";
 import { createCliCore } from "../../session/session";
 import { submitAndExitInTerminal } from "../../utils/approval";

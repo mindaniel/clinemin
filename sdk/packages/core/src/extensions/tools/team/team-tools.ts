@@ -71,6 +71,7 @@ import {
 	validateWithZod,
 	zodToJsonSchema,
 } from "@cline/shared";
+import { type AskQuestionInput, AskQuestionInputSchema } from "../schemas";
 import {
 	buildDelegatedAgentConfig,
 	type DelegatedAgentConfigProvider,
@@ -93,6 +94,117 @@ function requireInputField<T>(value: T | undefined, field: string): T {
 	return value;
 }
 
+/**
+ * Completion and context-budget signals a lead needs to judge one teammate run.
+ *
+ * `finishReason` alone cannot answer "did the teammate actually finish?". A run
+ * that ends because the model emitted plain prose — "Let me continue the job" —
+ * reports `completed`, exactly like a run that finished its work. The only
+ * reliable difference is whether the teammate ever called a tool that *means*
+ * done, so completion is treated as explicit: no completion tool call, no
+ * completion. That also catches a teammate whose tool call was malformed and
+ * silently dropped by the provider's parser — it stops with prose, and the lead
+ * sees it here instead of accepting the half-finished run.
+ *
+ * Every field is also restated in `note`, because a lead only acts on what it
+ * reads, and a boolean buried in a JSON tool result is easy to skim past.
+ */
+interface RunDiagnostics {
+	stoppedWithoutCompletion?: boolean;
+	contextUsedTokens?: number;
+	contextWindow?: number;
+	contextUsedPct?: number;
+	note?: string;
+}
+
+const COMPLETION_TOOL_NAMES = new Set([
+	"submit_and_exit",
+	"attempt_completion",
+]);
+
+/** Exported for tests: the context figure here is what a manager acts on. */
+export function diagnoseRun(
+	result: AgentResult,
+	agentId: string,
+): RunDiagnostics {
+	// `run.result` is `unknown` on the record and cast on the way in, so every
+	// field here is treated as possibly absent. When `toolCalls` is missing there
+	// is no evidence either way, and claiming a run stopped early on missing
+	// evidence would send the lead chasing teammates that did finish.
+	const toolCalls = result.toolCalls;
+	const hasCompletionTool = toolCalls?.some(
+		(call) =>
+			!call.error &&
+			(COMPLETION_TOOL_NAMES.has(call.name) ||
+				(call.name === "team_task" &&
+					(call.input as { action?: string } | null)?.action === "complete")),
+	);
+
+	// Asking is not stalling. A worker that ended its run on `ask_question` did
+	// so deliberately and its reply IS the question, so reporting it as "stopped
+	// by replying with text" would tell the manager to chase it instead of
+	// answering it.
+	const askedAQuestion =
+		toolCalls?.some((call) => !call.error && call.name === "ask_question") ===
+		true;
+
+	const stoppedWithoutCompletion =
+		result.finishReason === "completed" &&
+		hasCompletionTool === false &&
+		!askedAQuestion;
+	const contextWindow = result.model?.info?.contextWindow;
+	// `result.usage` is the run's AGGREGATE: every iteration's input tokens
+	// summed. That is not context, and reporting it as context is off by a
+	// factor of the iteration count — a worker 132 iterations into a 141k
+	// window was reported at "14.3M tokens", so the manager read it as
+	// catastrophically over budget and killed a healthy worker mid-task.
+	//
+	// Context is what the LAST turn actually sent, so read it off the final
+	// assistant message's own metrics. When no message carries them, say
+	// nothing: an absent number sends the manager looking, a wrong one sends it
+	// acting.
+	const contextUsedTokens = [...(result.messages ?? [])]
+		.reverse()
+		.find(
+			(message) =>
+				message.role === "assistant" &&
+				typeof message.metrics?.inputTokens === "number",
+		)?.metrics?.inputTokens;
+	const contextUsedPct =
+		contextWindow && contextUsedTokens !== undefined
+			? (contextUsedTokens / contextWindow) * 100
+			: undefined;
+
+	const noteParts: string[] = [];
+	if (askedAQuestion) {
+		noteParts.push(
+			`${agentId} asked a question and is waiting on your answer; the task is NOT done. ` +
+				"Answer it with team_run_task (continueConversation=true) so it picks up where it left off.",
+		);
+	}
+	if (stoppedWithoutCompletion) {
+		noteParts.push(
+			`${agentId} stopped by replying with text instead of calling a completion tool, so the task is NOT confirmed done. ` +
+				"Read its text below, then either send the next instruction with team_run_task (continueConversation=true) " +
+				"or mark the shared task complete yourself if the work is actually finished.",
+		);
+	}
+	if (contextUsedPct !== undefined && contextUsedPct >= 70) {
+		noteParts.push(
+			`${agentId} has used ${contextUsedPct.toFixed(0)}% of its ${contextWindow} token context. ` +
+				"Prefer a fresh run (continueConversation=false) with a self-contained prompt over continuing this conversation.",
+		);
+	}
+
+	return {
+		...(stoppedWithoutCompletion ? { stoppedWithoutCompletion } : {}),
+		...(contextUsedTokens !== undefined ? { contextUsedTokens } : {}),
+		...(contextWindow !== undefined ? { contextWindow } : {}),
+		...(contextUsedPct !== undefined ? { contextUsedPct } : {}),
+		...(noteParts.length > 0 ? { note: noteParts.join(" ") } : {}),
+	};
+}
+
 function summarizeRunResult(
 	run: TeamRunRecord,
 ): TeamRunResultSummary | undefined {
@@ -100,6 +212,7 @@ function summarizeRunResult(
 	if (!result) {
 		return undefined;
 	}
+
 	return {
 		textPreview: truncateText(result.text, TEAM_RUN_TEXT_PREVIEW_LIMIT),
 		iterations: result.iterations,
@@ -112,6 +225,7 @@ function summarizeRunResult(
 			cacheWriteTokens: result.usage.cacheWriteTokens,
 			totalCost: result.usage.totalCost,
 		},
+		...diagnoseRun(result, run.agentId),
 	};
 }
 
@@ -119,8 +233,13 @@ function dateToIso(value: Date | undefined): string | undefined {
 	return value?.toISOString();
 }
 
-function summarizeRun(run: TeamRunRecord): TeamRunToolSummary {
+function summarizeRun(
+	run: TeamRunRecord,
+	options?: { includeFullText?: boolean },
+): TeamRunToolSummary {
+	const result = run.result as AgentResult | undefined;
 	return {
+		...(options?.includeFullText && result ? { text: result.text } : {}),
 		id: run.id,
 		agentId: run.agentId,
 		taskId: run.taskId,
@@ -167,7 +286,20 @@ export interface CreateAgentTeamsToolsOptions {
 	runtime: AgentTeamsRuntime;
 	requesterId: string;
 	teammateConfigProvider: DelegatedAgentConfigProvider;
-	createBaseTools?: () => AgentTool[];
+	/**
+	 * Build the non-team tools for an agent.
+	 *
+	 * Takes the agent's own provider and model, because tool construction reads
+	 * both: command timeouts are raised for claude-web, and the edit tool is
+	 * chosen by model id. Building every teammate's tools from the lead's
+	 * provider gave a worker on one provider the budget and routing of another
+	 * — a manager on claude-web silently handed all its workers a 20-minute
+	 * command timeout, so one bad search ran for twenty minutes.
+	 */
+	createBaseTools?: (agent?: {
+		providerId?: string;
+		modelId?: string;
+	}) => AgentTool[];
 	allowSpawn?: boolean;
 	includeSpawnTool?: boolean;
 	includeManagementTools?: boolean;
@@ -177,7 +309,10 @@ export interface CreateAgentTeamsToolsOptions {
 export interface BootstrapAgentTeamsOptions {
 	runtime: AgentTeamsRuntime;
 	teammateConfigProvider: DelegatedAgentConfigProvider;
-	createBaseTools?: () => AgentTool[];
+	createBaseTools?: (agent?: {
+		providerId?: string;
+		modelId?: string;
+	}) => AgentTool[];
 	leadAgentId?: string;
 	restoredTeammates?: TeamTeammateSpec[];
 	restoredFromPersistence?: boolean;
@@ -213,20 +348,171 @@ export const TEAM_TOOL_NAMES = [
 	"team_list_outcomes",
 ] as const;
 
-function spawnTeamTeammate(
-	options: Omit<CreateAgentTeamsToolsOptions, "requesterId" | "allowSpawn"> & {
-		requesterId: string;
-		spec: TeamTeammateSpec;
-	},
-): void {
-	const teammateTools: AgentTool[] = [];
-	if (options.createBaseTools) {
-		teammateTools.push(...options.createBaseTools());
+/**
+ * A worker's `ask_question`, pointed at its manager instead of the user.
+ *
+ * A delegated worker has no user in front of it — its manager wrote the task,
+ * and the manager is the one who knows the answer. Without this the worker
+ * reaches for the host's `ask_question` (which asks a human who is not
+ * watching) or, on a host that has no such tool, gets its call rejected as
+ * unavailable and burns turns re-emitting it.
+ *
+ * Asking ends the run, because a sync `team_run_task` is holding the manager
+ * still while the worker works: nobody can answer until the worker stops. The
+ * question comes back as the run's result, the manager answers it, and its
+ * next message continues the same worker conversation.
+ */
+function createTeammateAskQuestionTool(agentId: string): AgentTool {
+	return createTool<AskQuestionInput, string>({
+		name: "ask_question",
+		description:
+			"Ask your manager a question when the task is ambiguous and you cannot " +
+			"safely pick for yourself. Provide 2-5 options. This ends your turn: " +
+			"the manager answers and sends you the next instruction, so ask only " +
+			"when you genuinely cannot continue without the answer.",
+		inputSchema: zodToJsonSchema(AskQuestionInputSchema),
+		lifecycle: {
+			completesRun: true,
+		},
+		retryable: false,
+		maxRetries: 0,
+		execute: async (input) => {
+			const validatedInput = validateWithZod(AskQuestionInputSchema, input);
+			const lines = [
+				`${agentId} needs an answer before it can continue.`,
+				"",
+				validatedInput.question,
+			];
+			for (const option of validatedInput.options ?? []) {
+				lines.push(`- ${option}`);
+			}
+			return lines.join("\n");
+		},
+	}) as AgentTool;
+}
+
+/**
+ * Aliases a manager is likely to write for a tool's real name.
+ *
+ * A manager is told what its workers can do in plain language, so it reaches
+ * for "read" or "bash" rather than the exact registered name. Rejecting those
+ * would make capability grants fail in a way that looks like the tool is
+ * missing.
+ */
+const TEAMMATE_TOOL_ALIASES: Record<string, string> = {
+	bash: "run_commands",
+	edit: "editor",
+	execute_command: "run_commands",
+	grep: "search_codebase",
+	read: "read_files",
+	read_file: "read_files",
+	run_command: "run_commands",
+	search: "search_codebase",
+	search_files: "search_codebase",
+	shell: "run_commands",
+	terminal: "run_commands",
+	web: "fetch_web_content",
+	write: "editor",
+};
+
+/**
+ * Cut a teammate's tools down to what it was granted.
+ *
+ * Team tools always survive, because a worker that cannot report back or ask a
+ * question is not scoped, it is mute. Everything else is opt-in: a worker whose
+ * job is to read gets no `editor` and no `run_commands`, so "do not edit
+ * anything" stops being a request the worker can talk itself out of.
+ *
+ * An empty list is a real grant meaning "team tools only". `undefined` means
+ * the worker was never scoped and keeps everything.
+ */
+function applyTeammateToolScope(
+	tools: AgentTool[],
+	allowed: string[] | undefined,
+): AgentTool[] {
+	if (allowed === undefined) {
+		return tools;
 	}
-	teammateTools.push(
+	const allowedNames = new Set(
+		allowed
+			.map((name) => name.trim().toLowerCase())
+			.filter((name) => name.length > 0)
+			.map((name) => TEAMMATE_TOOL_ALIASES[name] ?? name),
+	);
+	// `editor` and `apply_patch` are one grant: "this worker may change files".
+	// Which of them the session actually built is decided by tool routing from
+	// the worker's own provider, which the roster does not know and should not
+	// have to. Asking for the wrong name would otherwise scope the worker down
+	// to no edit tool at all, silently.
+	if (allowedNames.has("editor") || allowedNames.has("apply_patch")) {
+		allowedNames.add("editor");
+		allowedNames.add("apply_patch");
+	}
+	return tools.filter(
+		(tool) =>
+			tool.name.startsWith("team_") ||
+			tool.name === "ask_question" ||
+			allowedNames.has(tool.name),
+	);
+}
+
+/**
+ * The spec each teammate was last spawned with, keyed by its team runtime.
+ *
+ * Re-scoping a running worker means rebuilding its tools, and rebuilding needs
+ * everything else about it — role prompt, provider, model — unchanged, so the
+ * spec is kept rather than asking the manager to restate it.
+ *
+ * Keyed by runtime, not by agent id alone: the hub daemon serves many sessions
+ * at once and "extractor" in one team is not "extractor" in another.
+ */
+const spawnedSpecsByRuntime = new WeakMap<
+	object,
+	Map<string, TeamTeammateSpec>
+>();
+
+function rememberSpawnedSpec(runtime: object, spec: TeamTeammateSpec): void {
+	let specs = spawnedSpecsByRuntime.get(runtime);
+	if (!specs) {
+		specs = new Map();
+		spawnedSpecsByRuntime.set(runtime, specs);
+	}
+	specs.set(spec.agentId, spec);
+}
+
+/**
+ * The full tool set a teammate runs with: its scoped base tools, its own
+ * `ask_question`, and the team tools it needs to report back.
+ *
+ * Shared by spawning and re-scoping so a re-scope cannot accidentally strip the
+ * team tools and leave a worker unable to answer anyone.
+ */
+function buildTeammateTools(
+	options: Omit<CreateAgentTeamsToolsOptions, "requesterId" | "allowSpawn">,
+	spec: TeamTeammateSpec,
+): AgentTool[] {
+	const tools: AgentTool[] = [];
+	if (options.createBaseTools) {
+		tools.push(
+			// The host's own `ask_question` asks a human. A worker's questions
+			// belong to its manager, so that one is dropped in favour of the
+			// escalating version below.
+			...applyTeammateToolScope(
+				options
+					.createBaseTools({
+						providerId: spec.providerId,
+						modelId: spec.modelId,
+					})
+					.filter((tool) => tool.name !== "ask_question"),
+				spec.tools,
+			),
+		);
+	}
+	tools.push(createTeammateAskQuestionTool(spec.agentId));
+	tools.push(
 		...createAgentTeamsTools({
 			runtime: options.runtime,
-			requesterId: options.spec.agentId,
+			requesterId: spec.agentId,
 			teammateConfigProvider: options.teammateConfigProvider,
 			createBaseTools: options.createBaseTools,
 			allowSpawn: false,
@@ -236,8 +522,52 @@ function spawnTeamTeammate(
 			includeSpawnTool: false,
 		}),
 	);
+	return tools;
+}
+
+/**
+ * Apply a `tools` grant to a live teammate.
+ *
+ * Returns a line for the manager either way. A grant that quietly failed —
+ * because the worker is not running, or the session builds no base tools — is
+ * worse than one that was refused out loud: the manager would go on believing
+ * a worker could edit, and the worker would keep saying it cannot.
+ */
+function rescopeTeammateTools(
+	options: Omit<CreateAgentTeamsToolsOptions, "requesterId" | "allowSpawn">,
+	agentId: string,
+	tools: string[],
+): string {
+	const spec = spawnedSpecsByRuntime.get(options.runtime)?.get(agentId);
+	if (!spec) {
+		return `Could not re-scope ${agentId}: no such teammate is running.`;
+	}
+	const next: TeamTeammateSpec = { ...spec, tools };
+	rememberSpawnedSpec(options.runtime, next);
+	const rebuilt = buildTeammateTools(options, next);
+	const applied = options.runtime.setTeammateTools(agentId, rebuilt);
+	const granted = rebuilt
+		.map((tool) => tool.name)
+		.filter((name) => !name.startsWith("team_") && name !== "ask_question");
+	if (!applied) {
+		return `${agentId} is not running right now; the new scope applies the next time it starts.`;
+	}
+	return granted.length > 0
+		? `${agentId} can now use: ${granted.join(", ")}.`
+		: `${agentId} now has no tools beyond reporting back and asking questions.`;
+}
+
+function spawnTeamTeammate(
+	options: Omit<CreateAgentTeamsToolsOptions, "requesterId" | "allowSpawn"> & {
+		requesterId: string;
+		spec: TeamTeammateSpec;
+	},
+): void {
+	rememberSpawnedSpec(options.runtime, options.spec);
+	const teammateTools = buildTeammateTools(options, options.spec);
 	options.runtime.spawnTeammate({
 		agentId: options.spec.agentId,
+		tools: options.spec.tools,
 		config: buildDelegatedAgentConfig({
 			kind: "teammate",
 			prompt: options.spec.rolePrompt,
@@ -246,6 +576,18 @@ function spawnTeamTeammate(
 			tools: teammateTools,
 			maxIterations: options.spec.maxIterations,
 			cwd: options.teammateConfigProvider.getRuntimeConfig().cwd,
+			// What the worker ended up holding, not what the roster asked for. The
+			// two differ whenever routing swapped its edit tool, and the prompt
+			// documenting the wrong name is the same failure as not granting it.
+			toolScope: options.spec.tools
+				? teammateTools.map((tool) => tool.name)
+				: undefined,
+			connectionOverrides: Object.fromEntries(
+				Object.entries({
+					providerId: options.spec.providerId,
+					modelId: options.spec.modelId,
+				}).filter(([, value]) => value !== undefined),
+			),
 		}),
 	});
 }
@@ -317,6 +659,9 @@ export function createAgentTeamsTools(
 					const spec: TeamTeammateSpec = {
 						agentId: validatedInput.agentId,
 						rolePrompt: validatedInput.rolePrompt,
+						providerId: validatedInput.providerId,
+						modelId: validatedInput.modelId,
+						tools: validatedInput.tools,
 					};
 					spawnTeamTeammate({
 						runtime: options.runtime,
@@ -519,6 +864,16 @@ export function createAgentTeamsTools(
 					});
 				}
 
+				// A `tools` grant is applied before the run, so the worker starts
+				// this task with exactly the capability the manager just gave it.
+				const rescopeNote = validatedInput.tools
+					? rescopeTeammateTools(
+							options,
+							validatedInput.agentId,
+							validatedInput.tools,
+						)
+					: undefined;
+
 				// Deduplication guard: collapse a duplicate sync call for the same
 				// agent onto the first in-flight dispatch in this parallel tool-call batch.
 				const pendingRun = pendingSyncRuns.get(validatedInput.agentId);
@@ -538,17 +893,29 @@ export function createAgentTeamsTools(
 						continueConversation:
 							validatedInput.continueConversation || undefined,
 					})
-					.then((result) =>
-						validateWithZod(TeamRunTaskToolResultSchema, {
+					.then((result) => {
+						const diagnostics = diagnoseRun(result, validatedInput.agentId);
+
+						// `message` is the line the lead reads first, so it has to state
+						// the outcome rather than the dispatch. Saying "completed" over a
+						// run that stopped on prose is what let a half-done teammate pass
+						// for a finished one.
+						const outcome = diagnostics.stoppedWithoutCompletion
+							? `${validatedInput.agentId} returned text without confirming completion. Evaluate its reply before treating the task as done.`
+							: `Task dispatched to ${validatedInput.agentId} and completed in sync mode.`;
+						const message = rescopeNote ? `${rescopeNote} ${outcome}` : outcome;
+
+						return validateWithZod(TeamRunTaskToolResultSchema, {
 							agentId: validatedInput.agentId,
 							mode: "sync" as const,
 							status: "running" as const,
 							dispatched: true,
-							message: `Task dispatched to ${validatedInput.agentId} and completed in sync mode.`,
+							message,
 							text: result.text,
 							iterations: result.iterations,
-						}),
-					)
+							...diagnostics,
+						});
+					})
 					.finally(() => {
 						pendingSyncRuns.delete(validatedInput.agentId);
 					});
@@ -588,7 +955,9 @@ export function createAgentTeamsTools(
 					TeamRunToolSummarySchema.array(),
 					options.runtime
 						.listRuns(validateWithZod(TeamListRunsInputSchema, input))
-						.map(summarizeRun),
+						// No full text here: listing is a status poll, and one call can
+						// return every run in the team.
+						.map((run) => summarizeRun(run)),
 				),
 		}) as AgentTool,
 	);
@@ -605,7 +974,10 @@ export function createAgentTeamsTools(
 				if (validatedInput.runId) {
 					const run = await options.runtime.awaitRun(validatedInput.runId);
 					assertAwaitedRunSucceeded(run);
-					return validateWithZod(TeamRunToolSummarySchema, summarizeRun(run));
+					return validateWithZod(
+						TeamRunToolSummarySchema,
+						summarizeRun(run, { includeFullText: true }),
+					);
 				}
 				const runs = await options.runtime.awaitAllRuns();
 				const failedRuns = runs.filter((run) =>
@@ -624,7 +996,7 @@ export function createAgentTeamsTools(
 				}
 				return validateWithZod(
 					TeamRunToolSummarySchema.array(),
-					runs.map(summarizeRun),
+					runs.map((run) => summarizeRun(run, { includeFullText: true })),
 				);
 			},
 		}) as AgentTool,

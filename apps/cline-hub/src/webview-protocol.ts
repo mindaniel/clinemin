@@ -1,7 +1,6 @@
 import type {
 	ChatMessage as CoreChatMessage,
 	ProviderListItem,
-	ProviderModel,
 } from "@cline/core";
 
 export type WebviewUsage = {
@@ -12,10 +11,13 @@ export type WebviewUsage = {
 	totalCost?: number;
 };
 
-export type WebviewProviderModel = Pick<
-	ProviderModel,
-	"id" | "name" | "supportsReasoning"
-> & {
+export type WebviewProviderModel = {
+	id: string;
+	name: string;
+	supportsReasoning?: boolean;
+	contextWindow?: number;
+	maxInputTokens?: number;
+	maxTokens?: number;
 	supportsThinking?: boolean;
 };
 
@@ -61,6 +63,8 @@ export type WebviewChatMessage = Omit<
 		input?: unknown;
 		output?: unknown;
 		error?: string;
+		/** When the call started, so a running tool can show how long it has been going. */
+		startedAt?: number;
 	}>;
 	blocks?: WebviewChatMessageBlock[];
 };
@@ -75,6 +79,11 @@ export type WebviewConfig = {
 	enableTools?: boolean;
 	enableSpawn?: boolean;
 	enableTeams?: boolean;
+	/**
+	 * Start this session as a team manager: manager system prompt, no file or
+	 * shell tools, delegation only.
+	 */
+	managerMode?: boolean;
 	autoApproveTools?: boolean;
 };
 
@@ -227,8 +236,84 @@ export type WebviewHubState = {
 	lastWorkspaceRoot?: string;
 };
 
+export type WebviewTeamWorker = {
+	agentId: string;
+	rolePrompt: string;
+	providerId?: string;
+	modelId?: string;
+	maxIterations?: number;
+	status?: "idle" | "running" | "stopped";
+};
+
+export type WebviewTeamRoster = {
+	/** Absolute path of the roster file, or where one would be written. */
+	path: string;
+	exists: boolean;
+	error?: string;
+	workers: WebviewTeamWorker[];
+};
+
+export type WebviewTeamTask = {
+	id: string;
+	title: string;
+	description: string;
+	status: "pending" | "in_progress" | "blocked" | "completed";
+	assignee?: string;
+	dependsOn: string[];
+	summary?: string;
+	updatedAt?: string;
+};
+
+export type WebviewTeamRun = {
+	id: string;
+	agentId: string;
+	taskId?: string;
+	status:
+		| "queued"
+		| "running"
+		| "completed"
+		| "failed"
+		| "cancelled"
+		| "interrupted";
+	startedAt?: string;
+	endedAt?: string;
+	currentActivity?: string;
+	lastProgressMessage?: string;
+	error?: string;
+	finishReason?: string;
+	textPreview?: string;
+};
+
+export type WebviewTeamMissionLogEntry = {
+	id: string;
+	ts: string;
+	agentId: string;
+	taskId?: string;
+	kind: string;
+	summary: string;
+	nextAction?: string;
+};
+
+export type WebviewTeamState = {
+	type: "team_state";
+	teamKey: string;
+	roster: WebviewTeamRoster;
+	/** Workers the runtime actually knows about, as opposed to declared ones. */
+	workers: WebviewTeamWorker[];
+	tasks: WebviewTeamTask[];
+	runs: WebviewTeamRun[];
+	missionLog: WebviewTeamMissionLogEntry[];
+	error?: string;
+};
+
 export type WebviewInboundMessage =
 	| { type: "ready" }
+	| { type: "loadTeamState"; teamKey: string }
+	| {
+			type: "saveTeamRoster";
+			path: string;
+			workers: WebviewTeamWorker[];
+	  }
 	| { type: "restart_hub" }
 	| {
 			type: "desktopCommand";
@@ -251,6 +336,13 @@ export type WebviewInboundMessage =
 			reason?: string;
 	  }
 	| { type: "loadModels"; providerId: string }
+	/**
+	 * Re-send the enabled-provider list.
+	 *
+	 * It is pushed once during `ready`, which every view after the first misses.
+	 * A view that needs the list to build a picker asks for it on mount.
+	 */
+	| { type: "loadProviders" }
 	| { type: "loadProviderCatalog" }
 	| {
 			type: "saveProviderSettings";
@@ -334,6 +426,8 @@ export type WebviewOutboundMessage =
 	| { type: "models"; providerId: string; models: WebviewProviderModel[] }
 	| { type: "sessions"; sessions: WebviewSessionSummary[] }
 	| WebviewHubState
+	| WebviewTeamState
+	| { type: "team_roster_saved"; path: string }
 	| { type: "defaults"; defaults: WebviewDefaults }
 	| { type: "reset_done" }
 	| {

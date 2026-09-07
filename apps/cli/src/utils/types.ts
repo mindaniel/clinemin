@@ -96,6 +96,7 @@ export interface ParsedArgs {
 	invalidRetries?: string;
 	cwd?: string;
 	teamName?: string;
+	managerMode?: boolean;
 	defaultToolAutoApprove: boolean;
 	autoApproveOverride?: boolean;
 }

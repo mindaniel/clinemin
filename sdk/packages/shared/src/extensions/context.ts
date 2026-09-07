@@ -14,7 +14,6 @@ export type ClientName =
 	| "cline-jetbrains"
 	| "cline-cli"
 	| "cline-sdk"
-	| "cline-kanban"
 	| "cline-acp"
 	| "cline-platform"
 	| (string & {});

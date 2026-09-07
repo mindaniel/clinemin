@@ -1,0 +1,22 @@
+{
+	"version": 1,
+	"workers": [
+		{
+			"agentId": "deepseek",
+			"rolePrompt": "Reads files and reports exactly what is in them. Quote the line and give file:line for every claim.",
+			"providerId": "deepseek-web-v2",
+			"modelId": "deepseek-reasoner"
+		},
+		{
+			"agentId": "qwen",
+			"rolePrompt": "Follows the manager's instructions and edits code.",
+			"providerId": "qwen-web",
+			"modelId": "qwen-auto"
+		},
+		{
+			"agentId": "gemini",
+			"rolePrompt": "Follows the manager's instructions and edits code.",
+			"providerId": "gemini-web"
+		}
+	]
+}

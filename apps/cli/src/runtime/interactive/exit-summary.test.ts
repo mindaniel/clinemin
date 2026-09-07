@@ -67,6 +67,10 @@ describe("interactive exit summary", () => {
 			model: "openai/gpt-5.3-codex",
 			cwd: "/tmp/project",
 			messageCount: 2,
+			inputTokens: 100,
+			outputTokens: 50,
+			cacheReadTokens: 0,
+			cacheWriteTokens: 0,
 			totalCost: 0.25,
 		});
 	});
@@ -79,6 +83,10 @@ describe("interactive exit summary", () => {
 			model: "openai/gpt-5.3-codex",
 			cwd: "/tmp/project",
 			messageCount: 2,
+			inputTokens: 100,
+			outputTokens: 50,
+			cacheReadTokens: 25,
+			cacheWriteTokens: 10,
 			totalCost: 0.25,
 		});
 
@@ -86,6 +94,10 @@ describe("interactive exit summary", () => {
 		expect(output).toContain("  ID        sess_123");
 		expect(output).toContain("  Model     cline:openai/gpt-5.3-codex");
 		expect(output).toContain("  Messages  2");
+		expect(output).toContain("  Input     100 tokens");
+		expect(output).toContain("  Output    50 tokens");
+		expect(output).toContain("  Cache read 25 tokens");
+		expect(output).toContain("  Cache write 10 tokens");
 		expect(output).toContain("  Cost      $0.250000");
 		expect(output).toContain("  Continue  ");
 		expect(output).toContain("cline --id sess_123");

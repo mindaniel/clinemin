@@ -50,6 +50,13 @@ Teams are enabled by default. Disable them with:
 cline --no-teams "your prompt"
 ```
 
+## Declaring Workers Up Front
+
+Instead of having the coordinator spawn every teammate during the conversation,
+declare them in a [team roster](/cli/team-roster) — a `.cline/team.json` file
+that names each worker and, optionally, pins it to its own provider and model.
+The team then starts with its full line-up on every run.
+
 ## Sub-Agents
 
 For simpler delegation within a single session (no persistent state), use [sub-agents](/features/subagents). Sub-agents run in parallel for read-only research and return focused reports to the main agent.

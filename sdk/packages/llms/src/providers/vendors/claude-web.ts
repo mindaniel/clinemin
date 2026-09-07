@@ -43,19 +43,29 @@ import {
 	abortRace,
 	throwIfAborted,
 } from "./tool-pipeline/abort";
+import { claimBrowserPort } from "./tool-pipeline/browser-claims";
+import { withBrowserLock } from "./tool-pipeline/browser-lock";
 import {
 	browserNotFoundMessage,
 	findChromePath,
 } from "./tool-pipeline/browser-path";
 import { registerLaunchedBrowser } from "./tool-pipeline/browser-processes";
 import { resolveActiveProfilePaths } from "./tool-pipeline/browser-profiles";
-import { resolveChatKey } from "./tool-pipeline/chat-target";
+import { retryOnMissingExecutionContext } from "./tool-pipeline/cdp-execution-context";
+import { getBoundChatKey, resolveChatKey } from "./tool-pipeline/chat-target";
+import { logConversationTurn } from "./tool-pipeline/conversation-logger";
 import { consumePendingInjectedReply } from "./tool-pipeline/injected-reply";
 import { parseInvokeStyleToolCalls } from "./tool-pipeline/invoke-parser";
+import { parseManagerBlocks } from "./tool-pipeline/manager-block";
+import {
+	parsePatchBlocks,
+	unappliedPatchNotice,
+} from "./tool-pipeline/patch-block";
 import {
 	realUserMessageKey,
 	stripPreviousUserBlock,
 } from "./tool-pipeline/previous-user-dedupe";
+import { applySimpleWebSystemPrompt } from "./tool-pipeline/simple-system-prompt";
 import { validateToolCalls } from "./tool-pipeline/tool-dispatcher";
 import type { ProviderFactoryResult } from "./types";
 
@@ -63,6 +73,14 @@ const CONFIG_DIR = path.join(os.homedir(), ".cline", "claude-web");
 const CONFIG_FILE = path.join(CONFIG_DIR, "config.json");
 const CLAUDE_WEB_URL = "https://claude.ai/";
 const CLAUDE_API_ENDPOINT = "/chat_conversations/";
+/**
+ * The answer stream, as opposed to every other call under that prefix.
+ *
+ * `/chat_conversations/` alone also matches the conversation create and fetch
+ * calls, which on a brand-new chat happen inside the same capture window as
+ * the first message.
+ */
+const CLAUDE_COMPLETION_PATH = "/completion";
 
 const DEFAULT_DEBUG_PORT = 9225;
 const DEFAULT_LAUNCH_TIMEOUT_MS = 30000;
@@ -73,7 +91,6 @@ const DEFAULT_MAX_SEND_DELAY_MS = 2_800;
 const DEFAULT_TOOL_TURN_EXTRA_MIN_MS = 1_500;
 const DEFAULT_TOOL_TURN_EXTRA_MAX_MS = 4_500;
 /** Fallback context window when the model definition doesn't report one. */
-const CLAUDE_WEB_FALLBACK_CONTEXT_WINDOW = 1_000_000;
 
 const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
 
@@ -112,10 +129,7 @@ export interface ClaudeWebV2RuntimeConfig {
 	/** Extra randomized delay added on turns that themselves request tools. */
 	toolTurnExtraMinMs: number;
 	toolTurnExtraMaxMs: number;
-	/**
-	 * Context window of the selected model, used to turn the session usage
-	 * percent Claude Web reports into an absolute token count for the status bar.
-	 */
+	/** Set per turn from the routed model, not from the env config. */
 	contextWindow?: number;
 }
 
@@ -275,7 +289,23 @@ class CdpClient {
 		});
 	}
 
+	// Wrapped so a page that is mid-navigation — no execution context yet —
+	// waits the moment out instead of failing the turn with nothing typed.
+	// See tool-pipeline/cdp-execution-context.ts.
 	send(method: string, params: any = {}, sessionId?: string): Promise<any> {
+		return retryOnMissingExecutionContext(
+			method,
+			() => this.sendOnce(method, params, sessionId),
+			sleep,
+			"claude-web",
+		);
+	}
+
+	private sendOnce(
+		method: string,
+		params: any = {},
+		sessionId?: string,
+	): Promise<any> {
 		const id = ++this.id;
 		return new Promise((resolve, reject) => {
 			this.pending.set(id, { resolve, reject });
@@ -392,6 +422,10 @@ async function connectBrowser(
 	const connectTimeoutMs = Math.max(config.launchTimeoutMs, 30000);
 
 	if (await isEndpointUp(config.debugPort)) {
+		// Attaching to a browser someone else launched. We do not own it and
+		// must never kill it, but the claim tells whoever DOES own it not to
+		// close it out from under this session. See browser-claims.ts.
+		claimBrowserPort(config.debugPort);
 		activeCdp = await connectCdp(config.debugPort, connectTimeoutMs);
 		activeCdpKey = key;
 		return activeCdp;
@@ -449,6 +483,24 @@ async function connectBrowser(
 
 // â”€â”€ Enhanced Claude send script (from send_claude.txt) â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 const SEND_MESSAGE_SOURCE = `
+// ---------- 0. Pick an editor we can actually type into ----------
+// claude.ai renders a DISABLED placeholder textarea (#static-composer-input)
+// alongside the real contenteditable composer. Taking the first element that
+// matches a selector types into something that ignores every event, so skip
+// anything disabled or hidden.
+function pickUsableEditor(selectors) {
+    for (const sel of selectors) {
+        for (const el of document.querySelectorAll(sel)) {
+            if (el.disabled) continue;
+            if (el.getAttribute('contenteditable') === 'false') continue;
+            const s = window.getComputedStyle(el);
+            if (s.display === 'none' || s.visibility === 'hidden') continue;
+            return el;
+        }
+    }
+    return null;
+}
+
 // ---------- 1. Set text in editor ----------
 async function setClaudeInput(message) {
     const selectors = [
@@ -460,11 +512,7 @@ async function setClaudeInput(message) {
         'div[contenteditable="true"]'
     ];
     
-    let editor = null;
-    for (const sel of selectors) {
-        editor = document.querySelector(sel);
-        if (editor) break;
-    }
+    let editor = pickUsableEditor(selectors);
 
     if (!editor) {
         console.error('âŒ Input editor not found. Available inputs:', Array.from(document.querySelectorAll('textarea, div[contenteditable="true"]')).map(e => e.tagName + (e.className ? '.'+e.className : '')));
@@ -540,11 +588,7 @@ async function clickClaudeSend() {
         'textarea[name="prompt"]',
         'div[contenteditable="true"]'
     ];
-    let editor = null;
-    for (const sel of selectors) {
-        editor = document.querySelector(sel);
-        if (editor) break;
-    }
+    let editor = pickUsableEditor(selectors);
     
     if (editor) {
         editor.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', code: 'Enter', keyCode: 13, which: 13, bubbles: true }));
@@ -835,6 +879,40 @@ function parseAskUserInputToolCalls(
 	return calls;
 }
 
+/**
+ * The same widget payload, written out for a human to read.
+ *
+ * Used when the session has no `ask_question` tool — a manager, for instance,
+ * whose whole tool set is delegation.
+ */
+export function renderAskUserInputAsText(rawJson: string): string | undefined {
+	let parsed: unknown;
+	try {
+		parsed = JSON.parse(rawJson);
+	} catch {
+		return undefined;
+	}
+	const questions = (parsed as { questions?: unknown })?.questions;
+	if (!Array.isArray(questions)) return undefined;
+
+	const lines: string[] = [];
+	for (const entry of questions) {
+		if (!entry || typeof entry !== "object") continue;
+		const q = entry as { question?: unknown; options?: unknown };
+		const question = typeof q.question === "string" ? q.question.trim() : "";
+		if (!question) continue;
+		lines.push(question);
+		if (Array.isArray(q.options)) {
+			for (const option of q.options) {
+				if (typeof option === "string" && option.trim()) {
+					lines.push(`- ${option.trim()}`);
+				}
+			}
+		}
+	}
+	return lines.length > 0 ? lines.join("\n") : undefined;
+}
+
 function consumeClaudeSse(
 	body: string,
 	onChunk: (text: string) => void,
@@ -1002,13 +1080,29 @@ async function waitForComposerReady(
 	config: ClaudeWebV2RuntimeConfig,
 	logger?: BasicLogger,
 ): Promise<void> {
+	// Ready means "there is a composer we can actually type into", which is not
+	// the same as "some editor-shaped element exists".
+	//
+	// claude.ai's /new route renders a disabled `textarea#static-composer-input`
+	// placeholder ahead of the real contenteditable in document order. A single
+	// `querySelector` with a union of selectors returns the first match in
+	// DOCUMENT order, not selector order, so it always picked the disabled
+	// placeholder, the `.disabled` guard rejected it, and this loop ran out the
+	// full login timeout — the browser opened, nothing was ever typed, and two
+	// minutes later the turn failed. Scan every candidate and take the first
+	// usable one instead.
 	const pageFullyLoaded = `(() => {
         if (document.readyState !== 'complete') return false;
-        var ta = document.querySelector('#prompt-textarea, textarea, div[contenteditable="true"], input[type="text"]');
-        if (!ta || ta.disabled) return false;
-        var s = window.getComputedStyle(ta);
-        if (s.display === 'none' || s.visibility === 'hidden') return false;
-        return true;
+        var els = document.querySelectorAll('[data-testid="chat-input"], #prompt-textarea, div[contenteditable="true"], textarea, input[type="text"]');
+        for (var i = 0; i < els.length; i++) {
+            var el = els[i];
+            if (el.disabled) continue;
+            if (el.getAttribute('contenteditable') === 'false') continue;
+            var s = window.getComputedStyle(el);
+            if (s.display === 'none' || s.visibility === 'hidden') continue;
+            return true;
+        }
+        return false;
     })()`;
 
 	const deadline = Date.now() + config.loginTimeoutMs;
@@ -1181,6 +1275,7 @@ async function sendAndCapture(
 	rateLimited?: boolean;
 	/** Raw JSON from a native `ask_user_input_v0` widget, when present. */
 	askUserInput?: string;
+	rawBody: string;
 }> {
 	const debugLog = (msg: string) => {
 		if (config.debug) logger?.debug(`[claude-web] ${msg}`);
@@ -1193,16 +1288,37 @@ async function sendAndCapture(
 		bodyResolve = resolve;
 	});
 
+	// Two ids, because not every `/chat_conversations/` response is the answer.
+	//
+	// Opening a brand-new chat mints the conversation as part of the first
+	// send, so its create/fetch responses land inside this capture window and
+	// hit the same prefix. Taking the first match read that JSON as though it
+	// were the SSE stream: a body was captured, it parsed to no text at all,
+	// and the turn surfaced as "Model returned empty response" — reliably, on
+	// every first message of every new chat, while every later message in the
+	// same chat worked.
+	//
+	// So prefer the completion stream, and fall back to a plain endpoint match
+	// only if none was ever seen — that way a rename on Claude's side degrades
+	// to the old behaviour instead of capturing nothing.
+	let fallbackRequestId: string | undefined;
 	const onResponseReceived = (event: any, eventSessionId?: string) => {
 		if (eventSessionId !== cdpSessionId) return;
 		const url: string = event.response?.url ?? "";
 		if (!url.includes(CLAUDE_API_ENDPOINT)) return;
 		if (event.response?.status !== 200) return;
-		completionRequestId = event.requestId;
-		debugLog(`completion response received (${url})`);
+		if (url.includes(CLAUDE_COMPLETION_PATH)) {
+			completionRequestId = event.requestId;
+			debugLog(`completion response received (${url})`);
+			return;
+		}
+		fallbackRequestId = event.requestId;
+		debugLog(`non-completion conversation response ignored for now (${url})`);
 	};
 	const onLoadingFinished = async (event: any, eventSessionId?: string) => {
 		if (eventSessionId !== cdpSessionId) return;
+		// Only the completion stream ends the wait. A conversation-fetch body
+		// finishing first must not resolve it, or the new-chat race is back.
 		if (event.requestId !== completionRequestId) return;
 		debugLog("completion body fully written â€” reading it");
 		try {
@@ -1270,6 +1386,28 @@ async function sendAndCapture(
 			cancelled.dispose();
 		}
 
+		// Last resort: no completion stream was ever seen, but some other
+		// conversation response was. Claude renaming the endpoint would look
+		// exactly like this, so read that body rather than failing outright —
+		// after the wait, never during it.
+		if (!capturedBody && !completionRequestId && fallbackRequestId) {
+			debugLog(
+				"no completion stream seen; falling back to the last conversation response",
+			);
+			try {
+				const { body, base64Encoded } = await cdp.send(
+					"Network.getResponseBody",
+					{ requestId: fallbackRequestId },
+					cdpSessionId,
+				);
+				capturedBody = base64Encoded
+					? Buffer.from(body, "base64").toString("utf-8")
+					: body;
+			} catch {
+				/* the body is gone; fall through to the error below */
+			}
+		}
+
 		if (!capturedBody) {
 			// Distinguish a real timeout (body never arrived) from a listener
 			// gap. An empty captured body is exactly what used to silently
@@ -1307,15 +1445,11 @@ async function sendAndCapture(
 		);
 
 		if (sessionPercent !== undefined) {
-			// Claude Web does not report per-turn input/output token counts; it
-			// reports the session usage as a percentage of the context window.
-			// Derive an absolute input-token estimate from that percent so the
-			// runtime's status bar shows "used/total" against the real window.
-			const contextWindow =
-				config.contextWindow ?? CLAUDE_WEB_FALLBACK_CONTEXT_WINDOW;
-			const inputTokens = Math.round(
-				(contextWindow * Math.max(0, Math.min(sessionPercent, 100))) / 100,
-			);
+			// Claude Web reports session usage as a percentage rather than an
+			// absolute token count. Preserve that value so consumers can display
+			// the actual Claude-reported percentage instead of estimating tokens
+			// against an assumed context window.
+			const inputTokens = Math.max(0, Math.min(sessionPercent, 100));
 			usage = {
 				inputTokens,
 				outputTokens: usage.outputTokens,
@@ -1335,7 +1469,14 @@ async function sendAndCapture(
 					"Consider raising CLAUDE_WEB_MIN/MAX_SEND_DELAY_MS.",
 			);
 		}
-		return { text: fullText, finishReason, usage, rateLimited, askUserInput };
+		return {
+			text: fullText,
+			finishReason,
+			usage,
+			rateLimited,
+			askUserInput,
+			rawBody: capturedBody,
+		};
 	} finally {
 		// Unregister only this turn's listeners. Leave the Network domain
 		// enabled for the session — disabling it here was the other half of the
@@ -1596,20 +1737,7 @@ function buildClaudePrompt(
 	reInjectSystem: boolean,
 	preserveCompactionContext: boolean,
 ): string {
-	// Use a simpler system prompt for claude-web provider
-	const simpleSystemPrompt =
-		"Help me with this problem. Do not give me multiple code options, just 1 option. " +
-		"Before helping me with my task, you must first help me understand the project folder structure and read the relevant files — send me PowerShell commands to do that, and I will paste you the results. " +
-		"When a file needs to be edited, do not ask me to edit it manually: send me PowerShell code to make the change instead, while making sure I do not mess up the existing code. " +
-		"I will then paste you the results of what has been done that I followed you.";
-
-	// Replace the runtime's full system prompt with the simple one BEFORE
-	// building the conversation. Otherwise the first turn (where
-	// buildLeanConversation returns the whole prompt unchanged) would send the
-	// full "# ROLE & OBJECTIVE ..." tool-contract prompt to Claude Web.
-	const effectivePrompt = prompt.map((m) =>
-		m.role === "system" ? { ...m, content: simpleSystemPrompt } : m,
-	);
+	const effectivePrompt = applySimpleWebSystemPrompt(prompt);
 
 	const conversation = buildLeanConversation(
 		effectivePrompt,
@@ -1668,6 +1796,19 @@ function parseCapturedReply(
 		if (askCalls.length > 0) {
 			return { text, toolCalls: askCalls, usage };
 		}
+		// The widget fired but there is no `ask_question` tool to carry it, so
+		// the questions have nowhere to go. Render them into the reply text
+		// rather than dropping them: a session without that tool used to end the
+		// turn with no content at all, which surfaced as an error and left the
+		// user staring at a question the agent had actually asked.
+		const rendered = renderAskUserInputAsText(askUserInput);
+		if (rendered) {
+			return {
+				text: text.trim() ? `${text.trim()}\n\n${rendered}` : rendered,
+				toolCalls: [],
+				usage,
+			};
+		}
 	}
 
 	if (functionTools.length === 0) {
@@ -1675,6 +1816,34 @@ function parseCapturedReply(
 	}
 
 	const toolNames = functionTools.map((t) => t.name);
+
+	// `<manager>` blocks come first, and only when the session actually has the
+	// team tool to dispatch them with. A lead on a web provider is prompted to
+	// write delegations as prose rather than tool calls — see
+	// `tool-pipeline/manager-block.ts` for why that framing is what keeps it out
+	// of tool machinery it cannot use.
+	if (toolNames.includes("team_run_task")) {
+		const manager = parseManagerBlocks(text, {
+			// Only when the session actually has the shell tool to run it with.
+			allowCommands: toolNames.includes("run_commands"),
+		});
+		if (manager.delegations.length > 0 || manager.problems.length > 0) {
+			const retryPrompt =
+				manager.problems.length > 0 ? manager.problems.join("\n") : undefined;
+			return {
+				text: retryPrompt
+					? `${manager.cleanedContent}\n\n${retryPrompt}`.trim()
+					: manager.cleanedContent,
+				toolCalls: manager.delegations.map((delegation) => ({
+					name: delegation.name,
+					arguments: delegation.arguments as Record<string, unknown>,
+				})),
+				usage,
+				retryPrompt,
+			};
+		}
+	}
+
 	const { cleanedContent, toolCalls } = parseDeepSeekToolCalls(text, toolNames);
 	const looseCalls =
 		toolCalls.length === 0
@@ -1711,6 +1880,33 @@ ${retryPrompt}`.trim()
 			toolCalls: validatedInvoked,
 			usage,
 			retryPrompt,
+		};
+	}
+
+	// A bare `*** Begin Patch` block is `apply_patch` written as text, which is
+	// the only way to send a patch body through a chat box — and exactly what
+	// SIMPLE_WEB_SYSTEM_PROMPT asks this provider for. It must run BEFORE the
+	// fallback below: that one maps a shell fence to `run_commands` and every
+	// other fence to an `editor` write, either of which would consume a patch
+	// body. Gated on the session actually having the tool. See
+	// tool-pipeline/patch-block.ts.
+	const patched = parsePatchBlocks(cleanedContent, toolNames);
+	const patchNotice = unappliedPatchNotice(cleanedContent, toolNames);
+	if (patchNotice) {
+		return {
+			text: `${cleanedContent}
+
+${patchNotice}`.trim(),
+			toolCalls: [],
+			usage,
+			retryPrompt: patchNotice,
+		};
+	}
+	if (patched.toolCalls.length > 0) {
+		return {
+			text: patched.cleanedContent,
+			toolCalls: patched.toolCalls,
+			usage,
 		};
 	}
 
@@ -1847,7 +2043,14 @@ function createClaudeWebModel(
 			runtimeConfig.chatsFile,
 			chatKey,
 		);
-		if (!existingClaudeSession && chatKey.length !== 16) {
+		// Only a sticky `/findchat` binding holds a real web conversation id; a
+		// hash-derived key never does. This used to test `chatKey.length !== 16`,
+		// but `chatKeyFromPrompt` returns 24 characters, so EVERY new chat took
+		// this branch: the hash was navigated to as though it were a conversation
+		// id (a 404 page), and then recorded, so the same dead chat came back on
+		// every later turn. Ask where the key came from instead of guessing from
+		// its shape.
+		if (!existingClaudeSession && getBoundChatKey("claude-web") === chatKey) {
 			existingClaudeSession = chatKey;
 			recordClaudeChatSession(runtimeConfig.chatsFile, chatKey, chatKey);
 		}
@@ -1919,6 +2122,19 @@ function createClaudeWebModel(
 				result.usage,
 				result.askUserInput,
 			);
+
+			// Log raw and parsed response per conversation
+			try {
+				logConversationTurn("claude-web", chatKey, result.rawBody, {
+					text: parsed.text,
+					toolCalls: parsed.toolCalls.length > 0 ? parsed.toolCalls : undefined,
+					usage: result.usage,
+					finishReason: result.finishReason,
+				});
+			} catch (logErr) {
+				// Ignore logging failures
+			}
+
 			if (
 				parsed.toolCalls.length === 0 &&
 				parsed.retryPrompt &&
@@ -1960,7 +2176,11 @@ function createClaudeWebModel(
 
 		async doGenerate(options: LanguageModelV2CallOptions) {
 			try {
-				const { text, toolCalls, usage } = await runCompletion(options);
+				const { text, toolCalls, usage } = await withBrowserLock(
+					"claude-web",
+					options.abortSignal,
+					() => runCompletion(options),
+				);
 
 				const content: LanguageModelV2Content[] = [];
 				if (text) content.push({ type: "text", text });
@@ -1987,7 +2207,11 @@ function createClaudeWebModel(
 		},
 
 		async doStream(options: LanguageModelV2CallOptions) {
-			const { text, toolCalls, usage } = await runCompletion(options);
+			const { text, toolCalls, usage } = await withBrowserLock(
+				"claude-web",
+				options.abortSignal,
+				() => runCompletion(options),
+			);
 			const id = `claude-web-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
 
 			const parts: LanguageModelV2StreamPart[] = [

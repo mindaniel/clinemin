@@ -66,12 +66,6 @@ We also welcome contributions to our [documentation](https://github.com/cline/cl
 
 ### Extension
 
-1. **VS Code Extensions**
-
-    - When opening the project, VS Code will prompt you to install recommended extensions
-    - These extensions are required for development - please accept all installation prompts
-    - If you dismissed the prompts, you can install them manually from the Extensions panel
-
 2. **Local Development**
     - cd into the vscode extension, `cd apps/vscode`
     - Run `bun run install:all` to install dependencies

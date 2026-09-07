@@ -11,6 +11,8 @@ export type ConnectorThreadState = {
 	participantKey?: string;
 	participantLabel?: string;
 	welcomeSentAt?: string;
+	provider?: string;
+	model?: string;
 };
 
 export type ConnectorThreadBinding<TState extends ConnectorThreadState> = {

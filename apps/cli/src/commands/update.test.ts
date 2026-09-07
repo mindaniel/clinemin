@@ -226,7 +226,7 @@ describe("auto update settings", () => {
 			json: async () => ({ version: "0.0.0" }),
 		} as Response);
 
-		await checkForUpdates({ includeKanban: false });
+		await checkForUpdates();
 
 		expect(fetchSpy).toHaveBeenCalled();
 	});

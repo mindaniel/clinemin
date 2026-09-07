@@ -1,4 +1,10 @@
 import {
+	loadTeamRoster,
+	resolveTeamRosterSearchPaths,
+	writeTeamRoster,
+} from "@cline/core";
+import * as Llms from "@cline/llms";
+import {
 	type BrowserProfile,
 	bindChatKey,
 	type ChatGPTWebChatEntry,
@@ -12,27 +18,34 @@ import {
 	deleteChatSession,
 	deleteClaudeChatSession,
 	deleteGeminiChatSession,
+	deleteKimiChatSession,
 	deleteQwenChatSession,
 	type GeminiWebChatEntry,
 	getActiveBrowserProfile,
 	getContinuationNote,
+	type KimiWebChatEntry,
 	listBrowserProfiles,
 	listChatGPTWebChats,
 	listClaudeWebChats,
 	listDeepSeekWebV2Chats,
 	listGeminiWebChats,
+	listKimiWebChats,
 	listQwenWebChats,
 	openChatGPTWebChat,
 	openClaudeWebChat,
 	openDeepSeekWebV2Chat,
 	openGeminiWebChat,
+	openKimiWebChat,
 	openQwenWebChat,
 	PASTE_CARRIER_PROMPT,
+	type ProfileResetResult,
 	type QwenWebChatEntry,
+	resetBrowserProfileData,
 	resolveChatGPTWebV2Config,
 	resolveClaudeWebV2Config,
 	resolveDeepSeekWebV2Config,
 	resolveGeminiWebV2Config,
+	resolveKimiWebV2Config,
 	resolveQwenWebV2Config,
 	setActiveBrowserProfile,
 	setContinuationNote,
@@ -47,7 +60,8 @@ export type WebChatEntry =
 	| QwenWebChatEntry
 	| ChatGPTWebChatEntry
 	| ClaudeWebChatEntry
-	| GeminiWebChatEntry;
+	| GeminiWebChatEntry
+	| KimiWebChatEntry;
 
 interface WebProviderConfig {
 	name: string;
@@ -64,6 +78,15 @@ const webProviderConfigs: Record<string, WebProviderConfig> = {
 		deleteChat: (chatKey: string) => {
 			const config = resolveDeepSeekWebV2Config();
 			deleteChatSession(config.chatsFile, chatKey);
+		},
+	},
+	"kimi-web": {
+		name: "Kimi Web",
+		listChats: listKimiWebChats,
+		openChat: openKimiWebChat,
+		deleteChat: (chatKey: string) => {
+			const config = resolveKimiWebV2Config();
+			deleteKimiChatSession(config.chatsFile, chatKey);
 		},
 	},
 	"qwen-web": {
@@ -114,8 +137,16 @@ import { FindChatDialogContent } from "../components/dialogs/find-chat-dialog";
 import { ForkConfirmContent } from "../components/dialogs/fork-confirm";
 import { HelpDialogContent } from "../components/dialogs/help-dialog";
 import { withLoadingDialog } from "../components/dialogs/loading-dialog";
+import {
+	ManagerDialogContent,
+	type ManagerDialogResult,
+} from "../components/dialogs/manager-dialog";
 import { PasteReplyDialogContent } from "../components/dialogs/paste-reply-dialog";
 import { ProfilePickerContent } from "../components/dialogs/profile-picker";
+import {
+	WorkersDialogContent,
+	type WorkersDialogResult,
+} from "../components/dialogs/workers-dialog";
 import { useSession } from "../contexts/session-context";
 import type { AppView, TuiProps } from "../types";
 import { formatTokenCount } from "../utils/compaction-status";
@@ -149,6 +180,13 @@ export function useLocalCommandActions(input: {
 	cwd: string;
 	/** Id of the running CLI session; used by `/findchat` to pin it to a chat. */
 	getSessionId: () => string | undefined;
+	/**
+	 * Switch this session to a manager on the given provider and restart it
+	 * empty. The system prompt is fixed for a session's life, so starting a
+	 * manager is a restart — which is why `/manager` belongs at the start of a
+	 * chat.
+	 */
+	onStartManager: (providerId: string) => Promise<void>;
 	/** Submit text as if the user typed it (used by `/paste` to start a turn). */
 	submitText: (
 		text: string,
@@ -181,6 +219,7 @@ export function useLocalCommandActions(input: {
 		providerId,
 		cwd,
 		getSessionId,
+		onStartManager,
 		submitText,
 	} = input;
 
@@ -501,6 +540,128 @@ export function useLocalCommandActions(input: {
 	 * parses `<tool>` calls, runs approvals, and feeds tool results back exactly
 	 * as if we had captured the reply ourselves.
 	 */
+	// `/workers` — edit the roster a manager delegates to.
+	const openWorkers = useCallback(async (): Promise<boolean> => {
+		const rosterPath = resolveTeamRosterSearchPaths(cwd)[0];
+		if (!rosterPath) {
+			session.appendEntry({
+				kind: "error",
+				text: "/workers: could not work out where to keep the roster.",
+			});
+			return true;
+		}
+		const loaded = loadTeamRoster({ workspaceRoot: cwd });
+		if (loaded.error) {
+			// A roster that exists but does not parse must not be silently replaced
+			// with whatever the dialog builds — that would discard the user's file.
+			session.appendEntry({
+				kind: "error",
+				text: `/workers: ${loaded.error}. Fix the file before editing it here.`,
+			});
+			return true;
+		}
+
+		const providerIds = Llms.getProviderIds().sort((a, b) =>
+			a.localeCompare(b),
+		);
+		const chosen = await dialog.choice<WorkersDialogResult>({
+			size: "large",
+			content: (ctx: ChoiceContext<WorkersDialogResult>) => (
+				<WorkersDialogContent
+					{...ctx}
+					initialWorkers={loaded.roster?.workers ?? []}
+					providerIds={providerIds}
+					rosterPath={loaded.path ?? rosterPath}
+				/>
+			),
+		});
+		refocusTextarea();
+		if (!chosen) {
+			return true;
+		}
+		try {
+			writeTeamRoster({
+				path: loaded.path ?? rosterPath,
+				workers: chosen.workers,
+			});
+			session.appendEntry({
+				kind: "status",
+				text: `Saved ${chosen.workers.length} worker${chosen.workers.length === 1 ? "" : "s"} to ${loaded.path ?? rosterPath}.`,
+			});
+		} catch (error) {
+			session.appendEntry({
+				kind: "error",
+				text: `/workers: could not save the roster: ${error instanceof Error ? error.message : String(error)}`,
+			});
+		}
+		return true;
+	}, [cwd, dialog, refocusTextarea, session]);
+
+	/**
+	 * Bare `/manager` — choose which model manages, then start.
+	 *
+	 * Only browser-driven providers and the session's own are offered. A manager
+	 * is a reasoning-only seat, so in practice it is a web chat model; and every
+	 * other provider would need its key and endpoint set up first, which is
+	 * `/model`'s job and a bad thing to discover halfway through a restart.
+	 */
+	const openManager = useCallback(
+		async (taskBody: string): Promise<boolean> => {
+			if (taskBody) {
+				// `/manager <task>` keeps its old path through the chat runner.
+				return false;
+			}
+			const loaded = loadTeamRoster({ workspaceRoot: cwd });
+			if (loaded.error) {
+				session.appendEntry({
+					kind: "error",
+					text: `/manager: ${loaded.error}. Fix the roster before starting a manager.`,
+				});
+				return true;
+			}
+			const workerNames = (loaded.roster?.workers ?? []).map(
+				(worker) => worker.agentId,
+			);
+			const providerIds = Llms.getProviderIds()
+				.filter((id) => /-web(-v\d+)?$/i.test(id) || id === providerId)
+				.sort((a, b) => a.localeCompare(b));
+
+			const chosen = await dialog.choice<ManagerDialogResult>({
+				size: "large",
+				content: (ctx: ChoiceContext<ManagerDialogResult>) => (
+					<ManagerDialogContent
+						{...ctx}
+						providerIds={providerIds}
+						currentProviderId={providerId}
+						workerNames={workerNames}
+					/>
+				),
+			});
+			refocusTextarea();
+			if (!chosen) {
+				return true;
+			}
+			try {
+				await onStartManager(chosen.providerId);
+				session.appendEntry({
+					kind: "status",
+					text:
+						`Manager mode on ${chosen.providerId}. ` +
+						(workerNames.length
+							? `Delegating to ${workerNames.join(", ")}. Describe the task.`
+							: "No workers yet — add some with /workers."),
+				});
+			} catch (error) {
+				session.appendEntry({
+					kind: "error",
+					text: `/manager: could not start manager mode: ${error instanceof Error ? error.message : String(error)}`,
+				});
+			}
+			return true;
+		},
+		[cwd, dialog, onStartManager, providerId, refocusTextarea, session],
+	);
+
 	const pasteReply = useCallback(async (): Promise<boolean> => {
 		if (!webProviderConfigs[providerId]) {
 			session.appendEntry({
@@ -552,6 +713,62 @@ export function useLocalCommandActions(input: {
 	}, [dialog, providerId, refocusTextarea, session, submitText]);
 
 	/**
+	 * `/profile` -> `r` — sign a profile out of every web provider.
+	 *
+	 * A Chrome `--user-data-dir` IS the login, so clearing cookies means
+	 * deleting those directories; there is no lighter touch short of doing it by
+	 * hand in each browser window. Deliberately distinct from `d`, which forgets
+	 * the list entry and leaves the logins alone — one is "I am done with this
+	 * profile", this is "sign me out".
+	 *
+	 * A browser the user launched themselves is not ours to kill, so its
+	 * provider is reported rather than having a live profile deleted out from
+	 * under it, which would leave Chrome rewriting a directory that no longer
+	 * exists.
+	 */
+	const resetProfile = useCallback(
+		async (name: string): Promise<boolean> => {
+			let result: ProfileResetResult;
+			try {
+				result = await resetBrowserProfileData(name, { includeChats: true });
+			} catch (error) {
+				session.appendEntry({
+					kind: "error",
+					text: `/profile: could not reset "${name}": ${error instanceof Error ? error.message : String(error)}`,
+				});
+				return true;
+			}
+
+			if (result.removed.length === 0 && result.busy.length === 0) {
+				session.appendEntry({
+					kind: "status",
+					text: `/profile: "${name}" had no browser data to clear.`,
+				});
+				return true;
+			}
+
+			const lines = [
+				result.removed.length
+					? `/profile: signed "${name}" out of every web provider (${result.removed.length} ${result.removed.length === 1 ? "directory" : "directories"} removed). The next turn opens a fresh browser to sign in.`
+					: `/profile: nothing was removed for "${name}".`,
+			];
+			if (result.busy.length) {
+				lines.push(
+					`Left alone because a Chrome you started is still on their port: ${result.busy
+						.map((entry) => `${entry.providerId} (${entry.debugPort})`)
+						.join(", ")}. Close those windows and run /profile again.`,
+				);
+			}
+			session.appendEntry({
+				kind: result.busy.length ? "error" : "status",
+				text: lines.join(" "),
+			});
+			return true;
+		},
+		[session],
+	);
+
+	/**
 	 * `/profile` — choose which named Chrome profile the web providers use.
 	 *
 	 * A profile is a Chrome `--user-data-dir`, which IS the logged-in account,
@@ -590,6 +807,10 @@ export function useLocalCommandActions(input: {
 		});
 		refocusTextarea();
 		if (!choice) return true;
+
+		if (choice.startsWith("__reset__:")) {
+			return resetProfile(choice.slice("__reset__:".length));
+		}
 
 		let name = choice;
 		if (choice.startsWith("__create__:")) {
@@ -635,7 +856,7 @@ export function useLocalCommandActions(input: {
 				"The next turn opens its browser; sign in there if it is new.",
 		});
 		return true;
-	}, [dialog, refocusTextarea, session]);
+	}, [dialog, refocusTextarea, resetProfile, session]);
 
 	/**
 	 * `/note` — show or set the note the runtime appends after each round of
@@ -707,6 +928,8 @@ export function useLocalCommandActions(input: {
 				openHistory,
 				exitCline: onExit,
 				findChat,
+				openWorkers,
+				openManager,
 				pasteReply,
 				setNote,
 				switchProfile,
@@ -723,6 +946,8 @@ export function useLocalCommandActions(input: {
 			openHistory,
 			openModelSelector,
 			openSkills,
+			openWorkers,
+			openManager,
 			runCompact,
 			runAutocompact,
 			runFork,

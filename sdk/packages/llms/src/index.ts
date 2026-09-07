@@ -139,6 +139,13 @@ export {
 	resolveGeminiWebV2Config,
 } from "./providers/vendors/gemini-web";
 export {
+	deleteKimiChatSession,
+	type KimiWebChatEntry,
+	listKimiWebChats,
+	openKimiWebChat,
+	resolveKimiWebV2Config,
+} from "./providers/vendors/kimi-web";
+export {
 	defaultModelsDir as llamaCppDefaultModelsDir,
 	ensureLlamaCppRunning,
 	readGgufContextLength,
@@ -168,11 +175,17 @@ export {
 	deleteBrowserProfile,
 	getActiveBrowserProfile,
 	listBrowserProfiles,
+	listProfileBrowserTargets,
 	normalizeProfileName,
+	type ProfileBrowserTarget,
+	type ProfileResetResult,
 	pinBrowserProfile,
+	resetBrowserProfileData,
 	resetBrowserProfilePin,
 	resolveActiveProfilePaths,
+	resolveProfilePaths,
 	setActiveBrowserProfile,
+	WEB_PROVIDER_BROWSERS,
 } from "./providers/vendors/tool-pipeline/browser-profiles";
 // Explicit chat routing (used by compaction to send its summarize request
 // into the web chat that actually holds the conversation).

@@ -26,6 +26,18 @@ import {
 } from "@cline/shared";
 
 export const DEFAULT_MAX_TOOL_RESULT_CHARS = 8_000;
+/**
+ * The same cap for a manager session.
+ *
+ * A manager's tool results are not file reads or command output — they are
+ * whole reports written by another agent, and 8k characters cuts the middle
+ * out of one. The manager then reasons about a survey whose findings 15 to 40
+ * are simply missing, with no way to tell that they were.
+ *
+ * It stays a cap rather than becoming unlimited: a runaway worker should not be
+ * able to blow up the manager's context in a single reply.
+ */
+export const MANAGER_MAX_TOOL_RESULT_CHARS = 64_000;
 export const DEFAULT_MAX_FILE_CONTENT_CHARS = 50_000;
 // The aggregate budget intentionally stays far above what the per-result cap
 // usually produces: budget truncation rewrites bytes mid-transcript, which

@@ -148,6 +148,9 @@ export interface ProviderModel {
 	supportsAttachments?: boolean;
 	supportsVision?: boolean;
 	supportsReasoning?: boolean;
+	maxTokens?: number;
+	contextWindow?: number;
+	maxInputTokens?: number;
 }
 
 export type ProviderConfigFieldType =

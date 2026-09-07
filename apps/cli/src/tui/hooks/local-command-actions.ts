@@ -23,6 +23,13 @@ export interface LocalSlashCommandActionInput {
 	 * Web v2). Provider-specific; no-ops / returns false for non-web providers.
 	 */
 	findChat: () => Promise<boolean>;
+	openWorkers: () => Promise<boolean>;
+	/**
+	 * Bare `/manager`: pick the manager's model, then start manager mode.
+	 * Returns false when the command carried a task, so the caller submits it as
+	 * a prompt and the chat runner handles it as before.
+	 */
+	openManager: (taskBody: string) => Promise<boolean>;
 	/**
 	 * Manual reply recovery for web providers: queue the clipboard as the
 	 * model's reply for the next turn. No-ops for non-web providers.
@@ -135,6 +142,12 @@ export function runLocalSlashCommandAction(
 	}
 	if (normalized === "findchat") {
 		return input.findChat();
+	}
+	if (normalized === "workers") {
+		return input.openWorkers();
+	}
+	if (normalized === "manager") {
+		return input.openManager(commandArgument(input.invocation?.text));
 	}
 	if (normalized === "paste") {
 		return input.pasteReply();

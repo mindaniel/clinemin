@@ -30,6 +30,7 @@ import {
 import { fetchMarketplaceCatalog } from "./server/marketplace";
 import {
 	loadModels,
+	loadProviders,
 	runProviderOAuthLogin,
 	saveProviderSettings,
 	sendProviderCatalog,
@@ -46,6 +47,7 @@ import {
 } from "./server/sessions";
 import { HubContext } from "./server/state";
 import { broadcastHubState, hubStatusPayload } from "./server/state-payloads";
+import { readTeamState, writeTeamRoster } from "./server/team";
 import type { BrowserFrame, BrowserPeer } from "./server/types";
 
 export interface ClineHubDashboardServer {
@@ -183,8 +185,31 @@ export async function startClineHubDashboardServer(): Promise<ClineHubDashboardS
 						}
 					} else if (frame.type === "ready") {
 						await initializePeer(ctx, peer, syncClientsAndSessions);
+					} else if (frame.type === "loadTeamState") {
+						ctx.send(
+							peer,
+							readTeamState({
+								teamKey: frame.teamKey,
+								workspaceRoot: ctx.lastSessionContext?.workspaceRoot,
+							}),
+						);
+					} else if (frame.type === "saveTeamRoster") {
+						writeTeamRoster({ path: frame.path, workers: frame.workers });
+						ctx.send(peer, { type: "team_roster_saved", path: frame.path });
+						// Echo the state straight back so the roster the dashboard shows
+						// is the one that was just parsed off disk, not the draft in the
+						// browser — a roster the loader rejects has to be visible here.
+						ctx.send(
+							peer,
+							readTeamState({
+								teamKey: peer.selectedSessionId ?? "",
+								workspaceRoot: ctx.lastSessionContext?.workspaceRoot,
+							}),
+						);
 					} else if (frame.type === "loadModels") {
 						await loadModels(ctx, peer, frame.providerId);
+					} else if (frame.type === "loadProviders") {
+						await loadProviders(ctx, peer);
 					} else if (frame.type === "loadProviderCatalog") {
 						await sendProviderCatalog(ctx, peer);
 					} else if (frame.type === "saveProviderSettings") {

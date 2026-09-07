@@ -78,7 +78,6 @@ export function addRootOptions(cmd: Command): Command {
 				"Auto-create a detached git worktree under ~/.cline/worktrees/ and run the task there",
 			)
 			.option("--update", "Check for updates and install if available")
-			.option("--kanban", "Run the kanban app")
 			.option("-v, --verbose", "Show verbose output")
 			// HIDDEN/LEGACY OPTIONS BELOW
 			.addOption(
@@ -101,13 +100,23 @@ export function addRootOptions(cmd: Command): Command {
 					"Override the runtime team state name",
 				).hideHelp(),
 			)
+			.addOption(
+				new Option(
+					"--manager",
+					"Run as a team manager: coordinate workers and delegate every step, with no file or shell tools of your own.",
+				),
+			)
 	);
 }
 
 export function createProgram(): Command {
 	const program = new Command("cline")
 		.description("Cline CLI - AI coding assistant in your terminal")
-		.version(getCliDisplayVersion(), "-V, --version", "Output the version number")
+		.version(
+			getCliDisplayVersion(),
+			"-V, --version",
+			"Output the version number",
+		)
 		.exitOverride() // don't call process.exit
 		.configureOutput({
 			writeOut: () => {}, // suppress by default; main.ts re-enables for routing
@@ -221,6 +230,7 @@ export function commanderToParsedArgs(program: Command): ParsedArgs {
 	if (opts.worktree !== undefined) result.worktree = !!opts.worktree;
 	if (opts.cwd !== undefined) result.cwd = opts.cwd;
 	if (opts.teamName !== undefined) result.teamName = opts.teamName;
+	if (opts.manager !== undefined) result.managerMode = !!opts.manager;
 	if (opts.system !== undefined) result.systemPrompt = opts.system;
 	if (opts.model !== undefined) result.model = opts.model;
 	if (opts.provider !== undefined) result.provider = opts.provider;

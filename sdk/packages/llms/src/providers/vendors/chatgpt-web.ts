@@ -44,16 +44,26 @@ import {
 	abortRace,
 	throwIfAborted,
 } from "./tool-pipeline/abort";
+import { claimBrowserPort } from "./tool-pipeline/browser-claims";
+import { withBrowserLock } from "./tool-pipeline/browser-lock";
 import {
 	browserNotFoundMessage,
 	findChromePath,
 } from "./tool-pipeline/browser-path";
 import { registerLaunchedBrowser } from "./tool-pipeline/browser-processes";
 import { resolveActiveProfilePaths } from "./tool-pipeline/browser-profiles";
-import { resolveChatKey } from "./tool-pipeline/chat-target";
+import { retryOnMissingExecutionContext } from "./tool-pipeline/cdp-execution-context";
+import { getBoundChatKey, resolveChatKey } from "./tool-pipeline/chat-target";
+import { logConversationTurn } from "./tool-pipeline/conversation-logger";
 import { consumePendingInjectedReply } from "./tool-pipeline/injected-reply";
 import { parseInvokeStyleToolCalls } from "./tool-pipeline/invoke-parser";
+import { parseManagerBlocks } from "./tool-pipeline/manager-block";
+import {
+	parsePatchBlocks,
+	unappliedPatchNotice,
+} from "./tool-pipeline/patch-block";
 import { stripPreviousUserBlock } from "./tool-pipeline/previous-user-dedupe";
+import { applySimpleWebSystemPrompt } from "./tool-pipeline/simple-system-prompt";
 import { validateToolCalls } from "./tool-pipeline/tool-dispatcher";
 import type { ProviderFactoryResult } from "./types";
 
@@ -63,6 +73,21 @@ const CHATGPT_WEB_URL = "https://chatgpt.com/";
 const CHATGPT_API_ENDPOINT = "/backend-api/f/conversation";
 
 const DEFAULT_DEBUG_PORT = 9224;
+/**
+ * How long any one CDP call may take before we stop waiting for its reply.
+ *
+ * This is OUR deadline, not Chrome's: `CdpClient.sendOnce` rejects with
+ * `CDP timeout: <method>` when no response with the matching id comes back.
+ * Almost every call here is a sub-second DOM read, so a short default catches a
+ * dead socket quickly. The one call that legitimately runs long — the send
+ * script, which resolves only once the message is actually in the composer and
+ * submitted — passes its own budget instead.
+ *
+ * Note that Chrome also accepts a `timeout` on `Runtime.evaluate`. That one
+ * caps how long CHROME evaluates before giving up, so raising it does nothing
+ * for this error; only this value governs it.
+ */
+const CDP_CALL_TIMEOUT_MS = 30000;
 const DEFAULT_LAUNCH_TIMEOUT_MS = 30000;
 const DEFAULT_RESPONSE_TIMEOUT_MS = 1200000; // Increased to 1200s (20 mins) to prevent premature timeout on long thinking/tool calls
 const DEFAULT_LOGIN_TIMEOUT_MS = 120000;
@@ -266,7 +291,29 @@ class CdpClient {
 		});
 	}
 
-	send(method: string, params: any = {}, sessionId?: string): Promise<any> {
+	// Wrapped so a page that is mid-navigation — no execution context yet —
+	// waits the moment out instead of failing the turn with nothing typed.
+	// See tool-pipeline/cdp-execution-context.ts.
+	send(
+		method: string,
+		params: any = {},
+		sessionId?: string,
+		timeoutMs?: number,
+	): Promise<any> {
+		return retryOnMissingExecutionContext(
+			method,
+			() => this.sendOnce(method, params, sessionId, timeoutMs),
+			sleep,
+			"chatgpt-web",
+		);
+	}
+
+	private sendOnce(
+		method: string,
+		params: any = {},
+		sessionId?: string,
+		timeoutMs: number = CDP_CALL_TIMEOUT_MS,
+	): Promise<any> {
 		const id = ++this.id;
 		return new Promise((resolve, reject) => {
 			this.pending.set(id, { resolve, reject });
@@ -283,7 +330,7 @@ class CdpClient {
 					this.pending.delete(id);
 					reject(new Error(`CDP timeout: ${method}`));
 				}
-			}, 30000);
+			}, timeoutMs);
 		});
 	}
 
@@ -386,6 +433,10 @@ async function connectBrowser(
 	const connectTimeoutMs = Math.max(config.launchTimeoutMs, 30000);
 
 	if (await isEndpointUp(config.debugPort)) {
+		// Attaching to a browser someone else launched. We do not own it and
+		// must never kill it, but the claim tells whoever DOES own it not to
+		// close it out from under this session. See browser-claims.ts.
+		claimBrowserPort(config.debugPort);
 		activeCdp = await connectCdp(config.debugPort, connectTimeoutMs);
 		activeCdpKey = key;
 		return activeCdp;
@@ -805,6 +856,9 @@ function consumeChatGPTSse(
 		outputTokens: number;
 		totalTokens: number;
 	}) => void,
+	onQuota?: (
+		quota: { featureName: string; remaining: number; resetAfter: string }[],
+	) => void,
 ): void {
 	try {
 		// ChatGPT SSE parsing: see consumeChatGPTSse doc below.
@@ -824,15 +878,36 @@ function consumeChatGPTSse(
 			}
 			if (!parsed || typeof parsed !== "object") continue;
 
-			// Streaming delta: { v: "...", o: "append" }. Skip patch diffs.
+			// 1. Handle JSON patch operations: { o: "patch", v: [{ p: "/message/content/parts/0", o: "append", v: "text" }] }
+			if (parsed.o === "patch" && Array.isArray(parsed.v)) {
+				for (const patch of parsed.v) {
+					if (
+						patch &&
+						typeof patch === "object" &&
+						patch.p === "/message/content/parts/0" &&
+						patch.o === "append" &&
+						typeof patch.v === "string"
+					) {
+						fullText += patch.v;
+					}
+				}
+				continue;
+			}
+
+			// 2. Streaming delta: { v: "...", o: "append" }
 			if (typeof parsed.v === "string") {
 				if (parsed.o === "patch") continue;
 				fullText += parsed.v;
 				continue;
 			}
 
-			// message.content.parts[] is ChatGPT's normal terminal payload.
-			const message = parsed.message;
+			// 3. message.content.parts[] is ChatGPT's normal terminal payload.
+			// It can be at the root (parsed.message) or nested under v (parsed.v.message)
+			const message =
+				parsed.message ||
+				(parsed.v && typeof parsed.v === "object"
+					? (parsed.v as any).message
+					: undefined);
 			if (message && typeof message === "object") {
 				const content = message.content;
 				if (typeof content === "string") {
@@ -865,6 +940,15 @@ function consumeChatGPTSse(
 						(parsed.usage.prompt_tokens || 0) +
 							(parsed.usage.completion_tokens || 0),
 				});
+			}
+
+			// ChatGPT web SSE includes a `conversation_detail_metadata` event with quota info.
+			if (
+				parsed.type === "conversation_detail_metadata" &&
+				Array.isArray(parsed.limits_progress) &&
+				onQuota
+			) {
+				onQuota(parsed.limits_progress);
 			}
 		}
 
@@ -1066,6 +1150,8 @@ async function sendAndCapture(
 	finishReason: LanguageModelV2FinishReason;
 	usage: { inputTokens: number; outputTokens: number; totalTokens: number };
 	rateLimited?: boolean;
+	quota?: { featureName: string; remaining: number; resetAfter: string }[];
+	rawBody: string;
 }> {
 	const debugLog = (msg: string) => {
 		if (config.debug) logger?.debug(`[chatgpt-web] ${msg}`);
@@ -1083,6 +1169,14 @@ async function sendAndCapture(
 		const url: string = event.response?.url ?? "";
 		if (!url.includes(CHATGPT_API_ENDPOINT)) return;
 		if (event.response?.status !== 200) return;
+		// Only the SSE completion stream carries the answer. ChatGPT fires
+		// several calls under /backend-api/f/conversation (create, fetch,
+		// rename, ...) on the first message of a new chat, and capturing the
+		// first of those — a plain JSON body that parses to no text — is what
+		// surfaced as "Model returned empty response". Filter on the SSE
+		// content type, exactly like the Python reference automation does.
+		const mimeType: string = event.response?.mimeType ?? "";
+		if (!mimeType.includes("text/event-stream")) return;
 		completionRequestId = event.requestId;
 		debugLog(`completion response received (${url})`);
 	};
@@ -1134,6 +1228,11 @@ async function sendAndCapture(
 		);
 		await abortableSleep(sendDelay, signal);
 
+		// The send script waits on the composer accepting the text and the
+		// submit landing, which on a slow or busy chatgpt.com tab runs past the
+		// 30s default and failed the turn with `CDP timeout: Runtime.evaluate`.
+		// Give it the same budget as the reply itself, so the one knob a user
+		// can turn (CHATGPT_WEB_RESPONSE_TIMEOUT_MS) covers both halves.
 		await cdp.send(
 			"Runtime.evaluate",
 			{
@@ -1142,6 +1241,7 @@ async function sendAndCapture(
 				awaitPromise: true,
 			},
 			cdpSessionId,
+			config.responseTimeoutMs,
 		);
 
 		// A cancelled turn has to stop waiting here. Until this returns the CLI
@@ -1173,6 +1273,9 @@ async function sendAndCapture(
 		let fullText = "";
 		const finishReason: LanguageModelV2FinishReason = "stop";
 		let usage = { inputTokens: 0, outputTokens: 0, totalTokens: 0 };
+		let quota:
+			| { featureName: string; remaining: number; resetAfter: string }[]
+			| undefined;
 		consumeChatGPTSse(
 			capturedBody,
 			(chunk) => {
@@ -1185,7 +1288,19 @@ async function sendAndCapture(
 			(nextUsage) => {
 				usage = nextUsage;
 			},
+			(q) => {
+				quota = q;
+			},
 		);
+
+		if (quota) {
+			const reasonQuota = quota.find((q) => q.featureName === "reason");
+			if (reasonQuota) {
+				logger?.log?.(
+					`[chatgpt-web] Token quota: ${reasonQuota.remaining} remaining, resets at ${reasonQuota.resetAfter}`,
+				);
+			}
+		}
 
 		// ChatGPT's web SSE stream often omits a `usage` payload, leaving the
 		// numbers at zero. The Python reference automation estimates tokens from
@@ -1215,7 +1330,14 @@ async function sendAndCapture(
 					"Consider raising CHATGPT_WEB_MIN/MAX_SEND_DELAY_MS.",
 			);
 		}
-		return { text: fullText, finishReason, usage, rateLimited };
+		return {
+			text: fullText,
+			finishReason,
+			usage,
+			quota,
+			rateLimited,
+			rawBody: capturedBody,
+		};
 	} finally {
 		// Unregister only this turn's listeners. Leave the Network domain
 		// enabled for the session — disabling it here was the other half of the
@@ -1231,6 +1353,7 @@ interface ChatGPTCompletionResult {
 	text: string;
 	toolCalls: { name: string; arguments: Record<string, unknown> }[];
 	usage: { inputTokens: number; outputTokens: number; totalTokens: number };
+	quota?: { featureName: string; remaining: number; resetAfter: string }[];
 	/**
 	 * Set when every tool call in the reply was rejected (e.g. invalid Python
 	 * in an `editor` call). It is OUR commentary on what the model typed, so
@@ -1254,8 +1377,13 @@ function buildChatGPTPrompt(
 	reInjectSystem: boolean,
 	preserveCompactionContext: boolean,
 ): string {
-	const conversation = buildLeanConversation(prompt, preserveCompactionContext);
-	const systemMessage = prompt.find((m) => m.role === "system");
+	const effectivePrompt = applySimpleWebSystemPrompt(prompt);
+
+	const conversation = buildLeanConversation(
+		effectivePrompt,
+		preserveCompactionContext,
+	);
+	const systemMessage = effectivePrompt.find((m) => m.role === "system");
 	const alreadyHasSystem = conversation.some((m) => m.role === "system");
 	const promptOptions = {
 		historyWindow: 10,
@@ -1294,6 +1422,68 @@ function parseCapturedReply(
 	}
 
 	const toolNames = functionTools.map((t) => t.name);
+
+	// Patch blocks are read BEFORE `<manager>` blocks and their PowerShell
+	// fences. A model that says "apply this patch, then run this to check it"
+	// writes both in one reply, and the shell fence used to win: the manager
+	// path returned the `run_commands` call and the turn ended, so the patch was
+	// never parsed and only the verification command ran — against a file that
+	// had not changed. Applying first and verifying second is also the order the
+	// model asked for.
+	const patched = parsePatchBlocks(text, toolNames);
+	const patchCalls = patched.toolCalls.map((call) => ({
+		name: call.name as string,
+		arguments: call.arguments as unknown as Record<string, unknown>,
+	}));
+	const patchNotice = unappliedPatchNotice(text, toolNames);
+	if (patchNotice) {
+		return {
+			text: `${text}\n\n${patchNotice}`.trim(),
+			toolCalls: [],
+			usage,
+			retryPrompt: patchNotice,
+		};
+	}
+	const remainingText = patched.cleanedContent;
+
+	// `<manager>` blocks are read next, and only when the session actually has
+	// the team tool to dispatch them with. A lead on a web provider is prompted to
+	// write delegations as prose rather than tool calls - see
+	// `tool-pipeline/manager-block.ts` for why that framing is what keeps it out
+	// of tool machinery it cannot use.
+	if (toolNames.includes("team_run_task")) {
+		const manager = parseManagerBlocks(remainingText, {
+			// Only when the session actually has the shell tool to run it with.
+			allowCommands: toolNames.includes("run_commands"),
+		});
+		if (
+			manager.delegations.length > 0 ||
+			manager.problems.length > 0 ||
+			patchCalls.length > 0
+		) {
+			const retryPrompt =
+				manager.problems.length > 0 ? manager.problems.join("\n") : undefined;
+			return {
+				text: retryPrompt
+					? `${manager.cleanedContent}\n\n${retryPrompt}`.trim()
+					: manager.cleanedContent,
+				toolCalls: [
+					...patchCalls,
+					...manager.delegations.map((delegation) => ({
+						name: delegation.name,
+						arguments: delegation.arguments as Record<string, unknown>,
+					})),
+				],
+				usage,
+				retryPrompt,
+			};
+		}
+	}
+
+	if (patchCalls.length > 0) {
+		return { text: remainingText, toolCalls: patchCalls, usage };
+	}
+
 	const { cleanedContent, toolCalls } = parseDeepSeekToolCalls(text, toolNames);
 	const looseCalls =
 		toolCalls.length === 0
@@ -1330,6 +1520,14 @@ ${retryPrompt}`.trim()
 			toolCalls: validatedInvoked,
 			usage,
 			retryPrompt,
+		};
+	}
+
+	if (patched.toolCalls.length > 0) {
+		return {
+			text: patched.cleanedContent,
+			toolCalls: patched.toolCalls,
+			usage,
 		};
 	}
 
@@ -1456,7 +1654,14 @@ function createChatGPTWebModel(
 			runtimeConfig.chatsFile,
 			chatKey,
 		);
-		if (!existingChatGPTSession && chatKey.length !== 16) {
+		// Only a sticky `/findchat` binding holds a real web conversation id; a
+		// hash-derived key never does. This used to test `chatKey.length !== 16`,
+		// but `chatKeyFromPrompt` returns 24 characters, so EVERY new chat took
+		// this branch: the hash was navigated to as though it were a conversation
+		// id (a 404 page), and then recorded, so the same dead chat came back on
+		// every later turn. Ask where the key came from instead of guessing from
+		// its shape.
+		if (!existingChatGPTSession && getBoundChatKey("chatgpt-web") === chatKey) {
 			existingChatGPTSession = chatKey;
 			recordChatGPTChatSession(runtimeConfig.chatsFile, chatKey, chatKey);
 		}
@@ -1521,6 +1726,20 @@ function createChatGPTWebModel(
 			debugLog(`Received response (${result.text.length} chars)`);
 
 			parsed = parseCapturedReply(result.text, options, result.usage);
+			parsed.quota = result.quota;
+
+			// Log raw and parsed response per conversation
+			try {
+				logConversationTurn("chatgpt-web", chatKey, result.rawBody, {
+					text: parsed.text,
+					toolCalls: parsed.toolCalls.length > 0 ? parsed.toolCalls : undefined,
+					usage: result.usage,
+					finishReason: result.finishReason,
+				});
+			} catch (logErr) {
+				// Ignore logging failures
+			}
+
 			if (
 				parsed.toolCalls.length === 0 &&
 				parsed.retryPrompt &&
@@ -1566,7 +1785,11 @@ function createChatGPTWebModel(
 
 		async doGenerate(options: LanguageModelV2CallOptions) {
 			try {
-				const { text, toolCalls, usage } = await runCompletion(options);
+				const { text, toolCalls, usage } = await withBrowserLock(
+					"chatgpt-web",
+					options.abortSignal,
+					() => runCompletion(options),
+				);
 
 				const content: LanguageModelV2Content[] = [];
 				if (text) content.push({ type: "text", text });
@@ -1593,7 +1816,11 @@ function createChatGPTWebModel(
 		},
 
 		async doStream(options: LanguageModelV2CallOptions) {
-			const { text, toolCalls, usage } = await runCompletion(options);
+			const { text, toolCalls, usage } = await withBrowserLock(
+				"chatgpt-web",
+				options.abortSignal,
+				() => runCompletion(options),
+			);
 			const id = `chatgpt-web-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
 
 			const parts: LanguageModelV2StreamPart[] = [

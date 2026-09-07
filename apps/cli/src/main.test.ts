@@ -2,10 +2,6 @@ import { fstatSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import type {
-	CliMigrationNotice,
-	CliMigrationNoticeOptions,
-} from "./kanban-migration/notice";
 
 /** Real `fstatSync`: used when tests stub only stdin (fd 0); throwing for every fd breaks imports and session I/O. */
 const fsActual = vi.hoisted(() => ({
@@ -58,9 +54,6 @@ const llmMocks = vi.hoisted(() => ({
 const promptMocks = vi.hoisted(() => ({
 	resolveSystemPrompt: vi.fn(async () => "system prompt"),
 }));
-const kanbanMocks = vi.hoisted(() => ({
-	launchKanban: vi.fn(),
-}));
 const dashboardMocks = vi.hoisted(() => ({
 	runDashboardCommand: vi.fn(),
 }));
@@ -71,20 +64,9 @@ const connectMocks = vi.hoisted(() => ({
 	runStopAllConnectors: vi.fn(async () => 0),
 	runStopConnector: vi.fn(async () => 0),
 }));
-const migrationNoticeMocks = vi.hoisted(() => ({
-	getClineCliMigrationNotice: vi.fn<
-		(
-			dataDir?: string,
-			env?: NodeJS.ProcessEnv,
-			options?: CliMigrationNoticeOptions,
-		) => CliMigrationNotice | undefined
-	>(() => undefined),
-	markClineCliMigrationNoticeShown: vi.fn(),
-}));
 const updateMocks = vi.hoisted(() => ({
 	autoUpdateOnStartup: vi.fn(),
 	checkForUpdates: vi.fn(async () => 0),
-	getPreferredKanbanInstaller: vi.fn(() => undefined),
 }));
 const runtimeMocks = vi.hoisted(() => ({
 	runAgent: vi.fn(async () => {
@@ -201,10 +183,8 @@ vi.mock("./utils/feature-flags", () => ({
 vi.mock("./runtime/prompt", () => ({
 	resolveSystemPrompt: promptMocks.resolveSystemPrompt,
 }));
-vi.mock("./commands/kanban", () => kanbanMocks);
 vi.mock("./commands/dashboard", () => dashboardMocks);
 vi.mock("./commands/connect", () => connectMocks);
-vi.mock("./kanban-migration/notice", () => migrationNoticeMocks);
 vi.mock("./commands/update", () => updateMocks);
 vi.mock("./commands/history", () => historyMocks);
 vi.mock("./logging/adapter", () => loggingMocks);
@@ -281,8 +261,6 @@ describe("runCli lightweight command dispatch", () => {
 		featureFlagMocks.getBooleanFlagEnabled.mockReturnValue(false);
 		featureFlagMocks.setCliFeatureFlagsAccountContext.mockReset();
 		featureFlagMocks.refreshCliFeatureFlagsInBackground.mockReset();
-		kanbanMocks.launchKanban.mockReset();
-		kanbanMocks.launchKanban.mockResolvedValue(0);
 		dashboardMocks.runDashboardCommand.mockReset();
 		dashboardMocks.runDashboardCommand.mockResolvedValue(0);
 		connectMocks.formatAdapterList.mockReset();
@@ -295,14 +273,9 @@ describe("runCli lightweight command dispatch", () => {
 		connectMocks.runStopAllConnectors.mockResolvedValue(0);
 		connectMocks.runStopConnector.mockReset();
 		connectMocks.runStopConnector.mockResolvedValue(0);
-		migrationNoticeMocks.getClineCliMigrationNotice.mockReset();
-		migrationNoticeMocks.getClineCliMigrationNotice.mockReturnValue(undefined);
-		migrationNoticeMocks.markClineCliMigrationNoticeShown.mockReset();
 		updateMocks.autoUpdateOnStartup.mockReset();
 		updateMocks.checkForUpdates.mockReset();
 		updateMocks.checkForUpdates.mockResolvedValue(0);
-		updateMocks.getPreferredKanbanInstaller.mockReset();
-		updateMocks.getPreferredKanbanInstaller.mockReturnValue(undefined);
 		telemetryMocks.captureCliExtensionActivated.mockReset();
 		telemetryMocks.identifyTelemetryAccount.mockReset();
 		telemetryMocks.getCliTelemetryService.mockReset();
@@ -433,36 +406,6 @@ describe("runCli lightweight command dispatch", () => {
 		expect(updateMocks.checkForUpdates).toHaveBeenCalledWith({
 			verbose: true,
 		});
-		expect(mockState.runAgentImports).toBe(0);
-		expect(mockState.runInteractiveImports).toBe(0);
-	});
-
-	it("does not load runtime modules for root kanban flag", async () => {
-		mockState.runAgentImports = 0;
-		mockState.runInteractiveImports = 0;
-
-		process.argv = ["bun", "src/index.ts", "--kanban"];
-
-		const { runCli } = await import("./main");
-
-		await expect(runCli()).resolves.toBeUndefined();
-		expect(process.exitCode).toBe(0);
-		expect(kanbanMocks.launchKanban).toHaveBeenCalledTimes(1);
-		expect(mockState.runAgentImports).toBe(0);
-		expect(mockState.runInteractiveImports).toBe(0);
-	});
-
-	it("rejects root kanban with a prompt", async () => {
-		mockState.runAgentImports = 0;
-		mockState.runInteractiveImports = 0;
-
-		process.argv = ["bun", "src/index.ts", "--kanban", "hello"];
-
-		const { runCli } = await import("./main");
-
-		await expect(runCli()).resolves.toBeUndefined();
-		expect(process.exitCode).toBe(1);
-		expect(kanbanMocks.launchKanban).not.toHaveBeenCalled();
 		expect(mockState.runAgentImports).toBe(0);
 		expect(mockState.runInteractiveImports).toBe(0);
 	});
@@ -716,63 +659,6 @@ describe("runCli lightweight command dispatch", () => {
 			undefined,
 			expect.objectContaining({
 				startupTarget: undefined,
-			}),
-		);
-	});
-
-	it("passes the migration notice marker into interactive mode", async () => {
-		const notice = {
-			id: "cline-cli-cline-pass-intro",
-			title: "Try ClinePass",
-		};
-		migrationNoticeMocks.getClineCliMigrationNotice.mockReturnValue(notice);
-		process.argv = ["bun", "src/index.ts"];
-
-		const { runCli } = await import("./main");
-
-		await expect(runCli()).resolves.toBeUndefined();
-		expect(runtimeMocks.runInteractive).toHaveBeenCalledWith(
-			expect.any(Object),
-			expect.anything(),
-			undefined,
-			expect.objectContaining({
-				initialNotice: notice,
-				onInitialNoticeShown: expect.any(Function),
-			}),
-		);
-		expect(
-			migrationNoticeMocks.markClineCliMigrationNoticeShown,
-		).not.toHaveBeenCalled();
-		const options = runtimeMocks.runInteractive.mock.calls[0]?.[3];
-		await options?.onInitialNoticeShown?.(notice);
-		expect(
-			migrationNoticeMocks.markClineCliMigrationNoticeShown,
-		).toHaveBeenCalledTimes(1);
-	});
-
-	it("passes the active ClinePass provider into the migration notice gate", async () => {
-		providerSettingsMocks.getLastUsedProviderSettings.mockReturnValue({
-			provider: "cline-pass",
-			model: "cline-pass/test-model",
-		});
-		process.argv = ["bun", "src/index.ts"];
-
-		const { runCli } = await import("./main");
-
-		await expect(runCli()).resolves.toBeUndefined();
-		expect(
-			migrationNoticeMocks.getClineCliMigrationNotice,
-		).toHaveBeenCalledWith(undefined, process.env, {
-			activeProviderId: "cline-pass",
-		});
-		expect(runtimeMocks.runInteractive).toHaveBeenCalledWith(
-			expect.objectContaining({
-				providerId: "cline-pass",
-			}),
-			expect.anything(),
-			undefined,
-			expect.objectContaining({
-				initialNotice: undefined,
 			}),
 		);
 	});
@@ -1105,19 +991,12 @@ describe("runCli lightweight command dispatch", () => {
 	});
 
 	it("opens history inside the interactive TUI for the history picker", async () => {
-		migrationNoticeMocks.getClineCliMigrationNotice.mockReturnValue({
-			id: "cline-cli-cline-pass-intro",
-			title: "Try ClinePass",
-		});
 		process.argv = ["bun", "src/index.ts", "history"];
 
 		const { runCli } = await import("./main");
 
 		await expect(runCli()).resolves.toBeUndefined();
 		expect(historyMocks.runHistoryList).not.toHaveBeenCalled();
-		expect(
-			migrationNoticeMocks.getClineCliMigrationNotice,
-		).not.toHaveBeenCalled();
 		expect(runtimeMocks.runInteractive).toHaveBeenCalledTimes(1);
 		expect(runtimeMocks.runInteractive).toHaveBeenCalledWith(
 			expect.any(Object),
@@ -1295,18 +1174,6 @@ describe("runCli lightweight command dispatch", () => {
 		expect(telemetryMocks.identifyTelemetryAccount).not.toHaveBeenCalled();
 	});
 
-	it("runs kanban before loading runtime modules", async () => {
-		process.argv = ["bun", "src/index.ts", "kanban"];
-
-		const { runCli } = await import("./main");
-
-		await expect(runCli()).resolves.toBeUndefined();
-		expect(kanbanMocks.launchKanban).toHaveBeenCalledTimes(1);
-		expect(mockState.runAgentImports).toBe(0);
-		expect(mockState.runInteractiveImports).toBe(0);
-		expect(process.exitCode).toBe(0);
-	});
-
 	it("runs dashboard before loading runtime modules", async () => {
 		process.argv = [
 			"bun",
@@ -1336,29 +1203,6 @@ describe("runCli lightweight command dispatch", () => {
 		expect(mockState.runAgentImports).toBe(0);
 		expect(mockState.runInteractiveImports).toBe(0);
 		expect(process.exitCode).toBe(0);
-	});
-
-	it("prints an install hint when kanban is missing", async () => {
-		const stderrWrite = vi
-			.spyOn(process.stderr, "write")
-			.mockImplementation(() => true);
-		kanbanMocks.launchKanban.mockImplementation(async () => {
-			process.stderr.write(
-				'kanban is not installed. Install it with "npm i -g kanban"\n',
-			);
-			return 1;
-		});
-		process.argv = ["bun", "src/index.ts", "kanban"];
-
-		const { runCli } = await import("./main");
-
-		await expect(runCli()).resolves.toBeUndefined();
-		expect(stderrWrite).toHaveBeenCalledWith(
-			expect.stringContaining(
-				'kanban is not installed. Install it with "npm i -g kanban"',
-			),
-		);
-		expect(process.exitCode).toBe(1);
 	});
 
 	it("skips hub prewarm for yolo runs", async () => {

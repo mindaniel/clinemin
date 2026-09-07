@@ -1,3 +1,4 @@
+import { execFile } from "node:child_process";
 import {
 	clearHubDiscovery,
 	ensureDetachedHubServer,
@@ -16,23 +17,144 @@ interface HubCommandIo {
 	writeErr: (text: string) => void;
 }
 
+/**
+ * Kill a process and the children it spawned.
+ *
+ * The daemon is a detached bun process; SIGTERM to the parent alone leaves its
+ * children holding the port, which is one of the ways `hub stop` used to report
+ * success over a hub that was still answering.
+ */
+function killProcessTree(pid: number): Promise<void> {
+	return new Promise((resolve) => {
+		if (process.platform === "win32") {
+			execFile(
+				"taskkill",
+				["/pid", String(pid), "/T", "/F"],
+				{ windowsHide: true },
+				() => resolve(),
+			);
+			return;
+		}
+		try {
+			process.kill(-pid, "SIGTERM");
+		} catch {
+			try {
+				process.kill(pid, "SIGTERM");
+			} catch {
+				// Already gone.
+			}
+		}
+		resolve();
+	});
+}
+
+/**
+ * Find running hub daemons by what they are, not by what a file claims.
+ *
+ * The discovery record is the normal way to locate the daemon, but it is also
+ * the thing that goes missing — and when it does, `hub stop` had no pid, killed
+ * nothing, and said `{"stopped":false}` while the daemon kept running and the
+ * next `cline` run attached straight back to it. The process table still knows.
+ */
+function findHubDaemonPids(): Promise<number[]> {
+	return new Promise((resolve) => {
+		const marker = "hub/daemon/entry";
+		const altMarker = String.raw`hub\daemon\entry`;
+		const done = (
+			out: string,
+			extract: (line: string) => number | undefined,
+		) => {
+			const pids = new Set<number>();
+			for (const line of out.split(/\r?\n/)) {
+				if (!line.includes(marker) && !line.includes(altMarker)) continue;
+				const pid = extract(line);
+				if (pid && pid !== process.pid) pids.add(pid);
+			}
+			resolve(Array.from(pids));
+		};
+		if (process.platform === "win32") {
+			execFile(
+				"powershell",
+				[
+					"-NoProfile",
+					"-NonInteractive",
+					"-Command",
+					'Get-CimInstance Win32_Process | ForEach-Object { "$($_.ProcessId)`t$($_.CommandLine)" }',
+				],
+				{ windowsHide: true, maxBuffer: 8 * 1024 * 1024 },
+				(error, stdout) => {
+					if (error) return resolve([]);
+					done(stdout, (line) =>
+						Number.parseInt(line.split("\t")[0] ?? "", 10),
+					);
+				},
+			);
+			return;
+		}
+		execFile(
+			"ps",
+			["-eo", "pid=,args="],
+			{ maxBuffer: 8 * 1024 * 1024 },
+			(error, stdout) => {
+				if (error) return resolve([]);
+				done(stdout, (line) =>
+					Number.parseInt(line.trim().split(/\s+/)[0] ?? "", 10),
+				);
+			},
+		);
+	});
+}
+
+/** Is a hub still answering on this discovery record's URL? */
+async function hubStillUp(url: string | undefined): Promise<boolean> {
+	if (!url) return false;
+	return Boolean(await probeHubServer(url));
+}
+
+/**
+ * Stop the local hub, and report whether it is actually stopped.
+ *
+ * The old version returned `!!pid` — whether a discovery record happened to
+ * name a process — which was neither "we killed it" nor "it is gone". Now the
+ * answer is the observable one: nothing is listening any more.
+ */
 async function stopHubServer(_workspaceRoot: string): Promise<boolean> {
 	const owner = resolveCliHubOwnerContext();
 	const discovery = await readHubDiscovery(owner.discoveryPath);
+	const url = discovery?.url;
+
 	if (await stopLocalHubServerGracefully(owner)) {
 		await clearHubDiscovery(owner.discoveryPath);
-		return true;
-	}
-	const pid = discovery?.pid;
-	if (pid) {
-		try {
-			process.kill(pid, "SIGTERM");
-		} catch {
-			// best effort
+		if (!(await hubStillUp(url))) {
+			return true;
 		}
 	}
+
+	const pids = new Set<number>();
+	if (discovery?.pid) {
+		pids.add(discovery.pid);
+	}
+	// Always scan too. A stale discovery record can name a pid that has been
+	// recycled while the real daemon runs under another one.
+	for (const pid of await findHubDaemonPids()) {
+		pids.add(pid);
+	}
+	for (const pid of pids) {
+		await killProcessTree(pid);
+	}
+
 	await clearHubDiscovery(owner.discoveryPath);
-	return !!pid;
+	if (pids.size === 0) {
+		return false;
+	}
+	// Give the port a moment to be released before answering.
+	for (let attempt = 0; attempt < 10; attempt++) {
+		if (!(await hubStillUp(url))) {
+			return true;
+		}
+		await new Promise((resolve) => setTimeout(resolve, 200));
+	}
+	return false;
 }
 
 function formatHubUptimeFromStartedAt(
@@ -92,12 +214,25 @@ export function createHubCommand(
 				port?: number;
 				pathname?: string;
 			}>();
-			const { url } = await ensureDetachedHubServer(opts.cwd, {
-				host: opts.host,
-				port: opts.port,
-				pathname: opts.pathname,
-			});
-			io.writeln(url);
+			// A hub started on purpose stays up. Only the ones spawned on demand
+			// shut themselves down when idle, so `hub start` opts out.
+			const previousIdleShutdown = process.env.CLINE_HUB_IDLE_SHUTDOWN_MS;
+			process.env.CLINE_HUB_IDLE_SHUTDOWN_MS = "0";
+			try {
+				const { url } = await ensureDetachedHubServer(opts.cwd, {
+					host: opts.host,
+					port: opts.port,
+					pathname: opts.pathname,
+				});
+				io.writeln(url);
+			} finally {
+				if (previousIdleShutdown === undefined) {
+					process.env.CLINE_HUB_IDLE_SHUTDOWN_MS = undefined;
+					delete process.env.CLINE_HUB_IDLE_SHUTDOWN_MS;
+				} else {
+					process.env.CLINE_HUB_IDLE_SHUTDOWN_MS = previousIdleShutdown;
+				}
+			}
 		}),
 	);
 

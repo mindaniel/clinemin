@@ -33,7 +33,6 @@ test.describe("root flag descriptions", () => {
 			"consecutive mistakes",
 			"Output messages as JSON",
 			"Check for updates and install if available",
-			"Run the kanban app",
 		]);
 	});
 

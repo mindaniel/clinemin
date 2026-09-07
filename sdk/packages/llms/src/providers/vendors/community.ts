@@ -142,7 +142,7 @@ export async function createOpenAICodexProviderModule(
 // process.once("SIGTERM") handlers that call process.exit() immediately.
 // Libraries must never hijack process lifecycle -- that is the host
 // application's responsibility. These handlers prevent host apps (like
-// Kanban) from performing graceful shutdown (e.g. persisting state,
+// embedded hosts from performing graceful shutdown (e.g. persisting state,
 // cleaning up worktrees) because the opencode handler fires first and
 // force-exits the process.
 //

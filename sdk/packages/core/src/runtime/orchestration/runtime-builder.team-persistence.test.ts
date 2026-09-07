@@ -1,6 +1,7 @@
 import { describe, expect, it, vi } from "vitest";
 
 const createBuiltinToolsMock = vi.fn(() => []);
+const loadTeamRosterMock = vi.fn(() => ({}));
 const bootstrapAgentTeamsMock = vi.fn(() => ({
 	tools: [],
 	restoredFromPersistence: true,
@@ -65,6 +66,10 @@ vi.mock("../../extensions/tools/team", () => ({
 			},
 		};
 	},
+	// This suite is about the persistence boundary, so the roster reads as
+	// absent: teammate specs must come from the store alone.
+	loadTeamRoster: loadTeamRosterMock,
+	mergeRosterIntoTeammateSpecs: (restored: unknown[]) => [...restored],
 }));
 
 vi.mock("../../extensions/tools", () => ({
@@ -238,6 +243,31 @@ describe("DefaultRuntimeBuilder team persistence boundary", () => {
 				expect.objectContaining({ agentId: "java-poet" }),
 			]),
 		);
+	});
+
+	it("reads the declared roster only for a manager", async () => {
+		const { DefaultRuntimeBuilder } = await import("./runtime-builder");
+		const baseConfig = {
+			providerId: "anthropic",
+			modelId: "claude-sonnet-4-6",
+			apiKey: "key",
+			systemPrompt: "test",
+			cwd: process.cwd(),
+			enableTools: false,
+			enableSpawnAgent: false,
+			enableAgentTeams: true,
+		};
+
+		loadTeamRosterMock.mockClear();
+		await new DefaultRuntimeBuilder().build({ config: baseConfig });
+		// A plain session delegates to nobody, so spawning every worker in
+		// `.cline/team.json` at startup only produces spawn/shutdown noise.
+		expect(loadTeamRosterMock).not.toHaveBeenCalled();
+
+		await new DefaultRuntimeBuilder().build({
+			config: { ...baseConfig, managerMode: true },
+		});
+		expect(loadTeamRosterMock).toHaveBeenCalledTimes(1);
 	});
 
 	it("forwards cline workspace metadata to teammate runtime bootstrap config", async () => {

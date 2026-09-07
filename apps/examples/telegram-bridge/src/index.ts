@@ -1,13 +1,13 @@
-import type { ToolApprovalRequest, ToolApprovalResult } from "@cline/sdk";
 import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
+import type { ToolApprovalRequest, ToolApprovalResult } from "@cline/sdk";
 import { AgentMode } from "./agent-mode.js";
 import { CoreMode } from "./core-mode.js";
 import { ReplyStreamer } from "./stream.js";
 import {
-	TelegramClient,
 	type TelegramCallbackQuery,
+	TelegramClient,
 	type TelegramMessage,
 	type TelegramUpdate,
 } from "./telegram.js";
@@ -40,6 +40,10 @@ Commands:
 /abort           stop the current run + clear this chat's session from memory
 /model           list available models (tap a button to switch)
 /model <n>       switch to model #n from the list (or a filename substring)
+/provider        show current provider
+/provider <id>   switch provider (anthropic, openai, llamacpp, etc.)
+/messages        show the last 10 messages from this session
+/messages <n>    show the last <n> messages (max 50)
 /projects        list saved project folders (name + path)
 /add <folder>    save a project folder (no arg = use current folder)
 /continue <n>    switch this chat to project #n (fresh session there)
@@ -94,7 +98,11 @@ function env(name: string): string {
  * hold `token` / `chatId` so the bridge can be auto-started by the `clinemin`
  * launcher without needing shell env vars. Env vars always win.
  */
-function readBridgeFileConfig(): { token?: string; chatId?: string; modelsDir?: string } {
+function readBridgeFileConfig(): {
+	token?: string;
+	chatId?: string;
+	modelsDir?: string;
+} {
 	const file =
 		env("CLINE_BRIDGE_CONFIG") ||
 		path.join(os.homedir(), ".cline", "telegram-bridge", "config.json");
@@ -113,7 +121,11 @@ function readBridgeFileConfig(): { token?: string; chatId?: string; modelsDir?: 
 const bridgeFileConfig = readBridgeFileConfig();
 
 const config = {
-	botToken: env("TELEGRAM_BOT_TOKEN") || env("TELEGRAM_TOKEN") || bridgeFileConfig.token || "",
+	botToken:
+		env("TELEGRAM_BOT_TOKEN") ||
+		env("TELEGRAM_TOKEN") ||
+		bridgeFileConfig.token ||
+		"",
 	apiBase: env("TELEGRAM_API_BASE"),
 	allowedUserId: env("ALLOWED_USER_ID"),
 	allowedChatId: env("TELEGRAM_CHAT_ID") || bridgeFileConfig.chatId || "",
@@ -123,7 +135,8 @@ const config = {
 	apiKey: env("CLINE_API_KEY"),
 	baseUrl: env("CLINE_BASE_URL"),
 	cwd: env("CLINE_CWD") || process.cwd(),
-	workspaceRoot: env("CLINE_WORKSPACE_ROOT") || env("CLINE_CWD") || process.cwd(),
+	workspaceRoot:
+		env("CLINE_WORKSPACE_ROOT") || env("CLINE_CWD") || process.cwd(),
 	systemPrompt: env("CLINE_SYSTEM_PROMPT"),
 	maxIterations: Number(env("CLINE_MAX_ITERATIONS") || "40"),
 	enableTools: env("CLINE_TOOLS") !== "off",
@@ -203,7 +216,13 @@ const activeStreamers = new Map<number, ReplyStreamer>();
 function getSession(chatId: number): ChatSession {
 	let s = sessions.get(chatId);
 	if (!s) {
-		s = { chatId, mode: config.defaultMode, agent: null, core: null, chain: Promise.resolve() };
+		s = {
+			chatId,
+			mode: config.defaultMode,
+			agent: null,
+			core: null,
+			chain: Promise.resolve(),
+		};
 		sessions.set(chatId, s);
 	}
 	return s;
@@ -354,12 +373,18 @@ async function handleModelCommand(chatId: number, arg: string): Promise<void> {
 		return;
 	}
 	const lines = modelPicker.map(
-		(m, i) => `${i + 1}. ${m.current ? "🟢 " : ""}${path.basename(m.path)}\n   \`${m.path}\``,
+		(m, i) =>
+			`${i + 1}. ${m.current ? "🟢 " : ""}${path.basename(m.path)}\n   \`${m.path}\``,
 	);
-	const buttons = modelPicker
-		.slice(0, 12)
-		.map((m, i) => [{ text: `${i + 1}. ${path.basename(m.path).slice(0, 28)}`, callback_data: `md:${i}` }]);
-	const opts = buttons.length ? { replyMarkup: { inline_keyboard: buttons } } : {};
+	const buttons = modelPicker.slice(0, 12).map((m, i) => [
+		{
+			text: `${i + 1}. ${path.basename(m.path).slice(0, 28)}`,
+			callback_data: `md:${i}`,
+		},
+	]);
+	const opts = buttons.length
+		? { replyMarkup: { inline_keyboard: buttons } }
+		: {};
 	await tg.send(
 		chatId,
 		`Available models (${modelPicker.length}):\n\n${lines.join("\n")}\n\nTap a button or send \`/model <number>\` to switch.`,
@@ -376,10 +401,15 @@ async function selectModel(chatId: number, arg: string): Promise<void> {
 	}
 	if (!chosen) {
 		const lower = arg.toLowerCase();
-		chosen = all.find((m) => path.basename(m.path).toLowerCase().includes(lower));
+		chosen = all.find((m) =>
+			path.basename(m.path).toLowerCase().includes(lower),
+		);
 	}
 	if (!chosen) {
-		await tg.send(chatId, `No model matched \`${arg}\`. Send \`/model\` to see the list.`);
+		await tg.send(
+			chatId,
+			`No model matched \`${arg}\`. Send \`/model\` to see the list.`,
+		);
 		return;
 	}
 	await applyModel(chatId, chosen);
@@ -387,7 +417,10 @@ async function selectModel(chatId: number, arg: string): Promise<void> {
 
 async function applyModel(chatId: number, m: AvailableModel): Promise<void> {
 	const served = await getServedModelId(rt.baseUrl || DEFAULT_LLAMACPP_BASE);
-	if (served && path.resolve(served).toLowerCase() === path.resolve(m.path).toLowerCase()) {
+	if (
+		served &&
+		path.resolve(served).toLowerCase() === path.resolve(m.path).toLowerCase()
+	) {
 		await tg.send(chatId, `Already running \`${path.basename(m.path)}\`.`);
 		return;
 	}
@@ -451,7 +484,8 @@ function saveProjects(): void {
 
 function formatProject(p: Project, currentFolder: string): string {
 	const isCurrent =
-		path.resolve(currentFolder).toLowerCase() === path.resolve(p.folder).toLowerCase();
+		path.resolve(currentFolder).toLowerCase() ===
+		path.resolve(p.folder).toLowerCase();
 	return `${isCurrent ? "🟢 " : ""}${p.id}. ${p.name} — \`${p.folder}\``;
 }
 
@@ -482,7 +516,10 @@ async function addProject(chatId: number, folderArg: string): Promise<void> {
 	if (existing) {
 		existing.lastUsedAt = Date.now();
 		saveProjects();
-		await tg.send(chatId, `Already saved: \`${existing.name}\` — \`${existing.folder}\`.`);
+		await tg.send(
+			chatId,
+			`Already saved: \`${existing.name}\` — \`${existing.folder}\`.`,
+		);
 		return;
 	}
 	const name = path.basename(folder) || folder;
@@ -494,14 +531,20 @@ async function addProject(chatId: number, folderArg: string): Promise<void> {
 		lastUsedAt: Date.now(),
 	});
 	saveProjects();
-	await tg.send(chatId, `✅ Saved project \`${nextProjectId - 1}. ${name}\` — \`${folder}\`.`);
+	await tg.send(
+		chatId,
+		`✅ Saved project \`${nextProjectId - 1}. ${name}\` — \`${folder}\`.`,
+	);
 }
 
 async function continueProject(chatId: number, arg: string): Promise<void> {
 	const idx = Number(arg);
 	const p = projects.find((x) => x.id === idx);
 	if (!p) {
-		await tg.send(chatId, `No project \`${arg}\`. Send /projects to see the list.`);
+		await tg.send(
+			chatId,
+			`No project \`${arg}\`. Send /projects to see the list.`,
+		);
 		return;
 	}
 	rt.cwd = p.folder;
@@ -521,7 +564,10 @@ async function deleteProject(chatId: number, arg: string): Promise<void> {
 	const idx = Number(arg);
 	const p = projects.find((x) => x.id === idx);
 	if (!p) {
-		await tg.send(chatId, `No project \`${arg}\`. Send /projects to see the list.`);
+		await tg.send(
+			chatId,
+			`No project \`${arg}\`. Send /projects to see the list.`,
+		);
 		return;
 	}
 	projects = projects.filter((x) => x.id !== idx);
@@ -606,7 +652,10 @@ async function handleCallback(query: TelegramCallbackQuery): Promise<void> {
 			pendingApprovals.delete(id);
 			await tg.answerCallback(query.id, approved ? "Approved" : "Denied");
 			await p.respond(approved);
-			p.resolve({ approved, ...(approved ? {} : { reason: "User denied tool execution" }) });
+			p.resolve({
+				approved,
+				...(approved ? {} : { reason: "User denied tool execution" }),
+			});
 		} else {
 			await tg.answerCallback(query.id, "This approval is no longer pending");
 		}
@@ -617,7 +666,10 @@ async function handleCallback(query: TelegramCallbackQuery): Promise<void> {
 		const idx = Number(mdMatch[1]);
 		const picker = modelPicker.length ? modelPicker : await discoverModels();
 		const m = picker[idx];
-		await tg.answerCallback(query.id, m ? `Selected ${path.basename(m.path)}` : "Not found");
+		await tg.answerCallback(
+			query.id,
+			m ? `Selected ${path.basename(m.path)}` : "Not found",
+		);
 		const chatId = query.message?.chat.id ?? query.from.id;
 		if (m) await applyModel(chatId, m);
 		return;
@@ -642,7 +694,9 @@ async function runTurn(chatId: number, prompt: string): Promise<void> {
 		const text = await mode.run(prompt, ui);
 		await streamer.done(text);
 	} catch (error) {
-		await streamer.error(error instanceof Error ? error.message : String(error));
+		await streamer.error(
+			error instanceof Error ? error.message : String(error),
+		);
 	} finally {
 		activeStreamers.delete(chatId);
 	}
@@ -683,6 +737,49 @@ async function handleCommand(chatId: number, raw: string): Promise<void> {
 		case "/model":
 			await handleModelCommand(chatId, arg);
 			return;
+		case "/provider": {
+			const providerArg = arg.trim().toLowerCase();
+			if (!providerArg) {
+				await tg.send(
+					chatId,
+					`Current provider: \`${rt.providerId}\`\nModel: \`${rt.modelId || "(auto)"}\`\n\nUse /provider <id> to switch (e.g., /provider anthropic, /provider openai, /provider llamacpp).`,
+				);
+				return;
+			}
+			const validProviders = [
+				"anthropic",
+				"openai",
+				"llamacpp",
+				"ollama",
+				"lmstudio",
+			];
+			if (!validProviders.includes(providerArg)) {
+				await tg.send(
+					chatId,
+					`Unknown provider \`${providerArg}\`. Available: ${validProviders.join(", ")}`,
+				);
+				return;
+			}
+			rt.providerId = providerArg;
+			await disposeMode(s);
+			await tg.send(
+				chatId,
+				`✅ Switched to provider \`${providerArg}\`.\nStarted a fresh session with the new provider.`,
+			);
+			return;
+		}
+		case "/messages": {
+			if (s.mode !== "clinecore") {
+				await tg.send(chatId, "/messages only works in clinecore mode.");
+				return;
+			}
+			const core = modeFor(s) as CoreMode;
+			const countArg = parseInt(arg.trim(), 10);
+			const count = isNaN(countArg) ? 10 : Math.min(50, Math.max(1, countArg));
+			const message = await core.getRecentMessages(count);
+			await tg.send(chatId, message);
+			return;
+		}
 		case "/projects":
 		case "/list":
 			await handleProjectsCommand(chatId);
@@ -749,16 +846,25 @@ async function handleCommand(chatId: number, raw: string): Promise<void> {
 
 async function handleMessage(msg: TelegramMessage): Promise<void> {
 	const chatId = msg.chat.id;
-	if (config.allowedUserId && String(msg.from?.id) !== String(config.allowedUserId)) {
-		await tg.send(chatId, "⛔ Unauthorized. This bot is restricted to a specific user.").catch(
-			() => undefined,
-		);
+	if (
+		config.allowedUserId &&
+		String(msg.from?.id) !== String(config.allowedUserId)
+	) {
+		await tg
+			.send(
+				chatId,
+				"⛔ Unauthorized. This bot is restricted to a specific user.",
+			)
+			.catch(() => undefined);
 		return;
 	}
 	if (config.allowedChatId && String(chatId) !== String(config.allowedChatId)) {
-		await tg.send(chatId, "⛔ Unauthorized. This bot is restricted to a specific chat.").catch(
-			() => undefined,
-		);
+		await tg
+			.send(
+				chatId,
+				"⛔ Unauthorized. This bot is restricted to a specific chat.",
+			)
+			.catch(() => undefined);
 		return;
 	}
 	const text = (msg.text ?? "").trim();
@@ -785,15 +891,21 @@ async function handleMessage(msg: TelegramMessage): Promise<void> {
 async function handleAbort(chatId: number): Promise<void> {
 	const s = getSession(chatId);
 	if (s.agent || s.core) {
-		await modeFor(s).abort().catch(() => undefined);
+		await modeFor(s)
+			.abort()
+			.catch(() => undefined);
 		await disposeMode(s).catch(() => undefined);
 	}
-	await tg.send(chatId, "🛑 Stopped the current run and cleared this chat's session from memory.");
+	await tg.send(
+		chatId,
+		"🛑 Stopped the current run and cleared this chat's session from memory.",
+	);
 }
 
 async function handleUpdate(update: TelegramUpdate): Promise<void> {
 	if (update.message?.text !== undefined) return handleMessage(update.message);
-	if (update.callback_query?.data !== undefined) return handleCallback(update.callback_query);
+	if (update.callback_query?.data !== undefined)
+		return handleCallback(update.callback_query);
 }
 
 // ---------------------------------------------------------------------------
@@ -808,12 +920,16 @@ async function main(): Promise<void> {
 		process.exit(1);
 	}
 
-	tg = new TelegramClient({ token: config.botToken, apiBase: config.apiBase || undefined });
+	tg = new TelegramClient({
+		token: config.botToken,
+		apiBase: config.apiBase || undefined,
+	});
 	const me = await tg.getMe();
 	console.log(`[bridge] connected as @${me.username ?? me.id}`);
 
 	const baseUrl =
-		config.baseUrl || (config.providerId === "llamacpp" ? DEFAULT_LLAMACPP_BASE : "");
+		config.baseUrl ||
+		(config.providerId === "llamacpp" ? DEFAULT_LLAMACPP_BASE : "");
 
 	rt = {
 		providerId: config.providerId,
@@ -822,7 +938,9 @@ async function main(): Promise<void> {
 			config.modelId,
 			baseUrl || DEFAULT_LLAMACPP_BASE,
 		),
-		apiKey: config.apiKey || (config.providerId === "llamacpp" ? "llamacpp" : undefined),
+		apiKey:
+			config.apiKey ||
+			(config.providerId === "llamacpp" ? "llamacpp" : undefined),
 		baseUrl: baseUrl || undefined,
 		cwd: config.cwd,
 		workspaceRoot: config.workspaceRoot,
@@ -874,6 +992,9 @@ async function main(): Promise<void> {
 }
 
 void main().catch((error) => {
-	console.error("[bridge] fatal:", error instanceof Error ? error.message : error);
+	console.error(
+		"[bridge] fatal:",
+		error instanceof Error ? error.message : error,
+	);
 	process.exit(1);
 });

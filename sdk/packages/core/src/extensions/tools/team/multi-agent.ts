@@ -8,6 +8,7 @@ import {
 	type AgentConfig,
 	type AgentEvent,
 	type AgentResult,
+	type AgentTool,
 	type AppendMissionLogInput,
 	type AttachTeamOutcomeFragmentInput,
 	type CreateTeamOutcomeInput,
@@ -136,6 +137,14 @@ export interface AgentTeamsRuntimeOptions {
 export interface SpawnTeammateOptions {
 	agentId: string;
 	config: TeamMemberConfig;
+	/**
+	 * The capability grant this teammate was spawned with, as tool names.
+	 *
+	 * Carried separately from `config.tools`, which is the resolved tool
+	 * objects: persisting those would freeze an unscoped worker's tools at
+	 * whatever the session happened to build, instead of leaving it unscoped.
+	 */
+	tools?: string[];
 }
 
 function isAbortLikeError(error: unknown): boolean {
@@ -836,7 +845,11 @@ export class AgentTeamsRuntime {
 		return !!member && member.role === "teammate" && !!member.agent;
 	}
 
-	spawnTeammate({ agentId, config }: SpawnTeammateOptions): TeamMemberSnapshot {
+	spawnTeammate({
+		agentId,
+		config,
+		tools: toolScope,
+	}: SpawnTeammateOptions): TeamMemberSnapshot {
 		const existing = this.members.get(agentId);
 		if (existing && existing.role !== "teammate") {
 			throw new Error(
@@ -889,8 +902,13 @@ export class AgentTeamsRuntime {
 			role: config.role,
 			teammate: {
 				rolePrompt: config.systemPrompt,
+				// Carried so a restored teammate keeps the provider it was spawned
+				// with. Without it every teammate silently reverts to the lead's
+				// provider on the next session.
+				providerId: config.providerId,
 				modelId: config.modelId,
 				maxIterations: config.maxIterations,
+				tools: toolScope,
 				runtimeAgentId: agent.getAgentId(),
 				conversationId: agent.getConversationId(),
 				parentAgentId: null,
@@ -929,6 +947,25 @@ export class AgentTeamsRuntime {
 			}
 			member.agent.updateConnection(overrides);
 		}
+	}
+
+	/**
+	 * Re-scope a running teammate's tools without restarting it.
+	 *
+	 * Respawning would do the same job and throw away the conversation with it,
+	 * which is the opposite of what a manager wants when it grants `editor`
+	 * halfway through a task it has been discussing for several turns.
+	 *
+	 * Returns false when there is no such live teammate, so the caller can say
+	 * so rather than silently reporting a grant that never landed.
+	 */
+	setTeammateTools(agentId: string, tools: AgentTool[]): boolean {
+		const member = this.members.get(agentId);
+		if (!member || member.role !== "teammate" || !member.agent) {
+			return false;
+		}
+		member.agent.setTools(tools);
+		return true;
 	}
 
 	createTask(input: CreateTeamTaskInput): TeamTask {

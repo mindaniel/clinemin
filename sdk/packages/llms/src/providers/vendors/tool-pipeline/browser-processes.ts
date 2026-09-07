@@ -20,6 +20,7 @@
  */
 
 import { execFile } from "node:child_process";
+import { claimBrowserPort, releaseBrowserClaims } from "./browser-claims";
 import { processGlobal } from "./process-global";
 
 export interface LaunchedBrowser {
@@ -40,6 +41,9 @@ const state = () =>
 export function registerLaunchedBrowser(browser: LaunchedBrowser): void {
 	if (!browser.pid) return;
 	state().launched.set(browser.pid, browser);
+	// Launching is also a claim: another session that attaches to this browser
+	// later adds its own, and whoever exits last is the one that closes it.
+	claimBrowserPort(browser.debugPort);
 }
 
 /** Forget one (e.g. it exited on its own). */
@@ -91,6 +95,13 @@ export async function shutdownLaunchedBrowsers(): Promise<LaunchedBrowser[]> {
 	const slot = state();
 	const browsers = [...slot.launched.values()];
 	slot.launched.clear();
-	await Promise.all(browsers.map((browser) => killTree(browser.pid)));
-	return browsers;
+	// A browser another live session is still driving is left alone. A manager
+	// session launches Chrome for every worker provider it delegates to, and a
+	// second terminal that starts on one of those attaches instead of launching
+	// — so killing everything we launched used to close a browser the other
+	// session was mid-turn on. See browser-claims.ts.
+	const free = releaseBrowserClaims();
+	const closing = browsers.filter((browser) => free.has(browser.debugPort));
+	await Promise.all(closing.map((browser) => killTree(browser.pid)));
+	return closing;
 }

@@ -1410,3 +1410,5 @@ export const createQwenWebProvider = createAiSdkProvider("qwen-web");
 export const createChatGPTWebProvider = createAiSdkProvider("chatgpt-web");
 export const createClaudeWebProvider = createAiSdkProvider("claude-web");
 export const createGeminiWebProvider = createAiSdkProvider("gemini-web");
+export const createKimiWebProvider = createAiSdkProvider("kimi-web");
+export const createGrokWebProvider = createAiSdkProvider("grok-web");

@@ -1,7 +1,7 @@
 /**
  * Kimi Web ("kimi-web") provider.
  *
- * Drives the real Kimi web client (chat.Kimi.ai) through your installed Chrome
+ * Drives the real Kimi web client (www.kimi.ai) through your installed Chrome
  * via the DevTools Protocol — no API key needed.
  */
 
@@ -43,24 +43,40 @@ import {
 	abortRace,
 	throwIfAborted,
 } from "./tool-pipeline/abort";
+import { claimBrowserPort } from "./tool-pipeline/browser-claims";
+import { withBrowserLock } from "./tool-pipeline/browser-lock";
 import {
 	browserNotFoundMessage,
 	findChromePath,
 } from "./tool-pipeline/browser-path";
 import { registerLaunchedBrowser } from "./tool-pipeline/browser-processes";
 import { resolveActiveProfilePaths } from "./tool-pipeline/browser-profiles";
-import { resolveChatKey } from "./tool-pipeline/chat-target";
+import { retryOnMissingExecutionContext } from "./tool-pipeline/cdp-execution-context";
+import { getBoundChatKey, resolveChatKey } from "./tool-pipeline/chat-target";
+import { logConversationTurn } from "./tool-pipeline/conversation-logger";
 import { consumePendingInjectedReply } from "./tool-pipeline/injected-reply";
+import { parseManagerBlocks } from "./tool-pipeline/manager-block";
+import {
+	parsePatchBlocks,
+	unappliedPatchNotice,
+} from "./tool-pipeline/patch-block";
 import { stripPreviousUserBlock } from "./tool-pipeline/previous-user-dedupe";
+import { applySimpleWebSystemPrompt } from "./tool-pipeline/simple-system-prompt";
 import { validateToolCalls } from "./tool-pipeline/tool-dispatcher";
 import type { ProviderFactoryResult } from "./types";
 
 const CONFIG_DIR = path.join(os.homedir(), ".cline", "kimi-web");
 const CONFIG_FILE = path.join(CONFIG_DIR, "config.json");
-const Kimi_WEB_URL = "https://chat.Kimi.ai/";
-const Kimi_API_ENDPOINT = "/api/v2/chat/completions";
+const Kimi_WEB_URL = "https://www.kimi.ai/";
+const Kimi_API_ENDPOINTS = [
+	"/api/v2/chat/completions",
+	"/apiv2/kimi.gateway.chat.v1.ChatService/Chat",
+];
 
-const DEFAULT_DEBUG_PORT = 9223;
+const KIMI_SUBSCRIPTION_STATS_ENDPOINT =
+	"/apiv2/kimi.gateway.membership.v2.MembershipService/GetSubscriptionStats";
+
+const DEFAULT_DEBUG_PORT = 9227;
 const DEFAULT_LAUNCH_TIMEOUT_MS = 30000;
 const DEFAULT_RESPONSE_TIMEOUT_MS = 1200000; // Increased to 1200s (20 mins) to prevent premature timeout on long thinking/tool calls
 const DEFAULT_LOGIN_TIMEOUT_MS = 120000;
@@ -264,7 +280,23 @@ class CdpClient {
 		});
 	}
 
+	// Wrapped so a page that is mid-navigation — no execution context yet —
+	// waits the moment out instead of failing the turn with nothing typed.
+	// See tool-pipeline/cdp-execution-context.ts.
 	send(method: string, params: any = {}, sessionId?: string): Promise<any> {
+		return retryOnMissingExecutionContext(
+			method,
+			() => this.sendOnce(method, params, sessionId),
+			sleep,
+			"kimi-web",
+		);
+	}
+
+	private sendOnce(
+		method: string,
+		params: any = {},
+		sessionId?: string,
+	): Promise<any> {
 		const id = ++this.id;
 		return new Promise((resolve, reject) => {
 			this.pending.set(id, { resolve, reject });
@@ -370,6 +402,10 @@ async function connectBrowser(
 	const connectTimeoutMs = Math.max(config.launchTimeoutMs, 30000);
 
 	if (await isEndpointUp(config.debugPort)) {
+		// Attaching to a browser someone else launched. We do not own it and
+		// must never kill it, but the claim tells whoever DOES own it not to
+		// close it out from under this session. See browser-claims.ts.
+		claimBrowserPort(config.debugPort);
 		activeCdp = await connectCdp(config.debugPort, connectTimeoutMs);
 		activeCdpKey = key;
 		return activeCdp;
@@ -573,63 +609,53 @@ async function sendMessageToKimi(message, options) {
     // }
     void model;
 
-    // Find input field. IMPORTANT: never pick a textarea that belongs to a
-    // rendered code block (Kimi wraps those in .Kimi-markdown-code / Monaco and
-    // embeds a readonly .ime-text-area). Falling through to a bare textarea is
-    // what made the assistant code box get mistaken for the composer.
-    const inputField = (() => {
-        const preferred = document.querySelector('textarea[placeholder*="消息" i], textarea[placeholder*="Message" i], [contenteditable="true"]');
-        if (preferred && !preferred.disabled && !preferred.readOnly) {
-            const bad = preferred.closest && preferred.closest('.Kimi-markdown-code, .monaco-editor, [class*="markdown-code"], pre');
-            if (!bad) return preferred;
-        }
-        const all = Array.from(document.querySelectorAll('textarea, [contenteditable="true"]'));
-        for (const el of all) {
-            if (el.disabled || el.readOnly) continue;
-            if (el.closest && el.closest('.Kimi-markdown-code, .monaco-editor, [class*="markdown-code"], pre')) continue;
-            const s = window.getComputedStyle(el);
-            if (s.display === 'none' || s.visibility === 'hidden') continue;
-            if (el.offsetWidth === 0 || el.offsetHeight === 0) continue;
-            return el;
-        }
-        return null;
-    })();
-    if (!inputField) {
-        console.error('❌ Input field not found');
+    // Kimi uses a custom contenteditable editor with class .chat-input-editor
+    const editor = document.querySelector('.chat-input-editor[contenteditable="true"]');
+    if (!editor) {
+        console.error('❌ Kimi input editor not found');
         return false;
     }
 
-    // Focus and set text
-    inputField.focus();
-    if (inputField.tagName === 'TEXTAREA') {
-        const nativeSetter = Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, 'value').set;
-        if (nativeSetter) {
-            nativeSetter.call(inputField, message);
-        } else {
-            inputField.value = message;
-        }
-        inputField.dispatchEvent(new Event('input', { bubbles: true }));
-        inputField.dispatchEvent(new Event('change', { bubbles: true }));
-    } else if (inputField.isContentEditable) {
-        inputField.textContent = message;
-        inputField.dispatchEvent(new Event('input', { bubbles: true }));
+    editor.focus();
+    
+    // Select all existing content and replace with new message
+    const selection = window.getSelection();
+    const range = document.createRange();
+    range.selectNodeContents(editor);
+    selection.removeAllRanges();
+    selection.addRange(range);
+    
+    try {
+        document.execCommand('insertText', false, message);
+    } catch (e) {
+        editor.innerHTML = '<p>' + message + '</p>';
     }
-
-    // Wait for React state update
+    
+    editor.dispatchEvent(new InputEvent('input', {
+        bubbles: true,
+        inputType: 'insertText',
+        data: message
+    }));
+    
+    console.log('✍️ Typed: "' + message + '"');
     await new Promise(resolve => setTimeout(resolve, 300));
-
-    // Attempt to click send button
-    const sendSuccess = await clickSendButton();
-    if (sendSuccess) {
-        console.log('✅ Sent:', message);
+    
+    const sendBtn = document.querySelector('.send-button-container:not(.disabled)');
+    if (sendBtn) {
+        sendBtn.click();
+        console.log('✅ Sent');
+        return true;
+    } else {
+        console.warn('⚠️ Send button not found or disabled, trying Enter');
+        editor.dispatchEvent(new KeyboardEvent('keydown', {
+            key: 'Enter',
+            code: 'Enter',
+            keyCode: 13,
+            which: 13,
+            bubbles: true
+        }));
         return true;
     }
-
-    // Fallback: try pressing Enter
-    const enterEvent = new KeyboardEvent('keydown', { key: 'Enter', code: 'Enter', keyCode: 13, which: 13, bubbles: true });
-    inputField.dispatchEvent(enterEvent);
-    console.log('✅ Sent with Enter:', message);
-    return true;
 }
 `;
 
@@ -733,7 +759,8 @@ function lastUserText(prompt: LanguageModelV2Prompt): string {
 }
 
 export function extractKimiSessionId(url: string): string | undefined {
-	const match = /\/c\/([a-f0-9-]+)/.exec(url);
+	// Kimi web chat URLs use /chat/<id> (and historically /c/<id>)
+	const match = /\/(?:chat|c)\/([a-zA-Z0-9-]+)/.exec(url);
 	return match?.[1] ?? undefined;
 }
 
@@ -761,7 +788,7 @@ export async function openKimiWebChat(
 	const cdp = await connectBrowser(config);
 	const targets = await cdp.send("Target.getTargets");
 	let pageTarget = targets.targetInfos?.find(
-		(t: any) => t.type === "page" && t.url?.startsWith("https://chat.Kimi.ai"),
+		(t: any) => t.type === "page" && t.url?.startsWith("https://www.kimi.ai"),
 	);
 	if (!pageTarget) {
 		const result = await cdp.send("Target.createTarget", { url: Kimi_WEB_URL });
@@ -782,7 +809,7 @@ export async function openKimiWebChat(
 	await navigateKimiChat(cdp, cdpSessionId, { fresh: false, sessionId });
 	return {
 		sessionId,
-		url: `https://chat.Kimi.ai/c/${sessionId}`,
+		url: `https://www.kimi.ai/chat/${sessionId}`,
 	};
 }
 
@@ -800,72 +827,142 @@ function consumeKimiSse(
 	}) => void,
 ): void {
 	try {
-		// Thinking-enabled replies tag each delta with `phase` ("think" vs
-		// "answer"); prefer the answer-phase text, but also collect every
-		// delta regardless of phase as a fallback for replies that never set
-		// `phase` at all (thinking disabled, or a differently-shaped
-		// response) — matching a known-working reference capture that reads
-		// `delta.content` unconditionally instead of gating on `phase`.
 		let answerText = "";
 		let anyText = "";
+		let hasSseData = false;
 
+		// 1. Try standard SSE parsing first
 		for (const rawLine of body.split("\n")) {
 			const line = rawLine.trim();
-			if (!line.startsWith("data:")) continue;
-			const data = line.slice(5).trim();
-			if (!data) continue;
-			if (data === "[DONE]") break;
+			if (line.startsWith("data:")) {
+				hasSseData = true;
+				const data = line.slice(5).trim();
+				if (!data) continue;
+				if (data === "[DONE]") break;
 
-			let parsed: any;
-			try {
-				parsed = JSON.parse(data);
-			} catch {
-				continue;
-			}
+				let parsed: any;
+				try {
+					parsed = JSON.parse(data);
+				} catch {
+					continue;
+				}
 
-			for (const choice of Array.isArray(parsed.choices)
-				? parsed.choices
-				: []) {
-				const delta = choice?.delta;
-				const deltaContent =
-					typeof delta?.content === "string" ? delta.content : "";
-				if (deltaContent) {
-					anyText += deltaContent;
-					if (delta.phase === "answer" || delta.phase === undefined) {
-						answerText += deltaContent;
+				for (const choice of Array.isArray(parsed.choices)
+					? parsed.choices
+					: []) {
+					const delta = choice?.delta;
+					const deltaContent =
+						typeof delta?.content === "string" ? delta.content : "";
+					if (deltaContent) {
+						anyText += deltaContent;
+						if (delta.phase === "answer" || delta.phase === undefined) {
+							answerText += deltaContent;
+						}
+					}
+					const messageContent =
+						typeof choice?.message?.content === "string"
+							? choice.message.content
+							: "";
+					if (messageContent) {
+						anyText += messageContent;
+						answerText += messageContent;
 					}
 				}
-				const messageContent =
-					typeof choice?.message?.content === "string"
-						? choice.message.content
-						: "";
-				if (messageContent) {
-					anyText += messageContent;
-					answerText += messageContent;
+
+				if (typeof parsed.content === "string" && parsed.content) {
+					anyText += parsed.content;
+					answerText += parsed.content;
+				}
+				if (typeof parsed.output === "string" && parsed.output) {
+					anyText += parsed.output;
+					answerText += parsed.output;
+				} else if (
+					typeof parsed.output?.content === "string" &&
+					parsed.output.content
+				) {
+					anyText += parsed.output.content;
+					answerText += parsed.output.content;
+				}
+
+				if (parsed.usage && onUsage) {
+					onUsage({
+						inputTokens: parsed.usage.input_tokens || 0,
+						outputTokens: parsed.usage.output_tokens || 0,
+						totalTokens: parsed.usage.total_tokens || 0,
+					});
 				}
 			}
+		}
 
-			if (typeof parsed.content === "string" && parsed.content) {
-				anyText += parsed.content;
-				answerText += parsed.content;
-			}
-			if (typeof parsed.output === "string" && parsed.output) {
-				anyText += parsed.output;
-				answerText += parsed.output;
-			} else if (
-				typeof parsed.output?.content === "string" &&
-				parsed.output.content
-			) {
-				anyText += parsed.output.content;
-				answerText += parsed.output.content;
-			}
+		// 2. If no SSE data was found, or it yielded nothing, try parsing as
+		// concatenated JSON objects (e.g., gRPC-web or raw JSON stream format
+		// used by newer Kimi endpoints like /apiv2/kimi.gateway.chat.v1.ChatService/Chat)
+		if (!hasSseData || (!answerText && !anyText)) {
+			let i = 0;
+			while (i < body.length) {
+				const start = body.indexOf("{", i);
+				if (start === -1) break;
 
-			if (parsed.usage && onUsage) {
-				onUsage({
-					inputTokens: parsed.usage.input_tokens || 0,
-					outputTokens: parsed.usage.output_tokens || 0,
-					totalTokens: parsed.usage.total_tokens || 0,
-				});
+				// Find the end of the JSON object by counting braces
+				let braceCount = 0;
+				let inString = false;
+				let escaped = false;
+				let end = start;
+
+				for (let j = start; j < body.length; j++) {
+					const char = body[j];
+					if (escaped) {
+						escaped = false;
+						continue;
+					}
+					if (char === "\\") {
+						escaped = true;
+						continue;
+					}
+					if (char === '"') {
+						inString = !inString;
+						continue;
+					}
+					if (!inString) {
+						if (char === "{") braceCount++;
+						else if (char === "}") {
+							braceCount--;
+							if (braceCount === 0) {
+								end = j + 1;
+								break;
+							}
+						}
+					}
+				}
+
+				if (end > start) {
+					const jsonStr = body.slice(start, end);
+					try {
+						const parsed = JSON.parse(jsonStr);
+						const fragment = extractTextFragment(parsed);
+						if (fragment) {
+							anyText += fragment;
+							answerText += fragment;
+						}
+
+						if (parsed.usage && onUsage) {
+							onUsage({
+								inputTokens:
+									parsed.usage.input_tokens || parsed.usage.prompt_tokens || 0,
+								outputTokens:
+									parsed.usage.output_tokens ||
+									parsed.usage.completion_tokens ||
+									0,
+								totalTokens: parsed.usage.total_tokens || 0,
+							});
+						}
+					} catch {
+						// Not a valid JSON object, skip
+					}
+					i = end;
+				} else {
+					break;
+				}
 			}
 		}
 
@@ -875,6 +972,52 @@ function consumeKimiSse(
 	} catch (err) {
 		onError(err instanceof Error ? err : new Error(String(err)));
 	}
+}
+
+function extractTextFragment(obj: any): string | null {
+	if (typeof obj !== "object" || obj === null) return null;
+
+	if (Array.isArray(obj)) {
+		for (const item of obj) {
+			const result = extractTextFragment(item);
+			if (result) return result;
+		}
+		return null;
+	}
+
+	// Kimi's response format: message -> blocks -> text -> content (for requests)
+	// or blocks -> text -> content (for responses)
+	if (obj.message && obj.message.blocks && Array.isArray(obj.message.blocks)) {
+		for (const block of obj.message.blocks) {
+			if (block.text && typeof block.text.content === "string") {
+				return block.text.content;
+			}
+		}
+	}
+
+	if (obj.blocks && Array.isArray(obj.blocks)) {
+		for (const block of obj.blocks) {
+			if (block.text && typeof block.text.content === "string") {
+				return block.text.content;
+			}
+		}
+	}
+
+	if (obj.text && typeof obj.text.content === "string") {
+		return obj.text.content;
+	}
+
+	if (typeof obj.content === "string") {
+		return obj.content;
+	}
+
+	// Recurse into values
+	for (const key of Object.keys(obj)) {
+		const result = extractTextFragment(obj[key]);
+		if (result) return result;
+	}
+
+	return null;
 }
 
 // ── Composer ready ─────────────────────────────────────────────────────────────
@@ -887,6 +1030,11 @@ async function waitForComposerReady(
 ): Promise<void> {
 	const pageFullyLoaded = `(() => {
         if (document.readyState !== 'complete') return false;
+        // Primary check: Kimi's actual contenteditable chat input editor
+        var kimiEditor = document.querySelector('.chat-input-editor[contenteditable="true"]');
+        if (kimiEditor && kimiEditor.offsetWidth > 0 && kimiEditor.offsetHeight > 0) {
+            return true;
+        }
         var candidates = Array.from(document.querySelectorAll('textarea, input[type="text"], .chat-input'));
         for (var i = 0; i < candidates.length; i++) {
             var ta = candidates[i];
@@ -932,7 +1080,7 @@ async function waitForComposerReady(
 		if (!hintLogged) {
 			hintLogged = true;
 			logger?.log(
-				"Kimi Web: waiting for the chat.Kimi.ai page to finish loading " +
+				"Kimi Web: waiting for the www.kimi.ai page to finish loading " +
 					`(up to ${Math.round(config.loginTimeoutMs / 1000)}s). If the Chrome window shows a login page, log in now.`,
 				{ severity: "info", providerId: "kimi-web" },
 			);
@@ -940,8 +1088,8 @@ async function waitForComposerReady(
 
 		if (Date.now() >= deadline) {
 			throw new Error(
-				"Kimi Web: chat.Kimi.ai did not finish loading within " +
-					`${Math.round(config.loginTimeoutMs / 1000)}s. Please log in to chat.Kimi.ai in the Chrome window.`,
+				"Kimi Web: www.kimi.ai did not finish loading within " +
+					`${Math.round(config.loginTimeoutMs / 1000)}s. Please log in to www.kimi.ai in the Chrome window.`,
 			);
 		}
 		await sleep(500);
@@ -985,7 +1133,7 @@ async function navigateKimiChat(
 	const destination = target.fresh
 		? Kimi_WEB_URL
 		: target.sessionId
-			? `https://chat.Kimi.ai/c/${target.sessionId}`
+			? `https://www.kimi.ai/chat/${target.sessionId}`
 			: Kimi_WEB_URL;
 
 	const currentUrl = (await readPageUrl(cdp, cdpSessionId)) || "";
@@ -1072,6 +1220,12 @@ async function sendAndCapture(
 	finishReason: LanguageModelV2FinishReason;
 	usage: { inputTokens: number; outputTokens: number; totalTokens: number };
 	rateLimited?: boolean;
+	rawBody: string;
+	subscriptionBalance?: {
+		amountUsedRatio: number;
+		usedPercent: number;
+		expireTime: string;
+	};
 }> {
 	const debugLog = (msg: string) => {
 		if (config.debug) logger?.debug(`[kimi-web] ${msg}`);
@@ -1079,21 +1233,68 @@ async function sendAndCapture(
 
 	let completionRequestId: string | undefined;
 	let capturedBody = "";
+	let subscriptionRequestId: string | undefined;
+	let subscriptionBody = "";
 	let bodyResolve: (() => void) | undefined;
 	const bodyCaptured = new Promise<void>((resolve) => {
 		bodyResolve = resolve;
 	});
 
+	// Every 200 the page received, for the error message when none of them was
+	// the completion. Without this a changed endpoint path is indistinguishable
+	// from "the model said nothing", and both surfaced as an empty reply.
+	const seenResponses: string[] = [];
+
 	const onResponseReceived = (event: any, eventSessionId?: string) => {
 		if (eventSessionId !== cdpSessionId) return;
 		const url: string = event.response?.url ?? "";
-		if (!url.includes(Kimi_API_ENDPOINT)) return;
 		if (event.response?.status !== 200) return;
+		seenResponses.push(url);
+
+		if (url.includes(KIMI_SUBSCRIPTION_STATS_ENDPOINT)) {
+			subscriptionRequestId = event.requestId;
+			debugLog(`subscription stats response received (${url})`);
+			return;
+		}
+
+		// The answer arrives as a server-sent event stream. Matching the known
+		// path first keeps the common case exact; falling back to the content
+		// type means a kimi.ai that moves or versions its endpoint still works,
+		// instead of every turn coming back blank with nothing to point at.
+		const mimeType: string = event.response?.mimeType ?? "";
+		const isCompletion =
+			Kimi_API_ENDPOINTS.some((endpoint) => url.includes(endpoint)) ||
+			(mimeType.includes("text/event-stream") && url.includes("kimi.ai"));
+		if (!isCompletion) return;
 		completionRequestId = event.requestId;
 		debugLog(`completion response received (${url})`);
 	};
 	const onLoadingFinished = async (event: any, eventSessionId?: string) => {
 		if (eventSessionId !== cdpSessionId) return;
+
+		if (event.requestId === subscriptionRequestId) {
+			try {
+				const { body, base64Encoded } = await cdp.send(
+					"Network.getResponseBody",
+					{ requestId: event.requestId },
+					cdpSessionId,
+				);
+				subscriptionBody = base64Encoded
+					? Buffer.from(body, "base64").toString("utf-8")
+					: body;
+				debugLog(
+					`subscription stats body captured (${subscriptionBody.length} chars)`,
+				);
+			} catch (err) {
+				debugLog(
+					`failed to read subscription stats body: ${
+						err instanceof Error ? err.message : String(err)
+					}`,
+				);
+			}
+			return;
+		}
+
 		if (event.requestId !== completionRequestId) return;
 		debugLog("completion body fully written — reading it");
 		try {
@@ -1123,7 +1324,7 @@ async function sendAndCapture(
 
 		// Randomized human-like pacing before sending, plus an extra random
 		// amount on tool-request turns (the fastest back-to-back pattern in an
-		// agent run) — dodges chat.Kimi.ai's own anti-abuse frequency throttle
+		// agent run) — dodges www.kimi.ai's own anti-abuse frequency throttle
 		// the same way deepseek-web-v2 dodges DeepSeek's.
 		const sendDelay = computeSendDelay(config, { isToolTurn });
 		debugLog(
@@ -1156,11 +1357,22 @@ async function sendAndCapture(
 		}
 
 		if (!capturedBody) {
-			return {
-				text: "",
-				finishReason: "stop",
-				usage: { inputTokens: 0, outputTokens: 0, totalTokens: 0 },
-			};
+			// Returning empty text here is what made this so hard to diagnose: a
+			// missed capture and a model that genuinely said nothing looked
+			// identical, and the failure surfaced several layers up as "Model
+			// returned empty response" with no mention of Kimi at all. Say which
+			// of the two it was, and show what the page did fetch.
+			const tail = seenResponses.slice(-8);
+			throw new Error(
+				`[kimi-web] no completion response captured for the last message. ` +
+					(completionRequestId
+						? "A response was seen but its body could not be read."
+						: "No Kimi completion stream was observed.") +
+					(tail.length
+						? ` Responses seen: ${tail.join(", ")}.`
+						: " The page made no requests at all.") +
+					" Check that www.kimi.ai is logged in and not rate-limited in the browser profile.",
+			);
 		}
 
 		let fullText = "";
@@ -1192,7 +1404,43 @@ async function sendAndCapture(
 					"Consider raising Kimi_WEB_MIN/MAX_SEND_DELAY_MS.",
 			);
 		}
-		return { text: fullText, finishReason, usage, rateLimited };
+
+		let subscriptionBalance:
+			| {
+					amountUsedRatio: number;
+					usedPercent: number;
+					expireTime: string;
+			  }
+			| undefined;
+
+		if (subscriptionBody) {
+			try {
+				const parsed = JSON.parse(subscriptionBody);
+				const balance = parsed?.subscriptionBalance;
+
+				if (
+					typeof balance?.amountUsedRatio === "number" &&
+					typeof balance?.expireTime === "string"
+				) {
+					subscriptionBalance = {
+						amountUsedRatio: balance.amountUsedRatio,
+						usedPercent: balance.amountUsedRatio * 100,
+						expireTime: balance.expireTime,
+					};
+				}
+			} catch {
+				debugLog("failed to parse subscription stats response");
+			}
+		}
+
+		return {
+			text: fullText,
+			finishReason,
+			usage,
+			rateLimited,
+			rawBody: capturedBody,
+			subscriptionBalance,
+		};
 	} finally {
 		cdp.off("Network.responseReceived", onResponseReceived);
 		cdp.off("Network.loadingFinished", onLoadingFinished);
@@ -1209,7 +1457,7 @@ interface KimiCompletionResult {
 }
 
 /**
- * Build the flat prompt sent to chat.Kimi.ai, mirroring deepseek-web-v2's
+ * Build the flat prompt sent to www.kimi.ai, mirroring deepseek-web-v2's
  * `buildPrompt`: the real web client keeps its own server-side conversation
  * state, so the system prompt is sent verbatim on the conversation's first
  * turn (via `buildLeanConversation`'s own first-turn passthrough) and dropped
@@ -1222,8 +1470,13 @@ function buildKimiPrompt(
 	reInjectSystem: boolean,
 	preserveCompactionContext: boolean,
 ): string {
-	const conversation = buildLeanConversation(prompt, preserveCompactionContext);
-	const systemMessage = prompt.find((m) => m.role === "system");
+	const effectivePrompt = applySimpleWebSystemPrompt(prompt);
+
+	const conversation = buildLeanConversation(
+		effectivePrompt,
+		preserveCompactionContext,
+	);
+	const systemMessage = effectivePrompt.find((m) => m.role === "system");
 	const alreadyHasSystem = conversation.some((m) => m.role === "system");
 	const promptOptions = {
 		historyWindow: 10,
@@ -1285,8 +1538,7 @@ function createKimiWebModel(
 
 		const targets = await cdp.send("Target.getTargets");
 		let pageTarget = targets.targetInfos?.find(
-			(t: any) =>
-				t.type === "page" && t.url?.startsWith("https://chat.Kimi.ai"),
+			(t: any) => t.type === "page" && t.url?.startsWith("https://www.kimi.ai"),
 		);
 
 		if (!pageTarget) {
@@ -1325,7 +1577,14 @@ function createKimiWebModel(
 			runtimeConfig.chatsFile,
 			chatKey,
 		);
-		if (!existingKimiSession && chatKey.length !== 16) {
+		// Only a sticky `/findchat` binding holds a real web conversation id; a
+		// hash-derived key never does. This used to test `chatKey.length !== 16`,
+		// but `chatKeyFromPrompt` returns 24 characters, so EVERY new chat took
+		// this branch: the hash was navigated to as though it were a conversation
+		// id (a 404 page), and then recorded, so the same dead chat came back on
+		// every later turn. Ask where the key came from instead of guessing from
+		// its shape.
+		if (!existingKimiSession && getBoundChatKey("kimi-web") === chatKey) {
 			existingKimiSession = chatKey;
 			recordKimiChatSession(runtimeConfig.chatsFile, chatKey, chatKey);
 		}
@@ -1409,6 +1668,38 @@ function createKimiWebModel(
 				break;
 			}
 
+			// `<manager>` blocks come first, and only when the session actually has
+			// the team tool to dispatch them with. A lead on a web provider is
+			// prompted to write delegations as prose rather than tool calls — see
+			// `tool-pipeline/manager-block.ts` for why that framing is what keeps
+			// it out of tool machinery it cannot use.
+			if (toolNames.includes("team_run_task")) {
+				const manager = parseManagerBlocks(result.text, {
+					// Only when the session actually has the shell tool to run it with.
+					allowCommands: toolNames.includes("run_commands"),
+				});
+				if (manager.delegations.length > 0) {
+					finalText = manager.cleanedContent;
+					finalToolCalls = manager.delegations.map((delegation) => ({
+						name: delegation.name,
+						arguments: delegation.arguments as Record<string, unknown>,
+					}));
+					break;
+				}
+				if (manager.problems.length > 0) {
+					// Malformed blocks go back into the same chat as a correction, the
+					// same way a rejected tool call does.
+					if (attempt < MAX_TOOL_REJECTION_RETRIES) {
+						sendPrompt = manager.problems.join("\n");
+						continue;
+					}
+					finalText =
+						`${manager.cleanedContent}\n\n${manager.problems.join("\n")}`.trim();
+					finalToolCalls = [];
+					break;
+				}
+			}
+
 			const { cleanedContent, toolCalls } = parseDeepSeekToolCalls(
 				result.text,
 				toolNames,
@@ -1439,6 +1730,31 @@ function createKimiWebModel(
 				break;
 			}
 
+			// A bare `*** Begin Patch` block is `apply_patch` written as text, which
+			// is the only way to send a patch body through a chat box — and exactly
+			// what SIMPLE_WEB_SYSTEM_PROMPT asks this provider for. It must run
+			// BEFORE the fallback below, which reads any code fence as a file write.
+			// Gated on the session actually having the tool, so a provider still on
+			// `editor` is untouched. See tool-pipeline/patch-block.ts.
+			const patched = parsePatchBlocks(cleanedContent, toolNames);
+			const patchNotice = unappliedPatchNotice(cleanedContent, toolNames);
+			if (patchNotice) {
+				if (attempt < MAX_TOOL_REJECTION_RETRIES) {
+					sendPrompt = patchNotice;
+					continue;
+				}
+				finalText = `${cleanedContent}
+
+${patchNotice}`.trim();
+				finalToolCalls = [];
+				break;
+			}
+			if (patched.toolCalls.length > 0) {
+				finalText = patched.cleanedContent;
+				finalToolCalls = patched.toolCalls;
+				break;
+			}
+
 			// The web model often ignores the `<tool>` contract and answers with
 			// plain text (a plan, code fences, install commands). Convert the
 			// visible structure of the reply into real tool calls so the agent
@@ -1459,6 +1775,18 @@ function createKimiWebModel(
 		const KimiSession = extractKimiSessionId(pageUrl);
 		if (KimiSession) {
 			recordKimiChatSession(runtimeConfig.chatsFile, chatKey, KimiSession);
+		}
+
+		// Log raw and parsed response per conversation
+		try {
+			logConversationTurn("kimi-web", chatKey, result.rawBody, {
+				text: finalText,
+				toolCalls: finalToolCalls.length > 0 ? finalToolCalls : undefined,
+				usage: result.usage,
+				finishReason: result.finishReason,
+			});
+		} catch (logErr) {
+			// Ignore logging failures
 		}
 
 		return { text: finalText, toolCalls: finalToolCalls, usage: result.usage };
@@ -1503,6 +1831,31 @@ function createKimiWebModel(
 			};
 		}
 
+		// A bare `*** Begin Patch` block is `apply_patch` written as text, which
+		// is the only way to send a patch body through a chat box — and exactly
+		// what SIMPLE_WEB_SYSTEM_PROMPT asks this provider for. It must run
+		// BEFORE the fallback below, which reads any code fence as a file write.
+		// Gated on the session actually having the tool, so a provider still on
+		// `editor` is untouched. See tool-pipeline/patch-block.ts.
+		const patched = parsePatchBlocks(cleanedContent, toolNames);
+		const patchNotice = unappliedPatchNotice(cleanedContent, toolNames);
+		if (patchNotice) {
+			return {
+				text: `${cleanedContent}
+
+${patchNotice}`.trim(),
+				toolCalls: [],
+				usage,
+			};
+		}
+		if (patched.toolCalls.length > 0) {
+			return {
+				text: patched.cleanedContent,
+				toolCalls: patched.toolCalls,
+				usage,
+			};
+		}
+
 		const fallback = parseFallbackToolUses(
 			cleanedContent,
 			lastUserText(options.prompt),
@@ -1526,7 +1879,11 @@ function createKimiWebModel(
 
 		async doGenerate(options: LanguageModelV2CallOptions) {
 			try {
-				const { text, toolCalls, usage } = await runCompletion(options);
+				const { text, toolCalls, usage } = await withBrowserLock(
+					"kimi-web",
+					options.abortSignal,
+					() => runCompletion(options),
+				);
 
 				const content: LanguageModelV2Content[] = [];
 				if (text) content.push({ type: "text", text });
@@ -1553,7 +1910,11 @@ function createKimiWebModel(
 		},
 
 		async doStream(options: LanguageModelV2CallOptions) {
-			const { text, toolCalls, usage } = await runCompletion(options);
+			const { text, toolCalls, usage } = await withBrowserLock(
+				"kimi-web",
+				options.abortSignal,
+				() => runCompletion(options),
+			);
 			const id = `kimi-web-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
 
 			const parts: LanguageModelV2StreamPart[] = [

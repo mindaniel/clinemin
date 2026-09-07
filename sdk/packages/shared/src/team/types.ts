@@ -71,7 +71,9 @@ export interface TeamMemberSnapshot {
 
 export interface TeammateLifecycleSpec {
 	rolePrompt: string;
+	providerId?: string;
 	modelId?: string;
+	tools?: string[];
 	maxIterations?: number;
 	runtimeAgentId?: string;
 	conversationId?: string;

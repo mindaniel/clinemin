@@ -156,14 +156,14 @@
 							"core-workflows/using-commands",
 							"core-workflows/checkpoints",
 							"cli/agent-teams",
+							"cli/team-roster",
+							"cli/manager-mode",
 							"features/subagents"
 						]
 					},
 					{
 						"group": "Best Practices",
-						"pages": [
-							"best-practices/memory-bank"
-						]
+						"pages": ["best-practices/memory-bank"]
 					},
 					{
 						"group": "IDE Specific Features",
@@ -175,9 +175,7 @@
 					},
 					{
 						"group": "Troubleshooting",
-						"pages": [
-							"troubleshooting/networking-and-proxies"
-						]
+						"pages": ["troubleshooting/networking-and-proxies"]
 					}
 				]
 			},
@@ -187,10 +185,7 @@
 				"groups": [
 					{
 						"group": "Start",
-						"pages": [
-							"sdk/overview",
-							"sdk/examples"
-						]
+						"pages": ["sdk/overview", "sdk/examples"]
 					},
 					{
 						"group": "Concepts",
@@ -206,10 +201,7 @@
 							},
 							{
 								"group": "Tools",
-								"pages": [
-									"sdk/tools",
-									"sdk/guides/creating-custom-tools"
-								]
+								"pages": ["sdk/tools", "sdk/guides/creating-custom-tools"]
 							},
 							"sdk/guides/scheduled-agents",
 							"sdk/events",
@@ -219,10 +211,7 @@
 					},
 					{
 						"group": "Architecture",
-						"pages": [
-							"sdk/architecture/overview",
-							"sdk/architecture/hub-spoke"
-						]
+						"pages": ["sdk/architecture/overview", "sdk/architecture/hub-spoke"]
 					},
 					{
 						"group": "Guides",
@@ -335,17 +324,11 @@
 					},
 					{
 						"group": "Endpoints",
-						"pages": [
-							"api/chat-completions"
-						]
+						"pages": ["api/chat-completions"]
 					},
 					{
 						"group": "Reference",
-						"pages": [
-							"api/models",
-							"api/errors",
-							"api/sdk-examples"
-						]
+						"pages": ["api/models", "api/errors", "api/sdk-examples"]
 					}
 				]
 			}

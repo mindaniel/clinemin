@@ -41,7 +41,10 @@ function detectMalformedToolTag(text: string): string | null {
 	return null;
 }
 
-function detectUnparsedToolBlock(text: string, toolNames: string[]): string | null {
+function detectUnparsedToolBlock(
+	text: string,
+	toolNames: string[],
+): string | null {
 	const lower = text.toLowerCase();
 	const open = lower.indexOf("<tool");
 	if (open === -1) return null;
@@ -98,14 +101,18 @@ function detectUnparsedToolBlock(text: string, toolNames: string[]): string | nu
 }
 
 import { isAbortError } from "./tool-pipeline/abort";
+import { claimBrowserPort } from "./tool-pipeline/browser-claims";
+import { withBrowserLock } from "./tool-pipeline/browser-lock";
 import {
 	browserNotFoundMessage,
 	findChromePath,
 } from "./tool-pipeline/browser-path";
 import { registerLaunchedBrowser } from "./tool-pipeline/browser-processes";
 import { resolveActiveProfilePaths } from "./tool-pipeline/browser-profiles";
+import { retryOnMissingExecutionContext } from "./tool-pipeline/cdp-execution-context";
 import { resolveChatKey } from "./tool-pipeline/chat-target";
 import { isSyntheticUserText } from "./tool-pipeline/continuation-note";
+import { logConversationTurn } from "./tool-pipeline/conversation-logger";
 import { consumePendingInjectedReply } from "./tool-pipeline/injected-reply";
 import { parseInvokeStyleToolCalls } from "./tool-pipeline/invoke-parser";
 import { stripPreviousUserBlock } from "./tool-pipeline/previous-user-dedupe";
@@ -855,7 +862,23 @@ export class CdpClient {
 		});
 	}
 
+	// Wrapped so a page that is mid-navigation — no execution context yet —
+	// waits the moment out instead of failing the turn with nothing typed.
+	// See tool-pipeline/cdp-execution-context.ts.
 	send(method: string, params: any = {}, sessionId?: string): Promise<any> {
+		return retryOnMissingExecutionContext(
+			method,
+			() => this.sendOnce(method, params, sessionId),
+			sleep,
+			"deepseek-web-v2",
+		);
+	}
+
+	private sendOnce(
+		method: string,
+		params: any = {},
+		sessionId?: string,
+	): Promise<any> {
 		const id = ++this.id;
 		return new Promise((resolve, reject) => {
 			this.pending.set(id, { resolve, reject });
@@ -946,6 +969,10 @@ async function connectBrowser(
 	const connectTimeoutMs = Math.max(config.launchTimeoutMs, 30_000);
 
 	if (await isEndpointUp(config.debugPort)) {
+		// Attaching to a browser someone else launched. We do not own it and
+		// must never kill it, but the claim tells whoever DOES own it not to
+		// close it out from under this session. See browser-claims.ts.
+		claimBrowserPort(config.debugPort);
 		activeCdp = await connectCdp(config.debugPort, connectTimeoutMs);
 		activeCdpKey = key;
 		return activeCdp;
@@ -1342,6 +1369,7 @@ async function streamCompletionFromPage(input: {
 	reasoning: string;
 	accumulatedTokenUsage?: number;
 	rateLimited?: boolean;
+	rawBody: string;
 }> {
 	const {
 		cdp,
@@ -1362,6 +1390,7 @@ async function streamCompletionFromPage(input: {
 		if (config.debug) logger?.debug(`[deepseek-web-v2] ${message}`);
 	};
 
+	let capturedRawBody = "";
 	const sink = createPushSink();
 	const sseDone = consumeDeepSeekSse(
 		sink.stream,
@@ -1370,12 +1399,13 @@ async function streamCompletionFromPage(input: {
 		thinkingEnabled,
 	);
 
-	let result: {
+	const result: {
 		text: string;
 		reasoning: string;
 		accumulatedTokenUsage?: number;
 		rateLimited?: boolean;
-	} = { text: "", reasoning: "" };
+		rawBody: string;
+	} = { text: "", reasoning: "", rawBody: "" };
 	// Request id of the chat/completion response, set when headers arrive.
 	let completionRequestId: string | undefined;
 
@@ -1405,6 +1435,10 @@ async function streamCompletionFromPage(input: {
 				{ requestId: event.requestId },
 				sessionId,
 			);
+			const rawBody = base64Encoded
+				? Buffer.from(body, "base64").toString("utf-8")
+				: body;
+			capturedRawBody = rawBody;
 			sink.push(
 				base64Encoded
 					? Buffer.from(body, "base64")
@@ -1503,7 +1537,14 @@ async function streamCompletionFromPage(input: {
 		}
 		debugLog("prompt typed into the composer");
 
-		result = await withTimeout(sseDone, config.responseTimeoutMs, signal);
+		const parsedResult = await withTimeout(
+			sseDone,
+			config.responseTimeoutMs,
+			signal,
+		);
+		result.text = parsedResult.text;
+		result.reasoning = parsedResult.reasoning;
+		result.accumulatedTokenUsage = parsedResult.accumulatedTokenUsage;
 		// Flag a throttled reply so the caller can back off / report it instead
 		// of treating a shorter-context completion as a real context reset. Also
 		// arm a one-shot recovery reload so the next turn forces a page refresh
@@ -1530,6 +1571,7 @@ async function streamCompletionFromPage(input: {
 		sink.close();
 	}
 
+	result.rawBody = capturedRawBody;
 	return result;
 }
 
@@ -1735,6 +1777,7 @@ async function runCompletion(input: {
 	reasoning: string;
 	accumulatedTokenUsage?: number;
 	rateLimited?: boolean;
+	rawBody: string;
 }> {
 	const {
 		modelId,
@@ -1935,8 +1978,12 @@ function inferFileName(
 	lang: string,
 	index: number,
 ): string {
+	// The directory prefix is optional but captured when present. A reply that
+	// says "**File:** `C:\Users\me\thing.py`" is naming one exact file, and
+	// reducing that to `thing.py` both writes to the wrong place and hides the
+	// target from the exists-check in `fileAlreadyExists`.
 	const namePattern =
-		/\b([\w-]+\.(?:py|js|ts|tsx|jsx|sh|ps1|json|ya?ml|md|txt|html|css|go|rs|java|c|cpp|cs|rb|php|sql))\b/i;
+		/\b((?:[A-Za-z]:[\\/]|\.{0,2}[\\/])?(?:[\w.-]+[\\/])*[\w-]+\.(?:py|js|ts|tsx|jsx|sh|ps1|json|ya?ml|md|txt|html|css|go|rs|java|c|cpp|cs|rb|php|sql))\b/i;
 	// Search a window around the block ("save it as x.py" usually follows it).
 	const around = fullText.slice(
 		Math.max(0, blockIndex - 200),
@@ -1947,6 +1994,31 @@ function inferFileName(
 	const inPrompt = namePattern.exec(prompt);
 	if (inPrompt) return inPrompt[1];
 	return `output_${index + 1}${extensionForLanguage(lang)}`;
+}
+
+/**
+ * Does the inferred target already exist?
+ *
+ * `inferFileName` guesses from prose, so it happily returns a file the reply is
+ * merely TALKING about. Writing a fence to a file that already exists is never
+ * something this fallback should do: it exists to catch "here is the script I
+ * wrote for you", where the file is new. Any change to an existing file has to
+ * come through a real tool call that carries the full intended content.
+ *
+ * Relative names are resolved against the process cwd, which is the workspace
+ * root the editor executor would write into.
+ */
+function fileAlreadyExists(filename: string): boolean {
+	try {
+		const resolved = path.isAbsolute(filename)
+			? filename
+			: path.resolve(process.cwd(), filename);
+		return fs.existsSync(resolved);
+	} catch {
+		// Unreadable path: treat as existing. Skipping a write is recoverable;
+		// a wrong whole-file overwrite is not.
+		return true;
+	}
 }
 
 /** The text of the last user message in the prompt, for filename hints. */
@@ -2001,33 +2073,50 @@ export function parseFallbackToolUses(
 	}
 
 	// markdown code fences → editor (create file)
+	//
+	// Done in ONE pass so the decision to emit a call and the decision to strip
+	// the fence from the visible text can never disagree. They used to be two
+	// independent regex passes, and a fence that was skipped still got replaced
+	// with "[code saved to a file]" — a lie about a file that was never written.
+	let cleanedText = text;
+	const quoted: string[] = [];
 	if (hasEditor) {
 		const fencePattern = /```([\w+-]*)\s*\n([\s\S]*?)```/g;
 		let index = 0;
-		for (;;) {
-			const match = fencePattern.exec(text);
-			if (match === null) break;
-			const lang = (match[1] ?? "").toLowerCase();
-			const code = match[2].replace(/\s+$/, "");
-			if (!code.trim()) {
+		cleanedText = text.replace(
+			fencePattern,
+			(full: string, rawLang: string, rawCode: string, offset: number) => {
+				const lang = (rawLang ?? "").toLowerCase();
+				const code = rawCode.replace(/\s+$/, "");
+				if (!code.trim()) {
+					index++;
+					return full;
+				}
+				const filename = inferFileName(text, offset, prompt, lang, index);
 				index++;
-				continue;
-			}
-			const filename = inferFileName(text, match.index, prompt, lang, index);
-			toolUses.push({
-				name: "editor",
-				arguments: { path: filename, new_text: code },
-			});
-			index++;
-		}
+				if (fileAlreadyExists(filename)) {
+					// The fence is a QUOTE, not a file. A reply like "Old line
+					// (line 569): ```python ...```" names an existing file in its
+					// prose, so `inferFileName` picks that file up — and writing
+					// the fence would replace the whole file with the one line
+					// being discussed. Whole-file writes to an existing file must
+					// come from a real `editor` call, never from this guess.
+					quoted.push(filename);
+					return full;
+				}
+				toolUses.push({
+					name: "editor",
+					arguments: { path: filename, new_text: code },
+				});
+				return "[code saved to a file]";
+			},
+		);
 	}
 
-	let cleanedText = text;
-	if (hasEditor) {
-		cleanedText = cleanedText.replace(
-			/```[\w+-]*\s*\n[\s\S]*?```/g,
-			"[code saved to a file]",
-		);
+	if (quoted.length > 0) {
+		// Loud, because the alternative is the model believing an edit landed.
+		const names = [...new Set(quoted)].join(", ");
+		cleanedText = `${cleanedText}\n\nNote: a code fence here looks like a quote from ${names}, which already exists, so nothing was written. To change an existing file, send a real editor or apply_patch tool call.`;
 	}
 
 	return { cleanedText: cleanedText.trim(), toolUses };
@@ -2557,24 +2646,31 @@ function createDeepSeekWebV2Model(
 		let rateLimited: boolean | undefined;
 		let finalText = "";
 		let finalToolCalls: ParsedToolCall[] = [];
+		let lastRawBody = "";
 
 		for (let attempt = 0; ; attempt++) {
-			const result = await runCompletion({
-				modelId,
-				prompt: sendPrompt,
-				chatKey,
-				// This turn requests tool calls when function tools are wired up —
-				// so it is exactly the rapid-fire pattern that needs extra pacing.
-				isToolTurn: functionTools.length > 0,
-				onText,
-				onReasoning,
-				signal: options.abortSignal,
-				logger,
-			});
+			const result = await withBrowserLock(
+				"deepseek-web-v2",
+				options.abortSignal,
+				() =>
+					runCompletion({
+						modelId,
+						prompt: sendPrompt,
+						chatKey,
+						// This turn requests tool calls when function tools are wired up —
+						// so it is exactly the rapid-fire pattern that needs extra pacing.
+						isToolTurn: functionTools.length > 0,
+						onText,
+						onReasoning,
+						signal: options.abortSignal,
+						logger,
+					}),
+			);
 			text = result.text;
 			reasoning = result.reasoning;
 			accumulatedTokenUsage = result.accumulatedTokenUsage;
 			rateLimited = result.rateLimited;
+			lastRawBody = result.rawBody;
 
 			if (functionTools.length === 0) {
 				finalText = text;
@@ -2731,6 +2827,18 @@ function createDeepSeekWebV2Model(
 						totalTokens: accumulatedTokenUsage + estimated.outputTokens,
 					}
 				: estimated;
+
+		// Log raw and parsed response per conversation
+		try {
+			logConversationTurn("deepseek-web-v2", chatKey, lastRawBody, {
+				text: finalText,
+				toolCalls: finalToolCalls.length > 0 ? finalToolCalls : undefined,
+				usage,
+				finishReason: finishReasonFor(finalText, finalToolCalls),
+			});
+		} catch (logErr) {
+			// Ignore logging failures
+		}
 
 		return { text: finalText, reasoning, toolCalls: finalToolCalls, usage };
 	};

@@ -83,4 +83,37 @@ describe("model tool routing", () => {
 		expect(config.enableApplyPatch).toBe(true);
 		expect(config.enableEditor).toBe(false);
 	});
+	it.each([
+		"claude-web",
+		"chatgpt-web",
+		"grok-web",
+		"kimi-web",
+		"gemini-web",
+	])("routes %s to apply_patch instead of editor", (providerId) => {
+		const config = resolveToolRoutingConfig(
+			providerId,
+			"any-model",
+			"act",
+			DEFAULT_MODEL_TOOL_ROUTING_RULES,
+		);
+
+		expect(config.enableApplyPatch).toBe(true);
+		expect(config.enableEditor).toBe(false);
+	});
+
+	it.each([
+		"deepseek-web",
+		"deepseek-web-v2",
+		"qwen-web",
+	])("leaves %s on the editor tool", (providerId) => {
+		const config = resolveToolRoutingConfig(
+			providerId,
+			"any-model",
+			"act",
+			DEFAULT_MODEL_TOOL_ROUTING_RULES,
+		);
+
+		expect(config.enableApplyPatch).toBeUndefined();
+		expect(config.enableEditor).toBeUndefined();
+	});
 });

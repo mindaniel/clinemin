@@ -250,6 +250,8 @@ export { validateWithZod, zodToJsonSchema } from "./parse/zod";
 export type { ClineSystemPromptOptions } from "./prompt/cline";
 export {
 	buildClineSystemPrompt,
+	hasWriteTools,
+	isWebChatProvider,
 	MODE_TAG_INSTRUCTIONS,
 	PLAN_MODE_INSTRUCTIONS,
 } from "./prompt/cline";
@@ -269,6 +271,14 @@ export {
 	stripModeNotices,
 	xmlTagsRemoval,
 } from "./prompt/format";
+export type {
+	ManagerSystemPromptOptions,
+	ManagerWorkerSummary,
+} from "./prompt/manager";
+export {
+	buildManagerSystemPrompt,
+	shortProviderName,
+} from "./prompt/manager";
 export { CLINE_DEFAULT_MODEL_ID } from "./providers/defaults";
 export { isClineProvider } from "./providers/utils";
 export { REMOTE_URI_SCHEME } from "./remote-config/constants";

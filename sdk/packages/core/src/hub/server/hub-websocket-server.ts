@@ -26,6 +26,7 @@ import {
 } from "../discovery";
 import { resolveDefaultHubPort } from "../discovery/defaults";
 import { BrowserWebSocketHubAdapter } from "./browser-websocket";
+import { logHubMessage } from "./hub-server-logging";
 import type {
 	EnsuredHubWebSocketServerResult,
 	EnsureHubWebSocketServerOptions,
@@ -298,6 +299,43 @@ export async function startHubWebSocketServer(
 	);
 	const cleanup = new Set<() => void>();
 	const startedAt = new Date().toISOString();
+
+	// Idle shutdown. Armed when the last client disconnects, disarmed the moment
+	// one reconnects. See `idleShutdownMs` for why this exists.
+	const idleShutdownMs = options.idleShutdownMs ?? 0;
+	let idleTimer: ReturnType<typeof setTimeout> | undefined;
+	const cancelIdleTimer = (): void => {
+		if (idleTimer) {
+			clearTimeout(idleTimer);
+			idleTimer = undefined;
+		}
+	};
+	const armIdleTimer = (): void => {
+		if (idleShutdownMs <= 0) {
+			return;
+		}
+		cancelIdleTimer();
+		idleTimer = setTimeout(() => {
+			idleTimer = undefined;
+			void (async () => {
+				// Re-check both conditions at fire time: a client may have
+				// reconnected, or a detached session may still be working.
+				if (sockets.size > 0) {
+					return;
+				}
+				if (await transport.hasActiveSessions()) {
+					// Something is still running. Wait out another interval rather
+					// than giving up on shutting down entirely.
+					armIdleTimer();
+					return;
+				}
+				logHubMessage("info", "hub.idle_shutdown", { idleShutdownMs });
+				options.onIdle?.();
+			})();
+		}, idleShutdownMs);
+		// Never hold the process open just to run this check.
+		idleTimer.unref?.();
+	};
 	const versionPayload = {
 		protocolVersion: CURRENT_HUB_PROTOCOL_VERSION,
 		minClientProtocolVersion: MIN_CLIENT_HUB_PROTOCOL_VERSION,
@@ -481,12 +519,16 @@ export async function startHubWebSocketServer(
 						tracked.isAlive = true;
 					});
 					sockets.add(tracked);
+					cancelIdleTimer();
 					const detach = adapter.attach(wrapWsSocket(websocket));
 					cleanup.add(detach);
 					websocket.once("close", () => {
 						sockets.delete(tracked);
 						detach();
 						cleanup.delete(detach);
+						if (sockets.size === 0) {
+							armIdleTimer();
+						}
 					});
 				},
 			);

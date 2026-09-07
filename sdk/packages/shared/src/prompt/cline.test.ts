@@ -73,3 +73,57 @@ describe("buildClineSystemPrompt mode instructions", () => {
 		expect(prompt).toBe("You are a custom agent.");
 	});
 });
+
+describe("web provider tool docs", () => {
+	const WEB = { ...BASE_OPTIONS, providerId: "qwen-web", mode: "act" as const };
+
+	it("does not include plan/act mode instructions for web providers", () => {
+		const prompt = buildClineSystemPrompt(WEB);
+		expect(prompt).not.toContain(MODE_TAG_INSTRUCTIONS);
+		expect(prompt).not.toContain(PLAN_MODE_INSTRUCTIONS);
+		expect(prompt).not.toContain('<user_input mode="...">');
+		expect(prompt).not.toContain("<mode_notice>");
+		expect(prompt).not.toContain("switch_to_act_mode");
+	});
+
+	it("does not include plan/act mode instructions for web providers in plan mode", () => {
+		const prompt = buildClineSystemPrompt({ ...WEB, mode: "plan" });
+		expect(prompt).not.toContain(MODE_TAG_INSTRUCTIONS);
+		expect(prompt).not.toContain(PLAN_MODE_INSTRUCTIONS);
+		expect(prompt).not.toContain("switch_to_act_mode");
+	});
+
+	it("does not offer apply_patch to an unrestricted session", () => {
+		const prompt = buildClineSystemPrompt(WEB);
+		expect(prompt).toContain("**editor**");
+		expect(prompt).not.toContain("**apply_patch**");
+		expect(prompt).not.toContain("*** Begin Patch");
+	});
+
+	it("offers apply_patch only when the agent was granted it", () => {
+		const prompt = buildClineSystemPrompt({
+			...WEB,
+			tools: ["read_files", "apply_patch"],
+		});
+		expect(prompt).toContain("**apply_patch**");
+		expect(prompt).toContain("*** Begin Patch");
+		expect(prompt).not.toContain("**editor**");
+	});
+
+	it("names apply_patch in the edit workflow step when that is the tool", () => {
+		const prompt = buildClineSystemPrompt({
+			...WEB,
+			tools: ["read_files", "apply_patch"],
+		});
+		expect(prompt).toContain("**Precision Edits**: Use the `apply_patch` tool");
+		expect(prompt).not.toContain("**Precision Edits**: Use the `editor` tool");
+	});
+
+	it("still names editor when that is the tool", () => {
+		const prompt = buildClineSystemPrompt({
+			...WEB,
+			tools: ["read_files", "editor"],
+		});
+		expect(prompt).toContain("**Precision Edits**: Use the `editor` tool");
+	});
+});

@@ -10,6 +10,10 @@ export interface InteractiveExitSummary {
 	model?: string;
 	cwd?: string;
 	messageCount: number;
+	inputTokens?: number;
+	outputTokens?: number;
+	cacheReadTokens?: number;
+	cacheWriteTokens?: number;
 	totalCost?: number;
 }
 
@@ -71,6 +75,18 @@ export function createInteractiveExitSummary(input: {
 		model: trim(input.row?.model),
 		cwd: trim(input.row?.cwd),
 		messageCount,
+		...(asFiniteNumber(input.usage?.inputTokens) !== undefined
+			? { inputTokens: input.usage?.inputTokens }
+			: {}),
+		...(asFiniteNumber(input.usage?.outputTokens) !== undefined
+			? { outputTokens: input.usage?.outputTokens }
+			: {}),
+		...(asFiniteNumber(input.usage?.cacheReadTokens) !== undefined
+			? { cacheReadTokens: input.usage?.cacheReadTokens }
+			: {}),
+		...(asFiniteNumber(input.usage?.cacheWriteTokens) !== undefined
+			? { cacheWriteTokens: input.usage?.cacheWriteTokens }
+			: {}),
 		...(totalCost !== undefined ? { totalCost } : {}),
 	};
 }
@@ -90,6 +106,18 @@ export function formatInteractiveExitSummary(
 		model ? `  Model     ${model}` : undefined,
 		summary.cwd ? `  CWD       ${summary.cwd}` : undefined,
 		`  Messages  ${summary.messageCount.toLocaleString()}`,
+		typeof summary.inputTokens === "number"
+			? `  Input     ${summary.inputTokens.toLocaleString()} tokens`
+			: undefined,
+		typeof summary.outputTokens === "number"
+			? `  Output    ${summary.outputTokens.toLocaleString()} tokens`
+			: undefined,
+		typeof summary.cacheReadTokens === "number"
+			? `  Cache read ${summary.cacheReadTokens.toLocaleString()} tokens`
+			: undefined,
+		typeof summary.cacheWriteTokens === "number"
+			? `  Cache write ${summary.cacheWriteTokens.toLocaleString()} tokens`
+			: undefined,
 		showUsageCost && typeof summary.totalCost === "number"
 			? `  Cost      ${formatUsd(summary.totalCost)}`
 			: undefined,

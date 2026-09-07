@@ -110,7 +110,7 @@ describe("createTaskWorktree", () => {
 		);
 	});
 
-	it("generates a Kanban-style short taskId when none is provided", async () => {
+	it("generates a short taskId when none is provided", async () => {
 		const result = await createTaskWorktree({ cwd: repoPath });
 
 		expect(result.success).toBe(true);

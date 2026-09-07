@@ -1,0 +1,178 @@
+================================================================================
+# PENDING FIXES — noted 2026-09-05
+
+NOTE: this file previously held a vendor-refactor handoff prompt above this
+line. A failed append in an earlier session overwrote it; it is not recoverable
+from git (the file is untracked). Rewrite it if it is still wanted.
+
+Below is a list of known, verified issues nobody has picked up yet. Each says
+where it is, why it matters, and how to check you fixed it.
+
+General rules for whoever takes these:
+  - Verify commands (from the repo root):
+      bunx tsc -p sdk/packages/llms/tsconfig.dev.json --noEmit
+      bunx tsc --noEmit -p apps/cli
+      bunx vitest run --root sdk/packages/llms src/providers/vendors
+      bunx vitest run --root sdk/packages/core src/extensions/tools/team
+      bunx biome check --write --diagnostic-level=error <path>
+      bun run build:sdk
+    Never `bun test` — this repo uses vitest.
+  - A rebuild alone does nothing to a running session. `cline hub stop`, then
+    start a fresh session, or you are testing the old bundle. This wasted
+    several hours on 2026-09-05.
+  - Nothing is committed. ~129 files are dirty in the working tree, so
+    `git diff <file>` shows months of accumulated work, NOT what you just did.
+    Do not conclude from a large diff that someone made unrelated changes.
+  - Copy a file to the scratchpad before a large mechanical edit; there is no
+    clean commit to revert to.
+
+
+## 1. Patch/manager ordering — claude-web, gemini-web, kimi-web, grok-web
+
+HIGH. This one silently ate real work for hours.
+
+A model told to use the patch grammar writes "apply this patch, then run this
+to check it" — a `*** Begin Patch` block AND a ```powershell fence in one
+reply. In these four vendors `parseManagerBlocks` still runs BEFORE
+`parsePatchBlocks`. It extracts the shell fence as a `run_commands` call and
+returns immediately, so the patch is never parsed: only the verification
+command runs, against a file that never changed. The model then reports the
+patch tool is broken and resends forever.
+
+Fixed already in chatgpt-web — copy that shape exactly. In
+`parseCapturedReply` (sdk/packages/llms/src/providers/vendors/chatgpt-web.ts,
+near the top, look for the comment "Patch blocks are read BEFORE"):
+  - run `parsePatchBlocks(text, toolNames)` first, keep `patchCalls`
+  - run `unappliedPatchNotice(text, toolNames)` and return early if it fires
+  - feed `patched.cleanedContent` to `parseManagerBlocks`
+  - merge as `[...patchCalls, ...manager.delegations]` so the patch applies
+    before the verification command, which is the order the model asked for
+  - add a patch-only return before the `parseDeepSeekToolCalls` chain
+
+kimi-web and grok-web have TWO parse sites each (the retry loop and
+`buildCompletionFromText`); the other two have one.
+
+WATCH OUT: a Python/bash edit script matching "\\t\\tconst patched" will also
+match inside a three-tab line, because it is a substring. Anchor on full lines.
+
+Verify: the regression test in
+`tool-pipeline/patch-block.test.ts` ("a patch alongside a verification
+command") covers the parser; for the vendors, re-read the diff by eye.
+
+#3. there is a patch recently to log all the raw json response of conversations, find where these are saved, and move the save folder to current main working folder, create a folder call rawsjonhistory
+
+#. 2fix how claude web, gpt web, kimi, and grok web calculate accumulate token usage.
+
+
+
+## 6. Command palette missing entries — CLI
+
+LOW, but it is the one red test. `apps/cli` test
+"covers visible local slash commands with palette wording" fails because
+`workers`, `paste`, `note`, `profile`, `findchat` and `manager` have no
+command-palette items. Pre-existing before the /manager work. Add entries in
+`apps/cli/src/tui/components/dialogs/command-palette-items.ts`.
+
+
+7. replace gpt token count with decreasing message left and session reset time
+
+
+##14. the function /workers doesn't list available provider and models to choose, but right now its forcing to type name, then type n to find, however when the name has character n or d, it interferes. the way is to have a list of avai provider, then select model, then select tool approval for each step.
+
+## 11. Assorted open bugs
+
+  - `withTimeout` does not kill the work it timed out on.
+  - `isStatefulWebChatProvider`
+    (sdk/packages/core/src/extensions/context/compaction-shared.ts) lists
+    deepseek-web-v2, qwen-web, claude-web, chatgpt-web, gemini-web — missing
+    kimi-web and grok-web, so compaction takes the wrong path for those two.
+  - `cleanFragment` strips the word "FINISHED".
+  - `repairQuotesAndEscapes` does not escape raw newlines.
+  - `tool-parser.ts:194` lint: `let malformedMatch;` implicitly any. Pre-existing;
+    it is the only error `biome check` reports on the llms package.
+  - ripgrep is not installed, so `search_codebase` falls back to a slow Node
+    walk. `winget install BurntSushi.ripgrep.MSVC`.
+
+
+## 12. Worker sessions as real separate sessions
+ `spawn_agent` and the
+teammate runtime still share the lead process rather than each worker being a
+real session. Design before coding.
+
+#13. Refactor one browser-driven web provider in the Cline fork at
+C:\Users\quang\Downloads\clinemin from a single long file into a folder of
+same-named files. Start with grok-web ONLY. Do not touch the other six.
+
+## Target
+
+sdk/packages/llms/src/providers/vendors/grok-web.ts is 1699 lines. Replace it
+with:
+
+  sdk/packages/llms/src/providers/vendors/grok-web/
+    index.ts     provider factory + wiring; re-exports the public surface
+    config.ts    URL, API endpoint, debug port, timeouts, config dir, resolve*Config
+    browser.ts   CdpClient, connectBrowser, Target attach/create, navigate to
+                 chat, wait-for-composer, the send script, chats.json
+                 bookkeeping, chat-key derivation, the send/capture/retry loop
+    sse.ts       consumeGrokSse — the wire format only
+    parser.ts    captured reply text -> tool calls
+    prompt.ts    buildPrompt, lean conversation, system prompt handling
+
+The same six filenames will be used for every provider later, so a reader can
+always find "grok's SSE handling" at vendors/grok-web/sse.ts. Keep the names
+exactly as written even if a file ends up small.
+
+## Hard rules
+
+1. THIS IS A MOVE, NOT A REWRITE. No logic changes, no renames of exported
+   symbols, no "while I'm here" cleanups, no comment rewording. Comments move
+   verbatim with the code they document. If you think something is a bug, write
+   it in your final report; do not fix it.
+2. Preserve the public surface exactly. These are imported from outside and
+   must still be importable from "./vendors/grok-web":
+     GrokWebV2RuntimeConfig, GrokWebChatEntry, resolveGrokWebV2Config,
+     lookupGrokChatSession, recordGrokChatSession, deleteGrokChatSession,
+     chatKeyFromPrompt, extractGrokSessionId, listGrokWebChats,
+     openGrokWebChat, createGrokWebProvider, createGrokWebProviderFactory,
+     createGrokWebProviderModule
+   Re-export all of them from grok-web/index.ts.
+3. The dynamic import site is sdk/packages/llms/src/providers/ai-sdk.ts around
+   line 1232: `await import("./vendors/grok-web")`. tsconfig uses
+   moduleResolution "bundler", so a directory with index.ts resolves. Verify it
+   actually does after the move — if the build or a runtime import fails, that
+   is the first thing to check.
+4. Do not extract anything into tool-pipeline/ yet. Cross-provider dedupe is a
+   separate later task; grok's copy of CdpClient stays inside grok-web/browser.ts
+   for now even though six near-identical copies exist elsewhere.
+5. Do not edit chatgpt-web.ts or claude-web.ts. Another agent may be working in
+   them. If sdk/packages/llms fails to typecheck with errors in those two files
+   (currently: `rawBody` not in type, unused `logConversationTurn` import),
+   those are pre-existing and not yours — report them, do not fix them.
+
+## Verify (all from the repo root)
+
+  bunx tsc -p sdk/packages/llms/tsconfig.dev.json --noEmit
+  bunx vitest run --root sdk/packages/llms src/providers/vendors
+  bunx biome check --write --diagnostic-level=error sdk/packages/llms/src
+  bun run build:sdk
+
+Never use `bun test` — this repo uses vitest.
+
+Before you start, record the baseline: run the typecheck and the vendor test
+suite on the unmodified tree and save the output. After the move, the ONLY
+acceptable difference is zero difference. If a test that passed now fails, the
+move changed behavior; find out why rather than editing the test.
+
+There is no automated coverage of the browser-driving paths — the vendor tests
+are parser tests. A regression here shows up as "grok stopped replying" in a
+live session, not as a red test. So re-read your own diff for accidentally
+dropped lines before declaring done.
+
+## Report back
+
+- Line count per new file, and the old total, so the accounting is visible.
+- Anything you found that looks wrong but did not touch.
+- Confirmation that the four verify commands were run and what they said.
+
+
+#14. kimi don't behave normally, 

@@ -8,7 +8,7 @@ import {
 	SignalLow,
 	SignalMedium,
 } from "lucide-react";
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { toast } from "sonner";
 import {
 	Attachment,
@@ -59,6 +59,7 @@ import type {
 	WebviewOutboundMessage,
 	WebviewProviderModel,
 	WebviewReasonLevel,
+	WebviewUsage,
 } from "../../../webview-protocol";
 
 type ProviderOption = Extract<
@@ -93,12 +94,14 @@ function ComposerSettings({
 	autoApproveTools,
 	enableSpawn,
 	enableTeams,
+	managerMode,
 	model,
 	modelSelectorOpen,
 	models,
 	onAutoApproveToolsChange,
 	onEnableSpawnChange,
 	onEnableTeamsChange,
+	onManagerModeChange,
 	onModelChange,
 	onModelSelectorOpenChange,
 	onProviderChange,
@@ -110,6 +113,7 @@ function ComposerSettings({
 	enableSpawn: boolean;
 	enableTeams: boolean;
 	enableTools: boolean;
+	managerMode: boolean;
 	maxIterations: string;
 	model: string;
 	modelSelectorOpen: boolean;
@@ -118,6 +122,7 @@ function ComposerSettings({
 	onEnableSpawnChange: (value: boolean) => void;
 	onEnableTeamsChange: (value: boolean) => void;
 	onEnableToolsChange: (value: boolean) => void;
+	onManagerModeChange: (value: boolean) => void;
 	onMaxIterationsChange: (value: string) => void;
 	onModelChange: (value: string) => void;
 	onModelSelectorOpenChange: (value: boolean) => void;
@@ -245,6 +250,11 @@ function ComposerSettings({
 					label="Auto-approves"
 					onChange={onAutoApproveToolsChange}
 				/>
+				<Toggle
+					checked={managerMode}
+					label="Manager"
+					onChange={onManagerModeChange}
+				/>
 			</div>
 		</div>
 	);
@@ -296,12 +306,46 @@ const reasonLevels = [
 	{ value: ReasonLevel.High, label: "High", icon: SignalHigh },
 ];
 
+/**
+ * How long the current turn has been going.
+ *
+ * A tool call has its own clock, but the long silences in this system are
+ * between them — the model turn, which on a browser-driven provider is a round
+ * trip through a real chat page and can run for minutes. With nothing ticking
+ * there is no way to tell a slow turn from a wedged one.
+ */
+function TurnClock({ startedAt }: { startedAt?: number }) {
+	const [now, setNow] = useState(() => Date.now());
+	useEffect(() => {
+		if (startedAt === undefined) {
+			return;
+		}
+		const timer = setInterval(() => setNow(Date.now()), 1000);
+		return () => clearInterval(timer);
+	}, [startedAt]);
+
+	if (startedAt === undefined) {
+		return null;
+	}
+	const seconds = Math.max(0, Math.round((now - startedAt) / 1000));
+	const label =
+		seconds < 60
+			? `${seconds}s`
+			: `${Math.floor(seconds / 60)}m ${String(seconds % 60).padStart(2, "0")}s`;
+	return (
+		<span className="font-mono text-muted-foreground text-xs tabular-nums">
+			working — {label}
+		</span>
+	);
+}
+
 export function Composer({
 	autoApproveTools,
 	disabled = false,
 	enableSpawn,
 	enableTeams,
 	enableTools,
+	managerMode,
 	maxIterations,
 	model,
 	mode,
@@ -312,6 +356,7 @@ export function Composer({
 	onEnableSpawnChange,
 	onEnableTeamsChange,
 	onEnableToolsChange,
+	onManagerModeChange,
 	onModeChange,
 	onMaxIterationsChange,
 	onModelChange,
@@ -324,15 +369,18 @@ export function Composer({
 	providers,
 	sending,
 	status,
+	turnStartedAt,
 	systemPrompt,
 	reasonLevel,
 	workspaceRoot,
+	usage,
 }: {
 	autoApproveTools: boolean;
 	disabled?: boolean;
 	enableSpawn: boolean;
 	enableTeams: boolean;
 	enableTools: boolean;
+	managerMode: boolean;
 	maxIterations: string;
 	model: string;
 	mode: "act" | "plan";
@@ -343,6 +391,7 @@ export function Composer({
 	onEnableSpawnChange: (value: boolean) => void;
 	onEnableTeamsChange: (value: boolean) => void;
 	onEnableToolsChange: (value: boolean) => void;
+	onManagerModeChange: (value: boolean) => void;
 	onModeChange: (value: "act" | "plan") => void;
 	onMaxIterationsChange: (value: string) => void;
 	onModelChange: (value: string) => void;
@@ -359,9 +408,12 @@ export function Composer({
 	providers: ProviderOption[];
 	sending: boolean;
 	status: string;
+	/** When the in-flight turn started, for the waiting clock. */
+	turnStartedAt?: number;
 	systemPrompt: string;
 	reasonLevel: WebviewReasonLevel;
 	workspaceRoot: string;
+	usage?: WebviewUsage;
 }) {
 	const [settingsOpen, setSettingsOpen] = useState(false);
 	const controller = usePromptInputController();
@@ -439,6 +491,7 @@ export function Composer({
 							enableSpawn={enableSpawn}
 							enableTeams={enableTeams}
 							enableTools={enableTools}
+							managerMode={managerMode}
 							maxIterations={maxIterations}
 							model={model}
 							modelSelectorOpen={modelSelectorOpen}
@@ -447,6 +500,7 @@ export function Composer({
 							onEnableSpawnChange={onEnableSpawnChange}
 							onEnableTeamsChange={onEnableTeamsChange}
 							onEnableToolsChange={onEnableToolsChange}
+							onManagerModeChange={onManagerModeChange}
 							onMaxIterationsChange={onMaxIterationsChange}
 							onModelChange={onModelChange}
 							onModelSelectorOpenChange={onModelSelectorOpenChange}
@@ -516,6 +570,12 @@ export function Composer({
 							</Badge>
 						</PromptInputTools>
 						<div className="flex items-center gap-2">
+							{usage ? (
+								<span className="text-xs tabular-nums text-muted-foreground">
+									{usage.inputTokens ?? 0} in · {usage.outputTokens ?? 0} out
+								</span>
+							) : null}
+							{sending ? <TurnClock startedAt={turnStartedAt} /> : null}
 							{sending ? (
 								<Button onClick={onAbort} type="button" variant="destructive">
 									Abort

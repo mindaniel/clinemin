@@ -14,6 +14,7 @@ import type {
 import { estimateTokens } from "@cline/shared";
 import { jsonrepair } from "jsonrepair";
 import { ensureFetch } from "../http";
+import { parsePatchBlocks } from "./tool-pipeline/patch-block";
 import { scanToolBlocks } from "./tool-pipeline/tool-block-scanner";
 import type { ProviderFactoryResult } from "./types";
 
@@ -1172,7 +1173,14 @@ export function parseDeepSeekToolCalls(
 	}
 	cleanedParts.push(content.slice(cursor));
 
-	return { cleanedContent: cleanedParts.join("").trim(), toolCalls };
+	// A bare `*** Begin Patch` block is `apply_patch` written as text instead of
+	// as JSON, which is the only sane way to send a patch body through a chat
+	// box. Gated on the session actually having the tool, so a provider still on
+	// `editor` is untouched. See tool-pipeline/patch-block.ts.
+	const patched = parsePatchBlocks(cleanedParts.join("").trim(), toolNames);
+	toolCalls.push(...patched.toolCalls);
+
+	return { cleanedContent: patched.cleanedContent, toolCalls };
 }
 
 /**

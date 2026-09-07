@@ -103,6 +103,8 @@ describe("createHubCommand", () => {
 			pid: 50174,
 		});
 		mockStopLocalHubServerGracefully.mockResolvedValue(true);
+		// A graceful stop only counts once nothing is answering on the hub URL.
+		mockProbeHubServer.mockResolvedValue(undefined);
 
 		const output: string[] = [];
 		let exitCode = 0;
@@ -126,5 +128,35 @@ describe("createHubCommand", () => {
 			discoveryPath: "/tmp/cline-data/locks/hub/owners/hub-owner.json",
 		});
 		expect(JSON.parse(output[0] || "")).toEqual({ stopped: true });
+	});
+
+	it("does not claim a stop while the hub is still answering", async () => {
+		process.env.CLINE_BUILD_ENV = "development";
+		// No pid on the record: the exact shape that used to report
+		// `{"stopped":false}` and leave a live daemon behind.
+		mockReadHubDiscovery.mockResolvedValue({
+			url: "ws://127.0.0.1:25466/hub",
+			port: 25466,
+		});
+		mockStopLocalHubServerGracefully.mockResolvedValue(true);
+		mockProbeHubServer.mockResolvedValue({
+			url: "ws://127.0.0.1:25466/hub",
+			port: 25466,
+		});
+
+		const output: string[] = [];
+		const cmd = createHubCommand(
+			{
+				writeln: (text) => {
+					output.push(text ?? "");
+				},
+				writeErr: () => {},
+			},
+			() => {},
+		);
+
+		await cmd.parseAsync(["stop"], { from: "user" });
+
+		expect(JSON.parse(output[0] || "")).toEqual({ stopped: false });
 	});
 });

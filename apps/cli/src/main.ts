@@ -11,10 +11,7 @@ import {
 	commanderToParsedArgs,
 	createProgram,
 } from "./commands/program";
-import {
-	autoUpdateOnStartup,
-	getPreferredKanbanInstaller,
-} from "./commands/update";
+import { autoUpdateOnStartup } from "./commands/update";
 import { CLI_DEFAULT_CHECKPOINT_CONFIG } from "./runtime/defaults";
 import type { TuiStartupTarget } from "./tui/types";
 import { getCliBuildInfo } from "./utils/common";
@@ -136,12 +133,6 @@ function writePromptArgError(args: string[]): void {
 	writeErr(
 		`Unknown command or unquoted prompt: ${renderedArgs}\nPrompt text must be passed as a single quoted argument, for example: cline "fix the tests". Use "cline --help" to see available commands and flags.`,
 	);
-}
-
-function startupTargetTakesPrecedenceOverMigrationNotice(
-	target: TuiStartupTarget | undefined,
-): boolean {
-	return target === "config" || target === "history";
 }
 
 export async function runCli(): Promise<void> {
@@ -627,16 +618,6 @@ export async function runCli(): Promise<void> {
 			ctx.exitCode = 0;
 		});
 
-	program
-		.command("kanban")
-		.description("Run the kanban app")
-		.action(async () => {
-			const { launchKanban } = await import("./commands/kanban");
-			ctx.exitCode = await launchKanban({
-				preferredInstaller: getPreferredKanbanInstaller(),
-			});
-		});
-
 	try {
 		await program.parseAsync(normalizedArgs, { from: "user" });
 	} catch (err: unknown) {
@@ -657,13 +638,12 @@ export async function runCli(): Promise<void> {
 	}
 
 	const rootOpts = program.opts<{
-		kanban?: boolean;
 		tui?: boolean;
 		update?: boolean;
 		verbose?: boolean;
 	}>();
 	if (rootOpts.update) {
-		if (rootOpts.kanban || rootOpts.tui || program.args.length > 0) {
+		if (rootOpts.tui || program.args.length > 0) {
 			writeErr("Use --update without a prompt or task flags.");
 			process.exitCode = 1;
 			return;
@@ -674,24 +654,6 @@ export async function runCli(): Promise<void> {
 		});
 		return;
 	}
-	if (rootOpts.kanban) {
-		if (rootOpts.tui) {
-			writeErr("Use either --kanban or --tui, not both.");
-			process.exitCode = 1;
-			return;
-		}
-		if (program.args.length > 0) {
-			writeErr("Use --kanban without a prompt.");
-			process.exitCode = 1;
-			return;
-		}
-		const { launchKanban } = await import("./commands/kanban");
-		process.exitCode = await launchKanban({
-			preferredInstaller: getPreferredKanbanInstaller(),
-		});
-		return;
-	}
-
 	// Default flow: no subcommand matched, or fall-through from config/history.
 	let args = commanderToParsedArgs(program);
 
@@ -934,6 +896,9 @@ export async function runCli(): Promise<void> {
 
 		const isYoloMode = args.mode === "yolo";
 		const isZenMode = args.mode === "zen";
+		// Yolo is a tiny tool set with teams switched off, which is the exact
+		// opposite of a manager: it would have nothing to delegate with.
+		const isManagerMode = args.managerMode === true && !isYoloMode;
 
 		// In headless mode (yolo / json / piped stdin without --tui),
 		// don't attempt browser-based OAuth. Authentication may still resolve at
@@ -1018,6 +983,7 @@ export async function runCli(): Promise<void> {
 				explicitSystemPrompt: args.systemPrompt,
 				providerId: provider,
 				mode: effectiveMode,
+				managerMode: isManagerMode,
 			}),
 			execution: {
 				maxConsecutiveMistakes: args.retries ?? 3,
@@ -1060,6 +1026,7 @@ export async function runCli(): Promise<void> {
 				logger: loggerAdapter.core,
 			},
 			teamName: !isYoloMode ? args.teamName?.trim() || undefined : undefined,
+			managerMode: isManagerMode,
 		};
 		try {
 			// For OAuth providers, don't write the resolved key into apiKey;
@@ -1133,36 +1100,11 @@ export async function runCli(): Promise<void> {
 			const runInteractive = await loadInteractiveRuntimeModule();
 			const initialClineProviderSettings =
 				provider === "cline" ? selectedProviderSettings : undefined;
-			let initialNotice:
-				| import("./kanban-migration/notice").CliMigrationNotice
-				| undefined;
-			let markInitialNoticeShown:
-				| ((
-						notice: import("./kanban-migration/notice").CliMigrationNotice,
-				  ) => void)
-				| undefined;
-			if (
-				!startupTargetTakesPrecedenceOverMigrationNotice(startupTarget) &&
-				isFullTTY
-			) {
-				const { getClineCliMigrationNotice, markClineCliMigrationNoticeShown } =
-					await import("./kanban-migration/notice");
-				initialNotice = getClineCliMigrationNotice(undefined, process.env, {
-					activeProviderId: provider,
-				});
-				if (initialNotice) {
-					markInitialNoticeShown = () => {
-						markClineCliMigrationNoticeShown();
-					};
-				}
-			}
 			await runInteractive(config, userInstructionService, resumeSessionId, {
 				initialPrompt: args.prompt,
 				clineApiBaseUrl: initialClineProviderSettings?.baseUrl,
 				clineProviderSettings: initialClineProviderSettings,
 				startupTarget,
-				initialNotice,
-				onInitialNoticeShown: markInitialNoticeShown,
 			});
 			return;
 		}

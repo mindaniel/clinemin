@@ -24,6 +24,8 @@ function makeActions(
 		openHistory: vi.fn(),
 		exitCline: vi.fn(),
 		findChat: vi.fn(async () => true),
+		openWorkers: vi.fn(async () => true),
+		openManager: vi.fn(async () => true),
 		pasteReply: vi.fn(async () => true),
 		setNote: vi.fn(() => true),
 		switchProfile: vi.fn(async () => true),
@@ -32,6 +34,35 @@ function makeActions(
 }
 
 describe("runLocalSlashCommandAction", () => {
+	it("opens the manager dialog for a bare /manager", async () => {
+		const openManager = vi.fn(async () => true);
+		const actions = makeActions({ openManager });
+
+		await runLocalSlashCommandAction({
+			...actions,
+			name: "manager",
+			invocation: { text: "/manager", cursorOffset: 8 },
+		});
+
+		expect(openManager).toHaveBeenCalledWith("");
+	});
+
+	it("passes a task through so the chat runner still handles it", async () => {
+		// `/manager <task>` rebuilds the system prompt around that task, which
+		// only the runtime can do — the dialog must not swallow it.
+		const openManager = vi.fn(async () => false);
+		const actions = makeActions({ openManager });
+
+		const handled = await runLocalSlashCommandAction({
+			...actions,
+			name: "manager",
+			invocation: { text: "/manager fix the build", cursorOffset: 22 },
+		});
+
+		expect(openManager).toHaveBeenCalledWith("fix the build");
+		expect(handled).toBe(false);
+	});
+
 	it("opens the skills picker with skills", () => {
 		const openSkills = vi.fn();
 		const actions = makeActions({ openSkills });
@@ -88,6 +119,16 @@ describe("runLocalSlashCommandAction", () => {
 
 		expect(handled).toBe(true);
 		expect(runCompact).toHaveBeenCalledOnce();
+	});
+
+	it("invokes openWorkers for the /workers command", async () => {
+		const openWorkers = vi.fn(async () => true);
+		const actions = makeActions({ openWorkers });
+
+		await expect(
+			runLocalSlashCommandAction({ name: "workers", ...actions }),
+		).resolves.toBe(true);
+		expect(openWorkers).toHaveBeenCalledOnce();
 	});
 
 	it("invokes findChat for the /findchat command", async () => {

@@ -152,6 +152,9 @@ describe("AgentTeamsRuntime teammate lifecycle events", () => {
 			role: undefined,
 			teammate: {
 				rolePrompt: "Write concise Python-focused haiku",
+				// Carried on the event so a restored teammate keeps its own provider
+				// instead of silently reverting to the lead's.
+				providerId: "anthropic",
 				modelId: "claude-sonnet-4-5-20250929",
 				maxIterations: 7,
 				runtimeAgentId: "teammate-1",

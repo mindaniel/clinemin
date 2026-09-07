@@ -13,12 +13,14 @@ import {
 	MoreHorizontal,
 	PencilIcon,
 	PlugIcon,
+	PlusIcon,
 	RotateCcwIcon,
 	RssIcon,
 	ServerIcon,
 	SettingsIcon,
 	Trash2Icon,
 	UserCircleIcon,
+	UsersIcon,
 	WrenchIcon,
 } from "lucide-react";
 import type { ReactNode } from "react";
@@ -63,6 +65,7 @@ import type {
 import { PageFrame, PageHeader } from "./components/views/page-layout";
 import type { CustomizationSection } from "./components/views/settings/extensions-view";
 import type { SettingsSection } from "./components/views/settings/settings-view";
+import TeamView from "./components/views/team-view";
 import { syncHubTheme } from "./lib/theme";
 import { postToHost } from "./vscode";
 
@@ -92,6 +95,7 @@ type View =
 	| "tools"
 	| "channels"
 	| "schedules"
+	| "team"
 	| "settings"
 	| "account";
 const VIEW_PATHS: Record<View, string> = {
@@ -108,6 +112,7 @@ const VIEW_PATHS: Record<View, string> = {
 	tools: "/tools",
 	channels: "/channels",
 	schedules: "/schedules",
+	team: "/team",
 	settings: "/settings",
 	account: "/settings/account",
 };
@@ -169,6 +174,7 @@ function viewFromPath(pathname: string): View {
 	if (pathname === VIEW_PATHS.tools) return "tools";
 	if (pathname === VIEW_PATHS.channels) return "channels";
 	if (pathname === VIEW_PATHS.schedules) return "schedules";
+	if (pathname === VIEW_PATHS.team) return "team";
 	if (pathname === VIEW_PATHS.account) return "account";
 	if (
 		pathname === VIEW_PATHS.settings ||
@@ -364,6 +370,7 @@ function Shell({
 		{ view: "models", label: "Models", icon: BotIcon },
 		{ view: "channels", label: "Channels", icon: LinkIcon },
 		{ view: "schedules", label: "Schedules", icon: ClockIcon },
+		{ view: "team", label: "Team", icon: UsersIcon },
 		{ view: "account", label: "Account", icon: UserCircleIcon },
 		{ view: "settings", label: "Settings", icon: SettingsIcon },
 	] satisfies Array<{
@@ -731,11 +738,13 @@ function HomeView({
 
 function SessionsView({
 	onDeleteSession,
+	onNewSession,
 	onOpenSession,
 	onRenameSession,
 	sessions,
 }: {
 	onDeleteSession: (sessionId: string) => Promise<void> | void;
+	onNewSession: () => void;
 	onOpenSession: (sessionId: string) => void;
 	onRenameSession: (sessionId: string, title: string) => Promise<void> | void;
 	sessions: WebviewSessionSummary[];
@@ -812,9 +821,18 @@ function SessionsView({
 		<PageFrame>
 			<PageHeader
 				title="Sessions"
-				description="Review, reopen, rename, and delete recent sessions."
+				description="Start a new session, or reopen, rename, and delete recent ones."
 				actions={
 					<>
+						<Button
+							onClick={onNewSession}
+							size="sm"
+							title="Start a new session"
+							type="button"
+						>
+							<PlusIcon className="size-4" />
+							New session
+						</Button>
 						<DropdownMenu>
 							<DropdownMenuTrigger
 								render={
@@ -1122,6 +1140,13 @@ function App() {
 	const [selectedSessionId, setSelectedSessionId] = useState<
 		string | undefined
 	>(() => readCurrentChatSessionId());
+	// Navigating away from chat clears `selectedSessionId`, but the Team view
+	// still needs to know which session's team it is looking at. This keeps the
+	// last session that was actually opened, and is never cleared by navigation.
+	const [lastOpenedSessionId, setLastOpenedSessionId] = useState<
+		string | undefined
+	>(() => readCurrentChatSessionId());
+	const [newChatNonce, setNewChatNonce] = useState(0);
 	const [recentSessions, setRecentSessions] = useState<WebviewSessionSummary[]>(
 		[],
 	);
@@ -1189,8 +1214,28 @@ function App() {
 		setView(nextView);
 	}, []);
 
+	/**
+	 * Open a blank chat, which creates a session on the first message.
+	 *
+	 * The nonce is what actually makes this work. `Chat` attaches to a session
+	 * once and keeps its messages in local state, so clearing the selected id is
+	 * not enough — without a changing `key` the new chat would render the
+	 * previous session's transcript. Bumping the nonce remounts it clean, and
+	 * makes a second "New session" click work while a blank chat is already open.
+	 */
+	const startNewSession = useCallback(() => {
+		setSelectedSessionId(undefined);
+		setNewChatNonce((nonce) => nonce + 1);
+		const nextPath = chatPath(undefined);
+		if (currentPathWithSearch() !== nextPath) {
+			window.history.pushState(null, "", nextPath);
+		}
+		setView("chat");
+	}, []);
+
 	const openSession = useCallback((sessionId: string) => {
 		setSelectedSessionId(sessionId);
+		setLastOpenedSessionId(sessionId);
 		const nextPath = chatPath(sessionId);
 		if (currentPathWithSearch() !== nextPath) {
 			window.history.pushState(null, "", nextPath);
@@ -1200,6 +1245,9 @@ function App() {
 
 	const updateChatSessionRoute = useCallback((sessionId?: string) => {
 		setSelectedSessionId(sessionId);
+		if (sessionId) {
+			setLastOpenedSessionId(sessionId);
+		}
 		const nextPath = chatPath(sessionId);
 		if (currentPathWithSearch() !== nextPath) {
 			window.history.replaceState(null, "", nextPath);
@@ -1231,6 +1279,7 @@ function App() {
 			return (
 				<Chat
 					initialSessionId={selectedSessionId}
+					key={selectedSessionId ?? `new-${newChatNonce}`}
 					onSessionSelected={updateChatSessionRoute}
 				/>
 			);
@@ -1239,6 +1288,7 @@ function App() {
 			return (
 				<SessionsView
 					onDeleteSession={deleteSession}
+					onNewSession={startNewSession}
 					onOpenSession={openSession}
 					onRenameSession={renameSession}
 					sessions={recentSessions}
@@ -1295,6 +1345,9 @@ function App() {
 				/>
 			);
 		}
+		if (view === "team") {
+			return <TeamView teamKey={lastOpenedSessionId} />;
+		}
 		if (view === "mcp") {
 			return (
 				<CustomizationSectionView
@@ -1339,7 +1392,9 @@ function App() {
 	}, [
 		hubState,
 		deleteSession,
+		lastOpenedSessionId,
 		navigate,
+		newChatNonce,
 		openSession,
 		recentSessions,
 		renameSession,
@@ -1347,6 +1402,7 @@ function App() {
 		restartPending,
 		selectedSessionId,
 		settingsSection,
+		startNewSession,
 		updateChatSessionRoute,
 		view,
 	]);

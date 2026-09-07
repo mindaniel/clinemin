@@ -1,5 +1,12 @@
 import { spawn } from "node:child_process";
-import { closeSync, mkdirSync, openSync } from "node:fs";
+import {
+	closeSync,
+	mkdirSync,
+	openSync,
+	renameSync,
+	rmSync,
+	statSync,
+} from "node:fs";
 import { basename, dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import {
@@ -49,10 +56,58 @@ function endpointArgs(endpoint: HubEndpointOverrides): string[] {
 	];
 }
 
+/** Rotate the daemon log once it passes this size. */
+const HUB_LOG_MAX_BYTES = 32 * 1024 * 1024;
+/** How many rotated generations to keep beside the live log. */
+const HUB_LOG_KEPT_GENERATIONS = 2;
+
+/**
+ * Roll the daemon log over when it has grown too large.
+ *
+ * The daemon writes an unfiltered stream of its own stdout and stderr straight
+ * into one append-only file, for as long as the daemon lives — and it emits a
+ * heartbeat line per active run every ten seconds, so an idle-looking machine
+ * still produces steady output. Left alone this file reached 1.27 GB.
+ *
+ * Rotation happens here, at open time, rather than while the daemon runs: the
+ * log is handed to `spawn` as a raw file descriptor, so nothing is watching its
+ * size afterwards and renaming the file out from under a live fd would not free
+ * the space anyway. One rotation per daemon start bounds the total across
+ * restarts, which is where the growth actually came from.
+ */
+function rotateHubLogIfLarge(logPath: string): void {
+	try {
+		if (statSync(logPath).size < HUB_LOG_MAX_BYTES) {
+			return;
+		}
+	} catch {
+		// No log yet, or it cannot be inspected: nothing to rotate.
+		return;
+	}
+
+	try {
+		// Drop the oldest generation first, then shift the rest down, so
+		// `.1` is always the most recent rotation.
+		rmSync(`${logPath}.${HUB_LOG_KEPT_GENERATIONS}`, { force: true });
+		for (let i = HUB_LOG_KEPT_GENERATIONS - 1; i >= 1; i--) {
+			try {
+				renameSync(`${logPath}.${i}`, `${logPath}.${i + 1}`);
+			} catch {
+				// That generation does not exist yet.
+			}
+		}
+		renameSync(logPath, `${logPath}.1`);
+	} catch {
+		// Rotation is best-effort. A failure here must not stop the daemon from
+		// starting — losing log rotation is far better than losing the hub.
+	}
+}
+
 function openDetachedHubLogFile(): { fd: number; logPath: string } | undefined {
 	try {
 		const logPath = join(resolveClineDataDir(), "logs", "hub-daemon.log");
 		mkdirSync(dirname(logPath), { recursive: true });
+		rotateHubLogIfLarge(logPath);
 		return { fd: openSync(logPath, "a"), logPath };
 	} catch {
 		return undefined;
@@ -166,6 +221,15 @@ function resolveDaemonEntryPath(): string {
 	return fileURLToPath(new URL(`./entry.${extension}`, import.meta.url));
 }
 
+/**
+ * Grace period before an unused auto-spawned hub exits.
+ *
+ * Long enough to survive the gap between one CLI run ending and the next
+ * starting, short enough that a forgotten daemon does not sit there holding a
+ * stale build for the rest of the day.
+ */
+const DEFAULT_HUB_IDLE_SHUTDOWN_MS = 20_000;
+
 function resolveLaunchCommand(
 	workspaceRoot: string,
 	endpoint: HubEndpointOverrides,
@@ -198,6 +262,14 @@ function resolveLaunchCommand(
 			...withResolvedClineBuildEnv(process.env),
 			CLINE_NO_INTERACTIVE: "1",
 			[CLINE_RUN_AS_HUB_DAEMON_ENV]: "1",
+			// A daemon nobody asked for should not outlive the thing that needed
+			// it. This one was spawned on demand, so it exits once its last
+			// client disconnects and no session is still running — which also
+			// means the next run picks up a fresh build instead of silently
+			// reusing the modules this process loaded at startup.
+			CLINE_HUB_IDLE_SHUTDOWN_MS:
+				process.env.CLINE_HUB_IDLE_SHUTDOWN_MS ??
+				String(DEFAULT_HUB_IDLE_SHUTDOWN_MS),
 		},
 	};
 }

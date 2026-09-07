@@ -1,0 +1,124 @@
+---
+title: "Manager Mode"
+sidebarTitle: "Manager Mode"
+description: "Run one model as a manager that coordinates workers on other providers."
+---
+
+<Warning>
+  Applies to the Cline CLI and Hub. Not available in the VS Code or JetBrains extensions.
+</Warning>
+
+Manager mode turns a session into a coordinator. The manager splits the task
+up, sends each piece to a worker, reads what comes back, and decides what
+happens next. It never reads a file or runs a command itself — it has no tools
+for either.
+
+```bash
+cline --manager --provider claude-web "Remove every reference to kanban from this repo."
+```
+
+In the Hub, open the composer settings and turn on **Manager**.
+
+## What the flag changes
+
+Two things, and both are needed for the role to hold:
+
+1. **The system prompt** becomes the manager prompt. It describes how to
+   address a worker and says nothing about files or shells.
+2. **The tools** are reduced to delegation only — the `team_*` tools plus the
+   completion tools. Prompting alone does not work: a model told it has
+   `run_commands` will use it, whatever the prompt says about coordinating.
+
+Manager mode also switches the team tools on, even if agent teams are otherwise
+disabled. A manager with nothing to delegate to is not a manager.
+
+## The two shapes a manager reply can take
+
+Every reply is either delegation or a final answer:
+
+1. One or more `<manager>` blocks, with at most one line of the manager's own
+   before them.
+2. The final answer, ending with `TEAM DONE`.
+
+A reply that is only a status line — "Starting with extractor", no block — has
+delegated nothing, and from the runtime's side it is indistinguishable from a
+finished job. `TEAM DONE` is what separates the two, so a block-less reply
+without it gets one nudge back to the manager rather than ending the run.
+
+## How the manager talks to a worker
+
+The manager writes messages in plain text, not tool calls:
+
+```
+<manager>
+TO: extractor
+Find every line containing "kanban" in this repo and report file:line for each.
+</manager>
+```
+
+`<manager>` and `</manager>` each sit alone on their own line. The `TO:` line
+names one worker. Everything after it is the message, which the worker receives
+as its user message — it sees nothing else of the manager's conversation, so the
+message has to stand on its own.
+
+This shape exists because web chat providers cannot be handed tool schemas the
+way an API model can. Writing prose is what they are good at; the runtime turns
+each block into the `team_run_task` call it would have made anyway.
+
+### Creating a worker
+
+Name a provider, and optionally a model and a role, to bring in a worker that
+does not exist yet:
+
+```
+<manager>
+TO: reader
+PROVIDER: deepseek-web-v2
+ROLE: Reads long documents and pulls out the numbers asked for.
+Open report-2024.pdf and list every revenue figure with its page number.
+</manager>
+```
+
+The worker is spawned and given the task in one step. Use the extra lines only
+the first time a name appears; after that `TO:` alone is enough. A worker's
+model comes from [`team.json`](/cli/team-roster), not from the block.
+
+### Scoping what a worker may do
+
+A `TOOLS:` line grants capability, and the grant lasts until it is changed:
+
+```
+<manager>
+TO: editor
+TOOLS: read_files, editor
+Change the qwen context window from 1000000 to 256000.
+</manager>
+```
+
+A worker with no `editor` cannot edit, whatever its instructions say — which is
+the point. `TOOLS: none` leaves a worker able to report back and nothing else.
+Defaults come from the roster's per-worker `tools` array.
+
+### Continuing or restarting a worker
+
+A follow-up continues the conversation that worker already has, so the manager
+can write "that was not a line count" and be understood. Only a block that
+introduces a worker starts it fresh.
+
+Workers declared in [`team.json`](/cli/team-roster) are listed in the manager's
+prompt at the start of the session, so a roster removes the need to introduce
+them at all.
+
+## Reading a worker's reply
+
+A worker that ends its turn with prose instead of a completion tool call has not
+finished — it stopped, which looks identical from the outside to finishing. The
+reply the manager sees says so explicitly, along with how much of its context
+that worker has used. Both are there so the manager can tell "done" from "ran
+out of steam" and send the worker its next step.
+
+## Finishing
+
+The manager ends the job by replying with plain text and no `<manager>` block.
+A reply with no block is how it signals it is finished, so it should never end a
+turn without one while work is still outstanding.

@@ -361,8 +361,12 @@ export {
 	type DelegatedAgentConnectionConfig,
 	type DelegatedAgentKind,
 	type DelegatedAgentRuntimeConfig,
+	listManagerWorkers,
 	loadConfiguredAgentConfigs,
+	loadTeamRoster,
+	mergeRosterIntoTeammateSpecs,
 	parseConfiguredAgentConfig,
+	resolveTeamRosterSearchPaths,
 	reviveTeamStateDates,
 	type SpawnTeammateOptions,
 	type SubAgentEndContext,
@@ -370,8 +374,10 @@ export {
 	type TaskResult,
 	type TeamEvent,
 	type TeamMemberConfig,
+	type TeamRosterLoadResult,
 	type TeamTeammateRuntimeConfig,
 	toTeamProgressLifecycleEvent,
+	writeTeamRoster,
 } from "./extensions/tools/team";
 export {
 	createAgentHooksExtension,
@@ -649,6 +655,7 @@ export {
 export { ProviderSettingsManager } from "./services/storage/provider-settings-manager";
 export { SqliteSessionStore } from "./services/storage/sqlite-session-store";
 export {
+	createLocalTeamStore,
 	SqliteTeamStore,
 	type SqliteTeamStoreOptions,
 } from "./services/storage/team-store";
@@ -892,6 +899,10 @@ export {
 	fetchClineRecommendedModels,
 } from "./services/llms/cline-recommended-models";
 export {
+	createAgentModelFromConfig,
+	createProvider,
+} from "./services/llms/handler-factory";
+export {
 	clearLiveModelsCatalogCache,
 	clearPrivateModelsCatalogCache,
 	DEFAULT_MODELS_CATALOG_URL,
@@ -943,10 +954,6 @@ export {
 	safeParseSettings,
 	toProviderConfig,
 } from "./services/llms/provider-settings";
-export {
-	createAgentModelFromConfig,
-	createProvider,
-} from "./services/llms/handler-factory";
 export {
 	defineLlmsConfig,
 	loadLlmsConfigFromFile,

@@ -81,9 +81,16 @@ async function main(): Promise<void> {
 
 	const daemonTelemetry = createHubDaemonTelemetry();
 
+	// Auto-spawned daemons shut themselves down once nothing needs them; a hub
+	// started on purpose (`cline hub start`) stays up. The spawner sets this.
+	const idleShutdownMs = Number(process.env.CLINE_HUB_IDLE_SHUTDOWN_MS ?? "");
+	let requestShutdown: (() => void) | undefined;
+
 	let server: Awaited<ReturnType<typeof startHubWebSocketServer>>;
 	try {
 		server = await startHubWebSocketServer({
+			idleShutdownMs: Number.isFinite(idleShutdownMs) ? idleShutdownMs : 0,
+			onIdle: () => requestShutdown?.(),
 			host: endpoint.host,
 			port: endpoint.port,
 			pathname: endpoint.pathname,
@@ -108,6 +115,9 @@ async function main(): Promise<void> {
 		await server.close();
 		await daemonTelemetry.dispose().catch(() => undefined);
 		process.exit(0);
+	};
+	requestShutdown = () => {
+		void shutdown();
 	};
 
 	let fatalShutdownStarted = false;

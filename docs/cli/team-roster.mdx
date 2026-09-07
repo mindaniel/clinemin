@@ -1,0 +1,95 @@
+---
+title: "Team Roster"
+sidebarTitle: "Team Roster"
+description: "Declare a team's workers and pin each one to its own provider and model."
+---
+
+<Warning>
+  Applies to the Cline SDK, CLI, and Hub. Not available in the VS Code or JetBrains extensions.
+</Warning>
+
+A roster declares which workers a team runs with and, for each one, which
+provider and model it talks to. Without a roster the lead spawns workers itself
+during the conversation, which means the shape of the team lives in one chat
+transcript — awkward for a long job resumed across sessions.
+
+## File location
+
+The first file found wins:
+
+1. `<workspace>/.cline/team.json`
+2. `~/.cline/team.json`
+
+Workspace beats user-global, so a repo can pin the exact line-up its task needs
+while a user who works the same way everywhere writes it once.
+
+## Format
+
+```json
+{
+  "version": 1,
+  "teamName": "annual-reports",
+  "workers": [
+    {
+      "agentId": "extractor",
+      "rolePrompt": "Read annual reports and extract the requested figures. Cite the page for every number.",
+      "providerId": "deepseek-web-v2"
+    },
+    {
+      "agentId": "checker",
+      "rolePrompt": "Verify extracted figures against the source document."
+    }
+  ]
+}
+```
+
+| Field | Required | Meaning |
+| --- | --- | --- |
+| `version` | yes | Must be `1`. |
+| `teamName` | no | Label for the team. |
+| `workers[].agentId` | yes | How the lead addresses this worker. Letters, digits, `.`, `_`, `-`. |
+| `workers[].rolePrompt` | yes | System prompt describing what the worker is for. |
+| `workers[].providerId` | no | Provider for this worker. Omit to inherit the lead's. |
+| `workers[].modelId` | no | Model for this worker. Omit to inherit the lead's. |
+| `workers[].maxIterations` | no | Per-worker iteration cap. |
+
+Parsing is strict: an unknown key, a duplicate `agentId`, or a missing required
+field is rejected with a message rather than ignored. A typo like `provider`
+instead of `providerId` would otherwise fall back to the lead's provider with
+nothing to show for it.
+
+## Mixing providers
+
+The lead and each worker can run on different providers. A common shape is a
+strong model coordinating cheaper or differently-capable workers:
+
+```json
+{
+  "version": 1,
+  "workers": [
+    { "agentId": "extractor", "rolePrompt": "Extract figures.", "providerId": "deepseek-web-v2" },
+    { "agentId": "summarizer", "rolePrompt": "Summarize findings.", "providerId": "qwen-web" }
+  ]
+}
+```
+
+The lead's provider comes from the session itself (`--provider`, or the Hub's
+model picker); the roster only sets the workers.
+
+## Precedence with a resumed team
+
+Persistence wins. If a worker already exists in the team's stored state, its
+persisted spec is used and the roster entry for that `agentId` is ignored. A
+running worker carries conversation history, and re-pointing its provider
+mid-job would strand that history. To change a live worker, shut it down and let
+it be respawned from the roster.
+
+## Editing from the Hub
+
+The Hub's **Team** view reads and writes the same file. It also shows live
+workers with their providers, the shared task board, and recent delegated runs —
+including runs that stopped without confirming completion.
+
+## Related
+
+- [Agent Teams](/cli/agent-teams) — starting and resuming a team.

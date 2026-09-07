@@ -38,9 +38,6 @@ You are an expert AI coding agent. Your goal is to autonomously complete coding 
 - **run_commands**: Run non-interactive shell commands (PowerShell). Use flags like \`--no-pager\` to avoid hanging. Batch independent commands.
   parameters: {"type":"object","properties":{"commands":{"type":"array","items":{"type":"string"}}},"required":["commands"],"additionalProperties":false}
 
-- **fetch_web_content**: Fetch and analyze web content. Batch independent URLs in one call.
-  parameters: {"type":"object","properties":{"requests":{"type":"array","items":{"type":"object","properties":{"url":{"type":"string"},"prompt":{"type":"string","minLength":2}},"required":["url","prompt"],"additionalProperties":false}}},"required":["requests"],"additionalProperties":false}
-
 - **editor**: Precise file edits. Replace \`old_text\` with \`new_text\`, create file if missing, or insert at \`insert_line\`. Keep chunks small.
   parameters: {"type":"object","properties":{"path":{"type":"string"},"old_text":{"anyOf":[{"type":"string"},{"type":"null"}]},"new_text":{"type":"string"},"insert_line":{"anyOf":[{"type":"integer"},{"type":"null"}]}},"required":["path","new_text"],"additionalProperties":false}
 
@@ -103,6 +100,9 @@ You are an expert AI coding agent. Your goal is to autonomously complete coding 
 
 - **team_list_outcomes**: List team outcomes.
   parameters: {"type":"object","properties":{},"additionalProperties":false}
+
+- **fetch_web_content**: Fetch and analyze web content. Batch independent URLs in one call.
+  parameters: {"type":"object","properties":{"requests":{"type":"array","items":{"type":"object","properties":{"url":{"type":"string"},"prompt":{"type":"string","minLength":2}},"required":["url","prompt"],"additionalProperties":false}}},"required":["requests"],"additionalProperties":false}
 
 {{CLINE_RULES}}
 {{CLINE_METADATA}}`;

@@ -59,6 +59,7 @@ import {
 } from "../../services/telemetry/core-events";
 import {
 	getMessageBuilderOptionsFromEnv,
+	MANAGER_MAX_TOOL_RESULT_CHARS,
 	MessageBuilder,
 } from "../../session/services/message-builder";
 import { ConversationStore } from "../../session/stores/conversation-store";
@@ -375,7 +376,16 @@ export class SessionRuntime {
 			deps.createAgentRuntimeImpl ?? createAgentRuntime;
 
 		this.conversation = new ConversationStore(config.initialMessages);
-		this.messageBuilder = new MessageBuilder(getMessageBuilderOptionsFromEnv());
+		const messageBuilderOptions = getMessageBuilderOptionsFromEnv();
+		this.messageBuilder = new MessageBuilder({
+			...messageBuilderOptions,
+			// A manager reads whole reports written by its workers, so the default
+			// per-result cap cuts the middle out of the one thing it has to judge.
+			// An explicit env override still wins.
+			maxToolResultChars:
+				messageBuilderOptions.maxToolResultChars ??
+				(config.managerMode ? MANAGER_MAX_TOOL_RESULT_CHARS : undefined),
+		});
 		this.contributionRegistry = createContributionRegistry<
 			AgentExtension,
 			AgentTool,
@@ -495,6 +505,17 @@ export class SessionRuntime {
 			}
 		}
 		this.config = { ...this.config, tools: merged };
+	}
+
+	/**
+	 * Replace the tool set for every subsequent turn.
+	 *
+	 * Unlike `addTools` this can take capability away, which is what a manager
+	 * re-scoping a worker needs: a worker granted `editor` for one job has to be
+	 * able to lose it again for the next.
+	 */
+	setTools(tools: AgentTool[]): void {
+		this.config = { ...this.config, tools: [...tools] };
 	}
 
 	/** Mutate provider / reasoning fields for subsequent runs. */
@@ -677,6 +698,9 @@ export class SessionRuntime {
 	// -------------------------------------------------------------------
 
 	private async composeSystemPrompt(): Promise<string> {
+		if (this.config.managerMode || this.config.skipProjectRules) {
+			return this.config.systemPrompt;
+		}
 		const rules: string[] = [];
 		for (const rule of this.contributionRegistry.getRegisteredRules()) {
 			const content = await resolveRuleContent(rule);

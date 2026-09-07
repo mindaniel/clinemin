@@ -711,6 +711,26 @@ export interface AgentConfig {
 
 	/** System prompt for the agent */
 	systemPrompt: string;
+	/**
+	 * This agent is a team manager: it coordinates workers and does none of the
+	 * work itself.
+	 *
+	 * Carried on the config so the orchestrator can tell a manager's prompt from
+	 * any other. Project rules are not appended to it — they describe how to
+	 * edit this repo, which is the workers' job, and on a manager they are pure
+	 * bulk in front of the actual instructions.
+	 */
+	managerMode?: boolean;
+	/**
+	 * Skip the project rules the runtime would otherwise append.
+	 *
+	 * Set for an agent that cannot change anything: `.clinerules` and
+	 * `AGENTS.md` are about how to modify this repo — which package manager to
+	 * use, what to rebuild, what not to commit — so for a read-only worker they
+	 * are a wall of instruction it can never act on, in front of the two lines
+	 * that are its actual job.
+	 */
+	skipProjectRules?: boolean;
 	/** Tools available to the agent */
 	tools: AgentTool[];
 	/**
@@ -902,6 +922,7 @@ export const AgentConfigSchema = z.object({
 
 	// Agent Behavior
 	systemPrompt: z.string(),
+	managerMode: z.boolean().optional(),
 	tools: z.array(z.custom<AgentTool>()),
 	maxIterations: z.number().positive().optional(),
 	maxParallelToolCalls: z.number().int().positive().default(8),

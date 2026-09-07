@@ -29,6 +29,30 @@ export interface HubWebSocketServerOptions {
 	 */
 	cronOptions?: Omit<CronServiceOptions, "runtimeHandlers">;
 	/**
+	 * Shut the hub down once nothing is using it.
+	 *
+	 * The daemon outlives the CLI that spawned it, which is what lets a
+	 * background session keep running after you close the terminal. The cost is
+	 * that it also outlives a rebuild: `bun run build:sdk` compiles new code
+	 * while the running daemon keeps serving the modules it loaded at startup,
+	 * so the next run silently tests the old build.
+	 *
+	 * With this set, the hub exits once its last client disconnects and no
+	 * session is still running — so closing the terminal is enough, and the next
+	 * run starts a daemon on the new build. A session that is still working
+	 * keeps it alive, so detached sessions are unaffected.
+	 *
+	 * Milliseconds to wait after the last disconnect. Omit or 0 to stay up
+	 * forever, which is what an explicitly started hub does.
+	 */
+	idleShutdownMs?: number;
+	/**
+	 * Called when `idleShutdownMs` elapses with nothing left to serve. The
+	 * server does not exit the process itself — the daemon entry point owns
+	 * that, so it can flush telemetry first.
+	 */
+	onIdle?: () => void;
+	/**
 	 * Custom `fetch` implementation forwarded to the internally-constructed
 	 * `LocalRuntimeHost` that executes incoming `session.create` traffic.
 	 * Used by the AI gateway providers for every session that runs inside

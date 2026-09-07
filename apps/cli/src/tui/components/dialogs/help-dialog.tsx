@@ -171,6 +171,12 @@ const HELP_ROWS: HelpRow[] = [
 	},
 	{
 		kind: "entry",
+		id: "c-manager",
+		key: "/manager",
+		desc: "Delegate the task to workers (start of session only)",
+	},
+	{
+		kind: "entry",
 		id: "c-history",
 		key: "/history",
 		desc: "View and resume past sessions",

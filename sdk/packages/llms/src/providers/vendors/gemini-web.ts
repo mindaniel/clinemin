@@ -45,16 +45,26 @@ import {
 	abortRace,
 	throwIfAborted,
 } from "./tool-pipeline/abort";
+import { claimBrowserPort } from "./tool-pipeline/browser-claims";
+import { withBrowserLock } from "./tool-pipeline/browser-lock";
 import {
 	browserNotFoundMessage,
 	findChromePath,
 } from "./tool-pipeline/browser-path";
 import { registerLaunchedBrowser } from "./tool-pipeline/browser-processes";
 import { resolveActiveProfilePaths } from "./tool-pipeline/browser-profiles";
-import { resolveChatKey } from "./tool-pipeline/chat-target";
+import { retryOnMissingExecutionContext } from "./tool-pipeline/cdp-execution-context";
+import { getBoundChatKey, resolveChatKey } from "./tool-pipeline/chat-target";
+import { logConversationTurn } from "./tool-pipeline/conversation-logger";
 import { consumePendingInjectedReply } from "./tool-pipeline/injected-reply";
 import { parseInvokeStyleToolCalls } from "./tool-pipeline/invoke-parser";
+import { parseManagerBlocks } from "./tool-pipeline/manager-block";
+import {
+	parsePatchBlocks,
+	unappliedPatchNotice,
+} from "./tool-pipeline/patch-block";
 import { stripPreviousUserBlock } from "./tool-pipeline/previous-user-dedupe";
+import { applySimpleWebSystemPrompt } from "./tool-pipeline/simple-system-prompt";
 import { validateToolCalls } from "./tool-pipeline/tool-dispatcher";
 import type { ProviderFactoryResult } from "./types";
 
@@ -267,7 +277,23 @@ class CdpClient {
 		});
 	}
 
+	// Wrapped so a page that is mid-navigation — no execution context yet —
+	// waits the moment out instead of failing the turn with nothing typed.
+	// See tool-pipeline/cdp-execution-context.ts.
 	send(method: string, params: any = {}, sessionId?: string): Promise<any> {
+		return retryOnMissingExecutionContext(
+			method,
+			() => this.sendOnce(method, params, sessionId),
+			sleep,
+			"gemini-web",
+		);
+	}
+
+	private sendOnce(
+		method: string,
+		params: any = {},
+		sessionId?: string,
+	): Promise<any> {
 		const id = ++this.id;
 		return new Promise((resolve, reject) => {
 			this.pending.set(id, { resolve, reject });
@@ -383,6 +409,10 @@ async function connectBrowser(
 	const connectTimeoutMs = Math.max(config.launchTimeoutMs, 30000);
 
 	if (await isEndpointUp(config.debugPort)) {
+		// Attaching to a browser someone else launched. We do not own it and
+		// must never kill it, but the claim tells whoever DOES own it not to
+		// close it out from under this session. See browser-claims.ts.
+		claimBrowserPort(config.debugPort);
 		activeCdp = await connectCdp(config.debugPort, connectTimeoutMs);
 		activeCdpKey = key;
 		return activeCdp;
@@ -988,6 +1018,7 @@ async function sendAndCapture(
 	finishReason: LanguageModelV2FinishReason;
 	usage: { inputTokens: number; outputTokens: number; totalTokens: number };
 	rateLimited?: boolean;
+	rawBody: string;
 }> {
 	const debugLog = (msg: string) => {
 		if (config.debug) logger?.debug(`[gemini-web] ${msg}`);
@@ -1130,7 +1161,13 @@ async function sendAndCapture(
 					"Consider raising GEMINI_WEB_MIN/MAX_SEND_DELAY_MS.",
 			);
 		}
-		return { text: fullText, finishReason, usage, rateLimited };
+		return {
+			text: fullText,
+			finishReason,
+			usage,
+			rateLimited,
+			rawBody: capturedBody,
+		};
 	} finally {
 		// Unregister only this turn's listeners. Leave the Network domain
 		// enabled for the session — disabling it here was the other half of the
@@ -1169,8 +1206,13 @@ function buildGeminiPrompt(
 	reInjectSystem: boolean,
 	preserveCompactionContext: boolean,
 ): string {
-	const conversation = buildLeanConversation(prompt, preserveCompactionContext);
-	const systemMessage = prompt.find((m) => m.role === "system");
+	const effectivePrompt = applySimpleWebSystemPrompt(prompt);
+
+	const conversation = buildLeanConversation(
+		effectivePrompt,
+		preserveCompactionContext,
+	);
+	const systemMessage = effectivePrompt.find((m) => m.role === "system");
 	const alreadyHasSystem = conversation.some((m) => m.role === "system");
 	const promptOptions = {
 		historyWindow: 10,
@@ -1397,6 +1439,34 @@ function parseCapturedReply(
 	}
 
 	const toolNames = functionTools.map((t) => t.name);
+
+	// `<manager>` blocks come first, and only when the session actually has the
+	// team tool to dispatch them with. A lead on a web provider is prompted to
+	// write delegations as prose rather than tool calls - see
+	// `tool-pipeline/manager-block.ts` for why that framing is what keeps it out
+	// of tool machinery it cannot use.
+	if (toolNames.includes("team_run_task")) {
+		const manager = parseManagerBlocks(text, {
+			// Only when the session actually has the shell tool to run it with.
+			allowCommands: toolNames.includes("run_commands"),
+		});
+		if (manager.delegations.length > 0 || manager.problems.length > 0) {
+			const retryPrompt =
+				manager.problems.length > 0 ? manager.problems.join("\n") : undefined;
+			return {
+				text: retryPrompt
+					? `${manager.cleanedContent}\n\n${retryPrompt}`.trim()
+					: manager.cleanedContent,
+				toolCalls: manager.delegations.map((delegation) => ({
+					name: delegation.name,
+					arguments: delegation.arguments as Record<string, unknown>,
+				})),
+				usage,
+				retryPrompt,
+			};
+		}
+	}
+
 	const { cleanedContent, toolCalls } = parseDeepSeekToolCalls(text, toolNames);
 	const looseCalls =
 		toolCalls.length === 0
@@ -1433,6 +1503,32 @@ ${retryPrompt}`.trim()
 			toolCalls: validatedInvoked,
 			usage,
 			retryPrompt,
+		};
+	}
+
+	// A bare `*** Begin Patch` block is `apply_patch` written as text, which is
+	// the only way to send a patch body through a chat box — and exactly what
+	// SIMPLE_WEB_SYSTEM_PROMPT asks this provider for. It must run BEFORE the
+	// fallback below, which reads any code fence as a file write. Gated on the
+	// session actually having the tool, so a provider still on `editor` is
+	// untouched. See tool-pipeline/patch-block.ts.
+	const patched = parsePatchBlocks(cleanedContent, toolNames);
+	const patchNotice = unappliedPatchNotice(cleanedContent, toolNames);
+	if (patchNotice) {
+		return {
+			text: `${cleanedContent}
+
+${patchNotice}`.trim(),
+			toolCalls: [],
+			usage,
+			retryPrompt: patchNotice,
+		};
+	}
+	if (patched.toolCalls.length > 0) {
+		return {
+			text: patched.cleanedContent,
+			toolCalls: patched.toolCalls,
+			usage,
 		};
 	}
 
@@ -1584,7 +1680,14 @@ function createGeminiWebModel(
 			runtimeConfig.chatsFile,
 			chatKey,
 		);
-		if (!existingGeminiSession && chatKey.length !== 16) {
+		// Only a sticky `/findchat` binding holds a real web conversation id; a
+		// hash-derived key never does. This used to test `chatKey.length !== 16`,
+		// but `chatKeyFromPrompt` returns 24 characters, so EVERY new chat took
+		// this branch: the hash was navigated to as though it were a conversation
+		// id (a 404 page), and then recorded, so the same dead chat came back on
+		// every later turn. Ask where the key came from instead of guessing from
+		// its shape.
+		if (!existingGeminiSession && getBoundChatKey("gemini-web") === chatKey) {
 			existingGeminiSession = chatKey;
 			recordGeminiChatSession(runtimeConfig.chatsFile, chatKey, chatKey);
 		}
@@ -1661,6 +1764,19 @@ function createGeminiWebModel(
 			debugLog(`Received response (${result.text.length} chars)`);
 
 			parsed = parseCapturedReply(result.text, options, result.usage);
+
+			// Log raw and parsed response per conversation
+			try {
+				logConversationTurn("gemini-web", chatKey, result.rawBody, {
+					text: parsed.text,
+					toolCalls: parsed.toolCalls.length > 0 ? parsed.toolCalls : undefined,
+					usage: result.usage,
+					finishReason: result.finishReason,
+				});
+			} catch (logErr) {
+				// Ignore logging failures
+			}
+
 			if (
 				parsed.toolCalls.length === 0 &&
 				parsed.retryPrompt &&
@@ -1703,7 +1819,11 @@ function createGeminiWebModel(
 
 		async doGenerate(options: LanguageModelV2CallOptions) {
 			try {
-				const { text, toolCalls, usage } = await runCompletion(options);
+				const { text, toolCalls, usage } = await withBrowserLock(
+					"gemini-web",
+					options.abortSignal,
+					() => runCompletion(options),
+				);
 
 				const content: LanguageModelV2Content[] = [];
 				if (text) content.push({ type: "text", text });
@@ -1730,7 +1850,11 @@ function createGeminiWebModel(
 		},
 
 		async doStream(options: LanguageModelV2CallOptions) {
-			const { text, toolCalls, usage } = await runCompletion(options);
+			const { text, toolCalls, usage } = await withBrowserLock(
+				"gemini-web",
+				options.abortSignal,
+				() => runCompletion(options),
+			);
 			const id = `gemini-web-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
 
 			const parts: LanguageModelV2StreamPart[] = [
