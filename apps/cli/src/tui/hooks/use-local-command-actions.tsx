@@ -564,6 +564,21 @@ export function useLocalCommandActions(input: {
 		const providerIds = Llms.getProviderIds().sort((a, b) =>
 			a.localeCompare(b),
 		);
+		// Resolved up front rather than per keystroke inside the dialog: the model
+		// registry is a local cache, so this is cheap, and it keeps the dialog
+		// itself synchronous — no half-drawn model list to select the wrong row in.
+		const modelsByProvider: Record<string, string[]> = {};
+		await Promise.all(
+			providerIds.map(async (id) => {
+				try {
+					modelsByProvider[id] = Object.keys(
+						await Llms.getModelsForProvider(id),
+					).sort((a, b) => a.localeCompare(b));
+				} catch {
+					modelsByProvider[id] = [];
+				}
+			}),
+		);
 		const chosen = await dialog.choice<WorkersDialogResult>({
 			size: "large",
 			content: (ctx: ChoiceContext<WorkersDialogResult>) => (
@@ -571,6 +586,7 @@ export function useLocalCommandActions(input: {
 					{...ctx}
 					initialWorkers={loaded.roster?.workers ?? []}
 					providerIds={providerIds}
+					modelsByProvider={modelsByProvider}
 					rosterPath={loaded.path ?? rosterPath}
 				/>
 			),

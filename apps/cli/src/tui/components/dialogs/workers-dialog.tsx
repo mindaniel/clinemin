@@ -1,94 +1,64 @@
-import { shortProviderName, type TeamRosterWorker } from "@cline/shared";
+import type { TeamRosterWorker } from "@cline/shared";
 import type { ChoiceContext } from "@opentui-ui/dialog";
 import { useDialogKeyboard } from "@opentui-ui/dialog/react";
-import { useState } from "react";
+import { useMemo, useState } from "react";
 import { palette } from "../../palette";
 import {
 	getSearchableListRowsWindow,
 	type SearchableItem,
 	useSearchableList,
 } from "../searchable-list";
+import {
+	ACTION_DELETE,
+	ACTION_MODEL,
+	ACTION_PROVIDER,
+	ACTION_RENAME,
+	ACTION_TOOLS,
+	applyModel,
+	applyProvider,
+	applyToolPreset,
+	buildActionRows,
+	buildModelRows,
+	buildProviderRows,
+	buildToolRows,
+	buildWorker,
+	buildWorkerRows,
+	ROW_ADD,
+	ROW_BACK,
+	ROW_INHERIT,
+	ROW_SAVE,
+	renameWorker,
+	type WorkersStep,
+} from "./workers-dialog-helpers";
 
-/**
- * What a worker is allowed to do, as a few named settings.
- *
- * The roster stores a list of tool names, but picking tools one at a time in a
- * dialog is fiddly and gets it wrong in the dangerous direction — the whole
- * point of scoping is that a worker asked to survey a repo cannot decide to
- * delete half of it. Three presets cover what the roles actually are, and
- * `team.json` is still there for anything finer.
- */
-export const WORKER_TOOL_PRESETS = [
-	{
-		id: "read",
-		label: "read-only",
-		tools: ["read_files", "search_codebase"],
-		rolePrompt:
-			"Reads files and reports exactly what is in them. Quote the line and give file:line for every claim. You cannot edit anything.",
-	},
-	{
-		id: "edit",
-		label: "read + edit",
-		tools: ["read_files", "search_codebase", "editor"],
-		rolePrompt:
-			"Follows the manager's instructions and edits code. Read a file before changing it, and report what you changed with file:line.",
-	},
-	{
-		id: "full",
-		label: "read + edit + shell",
-		tools: ["read_files", "search_codebase", "editor", "run_commands"],
-		rolePrompt:
-			"Carries out the manager's instructions, including running commands. Report what you ran and what it produced.",
-	},
-	{
-		id: "web",
-		label: "web lookup",
-		tools: ["fetch_web_content", "search_codebase"],
-		rolePrompt:
-			"Looks things up on the web and reports what the source says, with the URL for every claim.",
-	},
-] as const;
-
-export type WorkerToolPreset = (typeof WORKER_TOOL_PRESETS)[number];
-
-/** Which preset a worker's tool list corresponds to, if any. */
-export function presetForTools(
-	tools: string[] | undefined,
-): WorkerToolPreset | undefined {
-	if (!tools) {
-		return undefined;
-	}
-	const key = [...tools].sort().join(",");
-	return WORKER_TOOL_PRESETS.find(
-		(preset) => [...preset.tools].sort().join(",") === key,
-	);
-}
-
-function describeTools(tools: string[] | undefined): string {
-	if (!tools) {
-		return "every tool (unscoped)";
-	}
-	if (tools.length === 0) {
-		return "nothing but reporting back";
-	}
-	return presetForTools(tools)?.label ?? tools.join(", ");
-}
+export {
+	presetForTools,
+	WORKER_TOOL_PRESETS,
+	type WorkerToolPreset,
+} from "./workers-dialog-helpers";
 
 export type WorkersDialogResult = {
 	workers: TeamRosterWorker[];
 };
 
+const YES = "+yes";
+const NO = "+no";
+
 /**
  * Dialog content for `/workers`: the roster, editable in place.
  *
- * Enter cycles a worker's provider, `t` cycles what it may do, `d` deletes it,
- * and typing a name then pressing `n` adds one. `s` saves; Escape leaves the
- * file alone.
+ * Every action is a row you select with Enter, and no letter key does anything.
+ * The previous version bound `n`, `d`, `t` and `s` to add/delete/tools/save
+ * while the same keystrokes were also going into the name field, so typing a
+ * name like `deepseek` deleted a worker and saved the file on the way past. A
+ * dialog cannot have both a text field and single-letter commands; the list is
+ * the command surface, and the text box only ever filters or names.
  */
 export function WorkersDialogContent(
 	props: ChoiceContext<WorkersDialogResult> & {
 		initialWorkers: TeamRosterWorker[];
 		providerIds: string[];
+		modelsByProvider: Record<string, string[]>;
 		rosterPath: string;
 	},
 ) {
@@ -98,143 +68,226 @@ export function WorkersDialogContent(
 		dialogId,
 		initialWorkers,
 		providerIds,
+		modelsByProvider,
 		rosterPath,
 	} = props;
 	const [workers, setWorkers] = useState<TeamRosterWorker[]>(initialWorkers);
-	const [confirmDelete, setConfirmDelete] = useState<string | null>(null);
+	const [step, setStep] = useState<WorkersStep>({ kind: "list" });
 	const [dirty, setDirty] = useState(false);
+	const [nameDraft, setNameDraft] = useState("");
+	const [error, setError] = useState<string | undefined>();
 
-	const items: SearchableItem[] = workers.map((worker) => ({
-		key: worker.agentId,
-		label: `${worker.agentId} — ${worker.providerId ?? "lead's provider"} — ${describeTools(worker.tools)}`,
-		section: "Workers",
-		searchText: `${worker.agentId} ${worker.providerId ?? ""}`,
-	}));
+	const focusedWorker =
+		"agentId" in step && step.agentId
+			? workers.find((worker) => worker.agentId === step.agentId)
+			: undefined;
+
+	const items: SearchableItem[] = useMemo(() => {
+		switch (step.kind) {
+			case "list":
+				return buildWorkerRows(workers, dirty);
+			case "actions":
+				return focusedWorker ? buildActionRows(focusedWorker) : [];
+			case "provider":
+				return buildProviderRows(providerIds, focusedWorker?.providerId);
+			case "model":
+				return buildModelRows(
+					modelsByProvider[step.providerId] ?? [],
+					focusedWorker?.modelId,
+				);
+			case "tools":
+				return buildToolRows(focusedWorker?.tools);
+			case "delete":
+				return [
+					{ key: NO, label: "No, keep it" },
+					{ key: YES, label: `Yes, remove ${step.agentId}` },
+				];
+			case "rename":
+				return [];
+		}
+	}, [step, workers, dirty, focusedWorker, providerIds, modelsByProvider]);
+
 	const list = useSearchableList(items);
 
-	const updateSelected = (
+	const goTo = (next: WorkersStep): void => {
+		setError(undefined);
+		list.setSearch("");
+		setStep(next);
+	};
+
+	const editWorker = (
+		agentId: string,
 		change: (worker: TeamRosterWorker) => TeamRosterWorker,
 	): void => {
-		const selected = list.selectedItem?.key;
-		if (!selected) {
-			return;
-		}
 		setDirty(true);
 		setWorkers((current) =>
 			current.map((worker) =>
-				worker.agentId === selected ? change(worker) : worker,
+				worker.agentId === agentId ? change(worker) : worker,
 			),
 		);
 	};
 
-	useDialogKeyboard(async (key) => {
-		if (confirmDelete) {
-			if (key.name === "y") {
-				setDirty(true);
-				setWorkers((current) =>
-					current.filter((worker) => worker.agentId !== confirmDelete),
-				);
+	const select = (key: string): void => {
+		switch (step.kind) {
+			case "list": {
+				if (key === ROW_SAVE) {
+					resolve({ workers });
+					return;
+				}
+				if (key === ROW_ADD) {
+					goTo({ kind: "provider", agentId: null });
+					return;
+				}
+				goTo({ kind: "actions", agentId: key });
+				return;
 			}
-			setConfirmDelete(null);
+			case "actions": {
+				if (key === ROW_BACK) {
+					goTo({ kind: "list" });
+					return;
+				}
+				if (key === ACTION_PROVIDER) {
+					goTo({ kind: "provider", agentId: step.agentId });
+					return;
+				}
+				if (key === ACTION_MODEL) {
+					const providerId = focusedWorker?.providerId;
+					if (!providerId) {
+						// Without a provider there is no model list to show, and picking a
+						// model that belongs to some other provider is exactly the silent
+						// mismatch this rewrite is meant to remove.
+						setError("Pick a provider first — models are per provider.");
+						return;
+					}
+					goTo({ kind: "model", agentId: step.agentId, providerId });
+					return;
+				}
+				if (key === ACTION_TOOLS) {
+					const providerId = focusedWorker?.providerId;
+					goTo({
+						kind: "tools",
+						agentId: step.agentId,
+						providerId: providerId ?? "",
+						modelId: focusedWorker?.modelId,
+					});
+					return;
+				}
+				if (key === ACTION_RENAME) {
+					setNameDraft(step.agentId);
+					goTo({ kind: "rename", agentId: step.agentId });
+					return;
+				}
+				if (key === ACTION_DELETE) {
+					goTo({ kind: "delete", agentId: step.agentId });
+				}
+				return;
+			}
+			case "provider": {
+				if (step.agentId === null) {
+					goTo({ kind: "model", agentId: null, providerId: key });
+					return;
+				}
+				const target = workers.find(
+					(worker) => worker.agentId === step.agentId,
+				);
+				if (!target) {
+					goTo({ kind: "list" });
+					return;
+				}
+				const updated = applyProvider(
+					target,
+					key,
+					workers.map((worker) => worker.agentId),
+				);
+				editWorker(step.agentId, () => updated);
+				goTo({ kind: "actions", agentId: updated.agentId });
+				return;
+			}
+			case "model": {
+				const modelId = key === ROW_INHERIT ? undefined : key;
+				if (step.agentId === null) {
+					goTo({
+						kind: "tools",
+						agentId: null,
+						providerId: step.providerId,
+						modelId,
+					});
+					return;
+				}
+				editWorker(step.agentId, (worker) => applyModel(worker, modelId));
+				goTo({ kind: "actions", agentId: step.agentId });
+				return;
+			}
+			case "tools": {
+				if (step.agentId === null) {
+					const created = buildWorker({
+						providerId: step.providerId,
+						modelId: step.modelId,
+						presetId: key,
+						taken: workers.map((worker) => worker.agentId),
+					});
+					setDirty(true);
+					setWorkers((current) => [...current, created]);
+					goTo({ kind: "actions", agentId: created.agentId });
+					return;
+				}
+				editWorker(step.agentId, (worker) => applyToolPreset(worker, key));
+				goTo({ kind: "actions", agentId: step.agentId });
+				return;
+			}
+			case "delete": {
+				if (key === YES) {
+					setDirty(true);
+					setWorkers((current) =>
+						current.filter((worker) => worker.agentId !== step.agentId),
+					);
+					goTo({ kind: "list" });
+					return;
+				}
+				goTo({ kind: "actions", agentId: step.agentId });
+				return;
+			}
+			case "rename":
+				return;
+		}
+	};
+
+	useDialogKeyboard(async (key) => {
+		if (key.name === "escape") {
+			// Escape walks back up the wizard so a mis-step costs one keypress, and
+			// only leaves the dialog from the top. Unsaved edits die with it, which
+			// is why the list step says so.
+			if (step.kind === "list") {
+				dismiss();
+				return;
+			}
+			goTo(
+				"agentId" in step && step.agentId
+					? { kind: "actions", agentId: step.agentId }
+					: { kind: "list" },
+			);
 			return;
 		}
 
-		if (key.name === "escape") {
-			dismiss();
-			return;
-		}
-		if (key.name === "s") {
-			resolve({ workers });
-			return;
-		}
-		if (key.name === "n") {
-			// The search box doubles as the name field, the same trick `/findchat`
-			// uses to import a chat id: one input, no separate form.
-			const agentId = list.search.trim();
-			if (!agentId || !/^[a-zA-Z0-9._-]+$/.test(agentId)) {
+		if (key.name === "return" || key.name === "enter") {
+			if (step.kind === "rename") {
+				const result = renameWorker(workers, step.agentId, nameDraft);
+				if (!result.ok) {
+					setError(result.error);
+					return;
+				}
+				setDirty(true);
+				setWorkers(result.workers);
+				goTo({ kind: "actions", agentId: nameDraft.trim() });
 				return;
 			}
-			if (workers.some((worker) => worker.agentId === agentId)) {
-				return;
-			}
-			const preset = WORKER_TOOL_PRESETS[0];
-			setDirty(true);
-			setWorkers((current) => [
-				...current,
-				{
-					agentId,
-					rolePrompt: preset.rolePrompt,
-					// Typing a model name is the normal way to add a worker, so honour
-					// it — by its short name or its full provider id — instead of
-					// dropping the user on whatever sorts first.
-					providerId:
-						providerIds.find(
-							(id) => id === agentId || shortProviderName(id) === agentId,
-						) ?? providerIds[0],
-					tools: [...preset.tools],
-				},
-			]);
-			list.setSearch("");
-			return;
-		}
-		if (key.name === "d") {
 			const selected = list.selectedItem?.key;
 			if (selected) {
-				setConfirmDelete(selected);
-				list.setSearch("");
+				select(selected);
 			}
 			return;
 		}
-		if (key.name === "t") {
-			updateSelected((worker) => {
-				const currentIndex = WORKER_TOOL_PRESETS.findIndex(
-					(preset) => preset.id === presetForTools(worker.tools)?.id,
-				);
-				const next =
-					WORKER_TOOL_PRESETS[
-						(currentIndex + 1) % WORKER_TOOL_PRESETS.length
-					] ?? WORKER_TOOL_PRESETS[0];
-				return {
-					...worker,
-					tools: [...next.tools],
-					// The role prompt follows the preset unless it has been customised
-					// in team.json — replacing a hand-written one here would silently
-					// throw away the thing the user cared most about.
-					rolePrompt: WORKER_TOOL_PRESETS.some(
-						(preset) => preset.rolePrompt === worker.rolePrompt,
-					)
-						? next.rolePrompt
-						: worker.rolePrompt,
-				};
-			});
-			return;
-		}
-		if (key.name === "return") {
-			updateSelected((worker) => {
-				if (providerIds.length === 0) {
-					return worker;
-				}
-				const currentIndex = providerIds.indexOf(worker.providerId ?? "");
-				const nextProviderId =
-					providerIds[(currentIndex + 1) % providerIds.length];
-				return {
-					...worker,
-					providerId: nextProviderId,
-					// A manager addresses a worker by the short model name (`TO: qwen`),
-					// so a worker named after its provider has to keep that name when
-					// the provider changes — otherwise the roster still says "qwen" and
-					// the messages go to a Gemini chat. A hand-picked name is left
-					// alone, the same way a hand-written role prompt is below.
-					agentId:
-						worker.providerId &&
-						worker.agentId === shortProviderName(worker.providerId) &&
-						nextProviderId
-							? shortProviderName(nextProviderId)
-							: worker.agentId,
-				};
-			});
-			return;
-		}
+
 		if (key.name === "up" || (key.ctrl && key.name === "p")) {
 			list.moveUp();
 			return;
@@ -250,31 +303,60 @@ export function WorkersDialogContent(
 		10,
 	);
 
+	const heading = (() => {
+		switch (step.kind) {
+			case "list":
+				return `Workers (${workers.length})${dirty ? " — unsaved" : ""}`;
+			case "actions":
+				return `${step.agentId}`;
+			case "provider":
+				return step.agentId === null
+					? "New worker — pick a provider"
+					: `${step.agentId} — pick a provider`;
+			case "model":
+				return `${step.agentId ?? "New worker"} — pick a model on ${step.providerId}`;
+			case "tools":
+				return `${step.agentId ?? "New worker"} — what may it do?`;
+			case "rename":
+				return `Rename ${step.agentId}`;
+			case "delete":
+				return `Remove ${step.agentId}?`;
+		}
+	})();
+
+	const footer = (() => {
+		switch (step.kind) {
+			case "list":
+				return "Enter opens · Esc discards unsaved changes";
+			case "rename":
+				return "Enter renames · Esc goes back";
+			default:
+				return "Enter selects · Esc goes back";
+		}
+	})();
+
 	return (
 		<box flexDirection="column" gap={1}>
-			<text>
-				Workers ({workers.length}){dirty ? " — unsaved" : ""}
-			</text>
-			<text fg="gray">{rosterPath}</text>
+			<text>{heading}</text>
+			{step.kind === "list" ? <text fg="gray">{rosterPath}</text> : null}
+			{error ? <text fg="red">{error}</text> : null}
 
-			{confirmDelete ? (
-				<box border borderStyle="rounded" borderColor="red" paddingX={1}>
-					<text fg="red">Remove worker {confirmDelete}? (y/n)</text>
-				</box>
-			) : (
-				<box border borderStyle="rounded" borderColor="gray" paddingX={1}>
-					<input
-						onInput={list.setSearch}
-						placeholder="Filter, or type a new worker name and press n..."
-						flexGrow={1}
-						focused
-					/>
-				</box>
-			)}
+			<box border borderStyle="rounded" borderColor="gray" paddingX={1}>
+				<input
+					// Remounting per step clears the box, so a filter typed on one screen
+					// does not silently hide rows on the next one.
+					key={`${step.kind}-${"agentId" in step ? step.agentId : ""}`}
+					onInput={step.kind === "rename" ? setNameDraft : list.setSearch}
+					placeholder={step.kind === "rename" ? "New name..." : "Filter..."}
+					flexGrow={1}
+					focused
+				/>
+			</box>
 
-			{workers.length === 0 ? (
+			{step.kind === "rename" ? (
 				<text fg="gray">
-					No workers yet. Type a name and press n to add one.
+					Letters, digits, dot, underscore and hyphen. The manager addresses
+					this worker by this name.
 				</text>
 			) : (
 				<box flexDirection="column">
@@ -305,13 +387,15 @@ export function WorkersDialogContent(
 							</box>
 						);
 					})}
+					{list.filtered.length === 0 && step.kind === "model" ? (
+						<text fg="gray">
+							No models listed for this provider — it decides the model itself.
+						</text>
+					) : null}
 				</box>
 			)}
 
-			<text fg="gray">
-				Enter cycles provider · t cycles tools · d removes · n adds · s saves ·
-				Esc cancels
-			</text>
+			<text fg="gray">{footer}</text>
 		</box>
 	);
 }
