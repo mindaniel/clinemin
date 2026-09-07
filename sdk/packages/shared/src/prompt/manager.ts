@@ -75,6 +75,24 @@ function formatWorkerLine(worker: ManagerWorkerSummary): string {
 
 export const MANAGER_DONE_TOKEN = "TEAM DONE";
 
+/**
+ * The placeholder bodies used by the worked examples below.
+ *
+ * These are exported because the parser has to recognise them. A web provider
+ * is handed this whole prompt as chat text, and some models answer by repeating
+ * their instructions back — Kimi did, in full. The examples are then
+ * indistinguishable from a real delegation, so `parseManagerBlocks` dispatched
+ * "Your message here." to a worker twice and ran `Get-Content src/foo.ts` as a
+ * real command. Nothing in the reply said "this is a copy of your own prompt".
+ *
+ * Recognising them by shared constant rather than by a literal in the parser is
+ * the point: an example edited here and not there would silently re-open the
+ * hole. See `isManagerPromptExample` in
+ * `llms/providers/vendors/tool-pipeline/manager-block.ts`.
+ */
+export const MANAGER_EXAMPLE_BODY = "Your message here.";
+export const MANAGER_EXAMPLE_COMMAND = "Get-Content src/foo.ts -TotalCount 20";
+
 export function buildManagerSystemPrompt(
 	options: ManagerSystemPromptOptions = {},
 ): string {
@@ -98,7 +116,7 @@ so anything outside the block is for me:
 
 <manager>
 TO: ${example}
-Your message here.
+${MANAGER_EXAMPLE_BODY}
 </manager>
 
 \`</manager>\` goes alone on its own line. One assistant per block; several
@@ -108,7 +126,7 @@ blocks in one reply is fine, and they run in order.`,
 <manager>
 TO: ${example}
 TOOLS: read_files, editor
-Your message here.
+${MANAGER_EXAMPLE_BODY}
 </manager>
 
 The tools are \`read_files\`, \`search_codebase\`, \`run_commands\`, \`editor\`,
@@ -121,7 +139,7 @@ an assistant able to talk to you and nothing else.`,
 will paste you the results:
 
 \`\`\`powershell
-Get-Content src/foo.ts -TotalCount 20
+${MANAGER_EXAMPLE_COMMAND}
 \`\`\`
 
 Keep those read-only. Looking is yours; changing is theirs. An assistant

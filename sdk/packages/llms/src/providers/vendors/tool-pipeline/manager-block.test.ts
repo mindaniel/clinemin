@@ -1,6 +1,11 @@
 import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
+import {
+	buildManagerSystemPrompt,
+	MANAGER_EXAMPLE_BODY,
+	MANAGER_EXAMPLE_COMMAND,
+} from "@cline/shared";
 import { describe, expect, it } from "vitest";
 import { parseManagerBlocks, scanManagerBlocks } from "./manager-block";
 
@@ -582,5 +587,66 @@ describe("untagged fences alongside a patch", () => {
 
 		expect(parsed.problems).toEqual([]);
 		expect(parsed.cleanedContent).toContain("*** Begin Patch");
+	});
+});
+
+describe("a reply that echoes the manager prompt back", () => {
+	// Kimi answered a manager prompt by repeating the whole thing. The worked
+	// examples in it parsed as real blocks: two workers were dispatched with the
+	// body "Your message here." and the example command was run for real.
+	const ECHOED = buildManagerSystemPrompt({
+		workers: [{ agentId: "deepseek" }, { agentId: "qwen" }],
+		workspaceRoot: "C:\\Users\\quang\\Downloads\\clinemin",
+		platform: "win32",
+	});
+
+	it("dispatches nothing", () => {
+		const parsed = parseManagerBlocks(ECHOED, { allowCommands: true });
+		expect(parsed.delegations).toEqual([]);
+	});
+
+	it("says why, instead of dropping the blocks silently", () => {
+		// A block that vanishes with no complaint gets written again identically.
+		const parsed = parseManagerBlocks(ECHOED, { allowCommands: true });
+		expect(parsed.problems.length).toBeGreaterThan(0);
+		expect(parsed.problems[0]).toContain("repeated my instructions");
+	});
+
+	it("blocks the example body on its own", () => {
+		const reply = [
+			"<manager>",
+			"TO: deepseek",
+			MANAGER_EXAMPLE_BODY,
+			"</manager>",
+		].join("\n");
+		const parsed = parseManagerBlocks(reply);
+		expect(parsed.delegations).toEqual([]);
+	});
+
+	it("blocks the example command on its own", () => {
+		const reply = ["```powershell", MANAGER_EXAMPLE_COMMAND, "```"].join("\n");
+		const parsed = parseManagerBlocks(reply, { allowCommands: true });
+		expect(parsed.delegations).toEqual([]);
+	});
+
+	it("still dispatches a real block that merely looks similar", () => {
+		const reply = [
+			"<manager>",
+			"TO: deepseek",
+			"Your message here is the one I actually want sent.",
+			"</manager>",
+		].join("\n");
+		const parsed = parseManagerBlocks(reply);
+		expect(parsed.delegations).toHaveLength(1);
+	});
+
+	it("still runs a real command that merely looks similar", () => {
+		const reply = [
+			"```powershell",
+			"Get-Content src/foo.ts -TotalCount 40",
+			"```",
+		].join("\n");
+		const parsed = parseManagerBlocks(reply, { allowCommands: true });
+		expect(parsed.delegations).toHaveLength(1);
 	});
 });

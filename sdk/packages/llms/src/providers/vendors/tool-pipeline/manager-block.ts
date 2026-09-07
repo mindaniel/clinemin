@@ -32,6 +32,12 @@
  * needs to talk about the tag it writes it inline, where it is ignored.
  */
 
+import {
+	MANAGER_DONE_TOKEN,
+	MANAGER_EXAMPLE_BODY,
+	MANAGER_EXAMPLE_COMMAND,
+} from "@cline/shared";
+
 const OPEN_TAG_RE = /^[ \t]*<\s*manager\s*>[ \t]*\r?$/im;
 const CLOSE_LINE_RE = /^[ \t]*<\s*\/\s*manager\s*>[ \t]*$/;
 // A manager's own hands: PowerShell it runs to check a worker's claim rather
@@ -344,6 +350,12 @@ function extractShellFences(text: string): ParsedManagerBlocks {
 			);
 			continue;
 		}
+		if (isManagerPromptExample(block.command)) {
+			// The example command out of the manager's own prompt, echoed back.
+			// See `isManagerPromptExample`.
+			problems.push(ECHOED_PROMPT_PROBLEM);
+			continue;
+		}
 		delegations.push({
 			name: "run_commands",
 			arguments: { commands: [block.command] },
@@ -366,7 +378,10 @@ function extractShellFences(text: string): ParsedManagerBlocks {
  * package, and the token is one string. `manager-block.test.ts` reads the
  * shared source back, so the copy cannot drift.
  */
-const DONE_TOKEN = "TEAM DONE";
+// Shared with the prompt these blocks are written in answer to, so an edit
+// there cannot leave this parser recognising a token the manager no longer
+// sees. See `MANAGER_DONE_TOKEN` in shared/prompt/manager.ts.
+const DONE_TOKEN = MANAGER_DONE_TOKEN;
 
 /**
  * A fence with no language tag, capturing its body.
@@ -433,6 +448,34 @@ function untaggedShellFenceNudge(text: string): string | undefined {
 		"untagged fence is treated as quoted text on purpose."
 	);
 }
+
+/**
+ * True when this is a worked example copied out of the manager's own prompt.
+ *
+ * Some web chat models answer a long system prompt by repeating it back. Kimi
+ * did, in full, and the two `<manager>` examples and the ```powershell example
+ * in `buildManagerSystemPrompt` came back looking exactly like real ones —
+ * because they are real ones, written by us. Two workers were dispatched with
+ * the body "Your message here." and `Get-Content src/foo.ts` ran as a command.
+ *
+ * The check is exact equality against the constants the prompt itself is built
+ * from, so it cannot drift and cannot match real work: a manager that genuinely
+ * wants to send the literal string "Your message here." to a worker has no
+ * reason to, and the cost of being wrong in that direction is one blocked
+ * message rather than an unintended dispatch.
+ */
+function isManagerPromptExample(value: string): boolean {
+	const trimmed = value.trim();
+	return (
+		trimmed === MANAGER_EXAMPLE_BODY || trimmed === MANAGER_EXAMPLE_COMMAND
+	);
+}
+
+/** The complaint sent back when a reply was the prompt rather than an answer. */
+const ECHOED_PROMPT_PROBLEM =
+	"That reply repeated my instructions back to me instead of answering, " +
+	"so the examples in them were skipped rather than run. Send the delegation " +
+	"you actually want, with a real message under the TO: line.";
 
 export function parseManagerBlocks(
 	text: string,
@@ -502,6 +545,13 @@ export function parseManagerBlocks(
 			problems.push(
 				`The <manager> block addressed to "${block.agentId}" was never closed. Put </manager> alone on its own line at the end of the block.`,
 			);
+			continue;
+		}
+		if (isManagerPromptExample(block.task)) {
+			// The model echoed its own instructions. Never dispatch that, and say
+			// so rather than dropping it silently — a manager whose block vanished
+			// with no complaint writes the same block again.
+			problems.push(ECHOED_PROMPT_PROBLEM);
 			continue;
 		}
 		// Every block is a follow-up to an existing worker.

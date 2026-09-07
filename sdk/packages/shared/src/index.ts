@@ -296,6 +296,9 @@ export type {
 } from "./prompt/manager";
 export {
 	buildManagerSystemPrompt,
+	MANAGER_DONE_TOKEN,
+	MANAGER_EXAMPLE_BODY,
+	MANAGER_EXAMPLE_COMMAND,
 	shortProviderName,
 } from "./prompt/manager";
 export { CLINE_DEFAULT_MODEL_ID } from "./providers/defaults";
