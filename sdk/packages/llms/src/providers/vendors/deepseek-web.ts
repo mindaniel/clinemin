@@ -1117,8 +1117,23 @@ export function parseDeepSeekToolCalls(
 		let name = tagName || nameMatch?.[1] || "";
 
 		// <tool><name>x</name><arguments>{...}</arguments></tool>
-		const xmlName = /<name>([^<]+)<\/name>/i.exec(inner);
-		const xmlArgs = /<arguments>([\s\S]*?)<\/arguments>/i.exec(inner);
+		// `<tool_name>` and `<tool_arguments>` are the same call written with the
+		// prefix the model already used on the wrapper. Qwen sent
+		//
+		//     <tool_calls>
+		//     <tool>
+		//     <tool_name>run_commands</tool_name>
+		//     <arguments>{"commands": "..."}</arguments>
+		//     </tool>
+		//
+		// which found no `<name>`, left `name` empty, and fell through to "unknown
+		// tool - keep the raw block as visible text". The manager then had to
+		// notice the command had not run and ask for it again. Accepting the
+		// prefixed spelling costs nothing: an unknown name is still rejected
+		// below, so this widens what is recognised, not what is executed.
+		const xmlName = /<(?:tool_)?name>([^<]+)<\/(?:tool_)?name>/i.exec(inner);
+		const xmlArgs =
+			/<(?:tool_)?arguments>([\s\S]*?)<\/(?:tool_)?arguments>/i.exec(inner);
 		if (xmlName) name = xmlName[1].trim();
 		if (xmlArgs) inner = xmlArgs[1].trim();
 

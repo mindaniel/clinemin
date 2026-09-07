@@ -457,6 +457,37 @@ describe("deepseek-web parseLooseDeepSeekToolCalls", () => {
 		});
 	});
 
+	it("reads a <tool_name> element, the prefixed spelling of <name>", () => {
+		// Qwen's real output: the wrapper is <tool_calls>, and the name element
+		// carries the same prefix. This used to leave `name` empty and the whole
+		// block was returned as visible text, so the command never ran.
+		const reply = [
+			"<tool_calls>",
+			"<tool>",
+			"<tool_name>run_commands</tool_name>",
+			'<arguments>{"commands": ["Get-Content a.ts"]}</arguments>',
+			"</tool>",
+			"</tool_calls>",
+		].join("\n");
+		const { toolCalls } = parseDeepSeekToolCalls(reply, [
+			"run_commands",
+			"read_files",
+		]);
+		expect(toolCalls).toHaveLength(1);
+		expect(toolCalls[0]?.name).toBe("run_commands");
+		expect(toolCalls[0]?.arguments).toEqual({
+			commands: ["Get-Content a.ts"],
+		});
+	});
+
+	it("still reads the plain <name> spelling", () => {
+		const reply =
+			'<tool><name>read_files</name><arguments>{"files":["a.ts"]}</arguments></tool>';
+		const { toolCalls } = parseDeepSeekToolCalls(reply, ["read_files"]);
+		expect(toolCalls[0]?.name).toBe("read_files");
+		expect(toolCalls[0]?.arguments).toEqual({ files: ["a.ts"] });
+	});
+
 	it("recovers a <tool_call> variant", () => {
 		const reply =
 			'<tool_call>{"name":"read_files","arguments":{"path":"/tmp/a.txt"}}</tool_call>';
