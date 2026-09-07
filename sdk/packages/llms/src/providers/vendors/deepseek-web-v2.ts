@@ -116,6 +116,7 @@ import { logConversationTurn } from "./tool-pipeline/conversation-logger";
 import { consumePendingInjectedReply } from "./tool-pipeline/injected-reply";
 import { parseInvokeStyleToolCalls } from "./tool-pipeline/invoke-parser";
 import { stripPreviousUserBlock } from "./tool-pipeline/previous-user-dedupe";
+import { extractShellFenceCommands } from "./tool-pipeline/shell-fence";
 import {
 	isToolCallStuckInThinking,
 	THINKING_MODE_NUDGE,
@@ -2053,9 +2054,17 @@ export function parseFallbackToolUses(
 	prompt: string,
 	availableToolNames: string[],
 ): { cleanedText: string; toolUses: ParsedToolCall[] } {
-	const toolUses: ParsedToolCall[] = [];
 	const hasEditor = availableToolNames.includes("editor");
 	const hasRunCommands = availableToolNames.includes("run_commands");
+
+	// Shell fences FIRST, and their text removed before anything below sees it.
+	// The fence-to-file pass further down cannot tell a command from a program,
+	// so a ```powershell block reaching it becomes a file write: the command
+	// never runs and the model is told a file was created. See
+	// tool-pipeline/shell-fence.ts.
+	const shell = extractShellFenceCommands(text, availableToolNames);
+	const toolUses: ParsedToolCall[] = [...shell.toolUses];
+	text = shell.remainingText;
 
 	// `pip install ...` (and similar) → run_commands
 	if (hasRunCommands) {

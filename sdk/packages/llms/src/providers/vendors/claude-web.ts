@@ -1639,63 +1639,6 @@ function formatClaudeToolResult(toolName: string, text: string): string {
 	}
 }
 
-/** Code-fence language tags that mean "run this as a shell command". */
-const CLAUDE_SHELL_FENCE_LANGS = new Set([
-	"powershell",
-	"pwsh",
-	"ps1",
-	"bash",
-	"shell",
-	"sh",
-	"zsh",
-	"cmd",
-	"bat",
-	"console",
-	"terminal",
-]);
-
-/**
- * Claude Web-specific fallback. Claude answers in plain prose and often puts a
- * PowerShell command in a ```powershell fence to ask the user to "run it and
- * paste the output". The shared `parseFallbackToolUses` treats EVERY code fence
- * as an `editor` (create file) call, which would wrongly turn that command into
- * a file write. This parser first maps shell fences to `run_commands`, then
- * delegates the rest (pip installs, real code files) to the shared fallback.
- */
-function parseClaudeFallbackToolUses(
-	text: string,
-	prompt: string,
-	availableToolNames: string[],
-): {
-	cleanedText: string;
-	toolUses: { name: string; arguments: Record<string, unknown> }[];
-} {
-	const toolUses: { name: string; arguments: Record<string, unknown> }[] = [];
-	const hasRunCommands = availableToolNames.includes("run_commands");
-
-	let remaining = text;
-	if (hasRunCommands) {
-		const fenceRe = /```([\w+-]*)\s*\n([\s\S]*?)```/g;
-		remaining = text.replace(fenceRe, (full, lang: string, code: string) => {
-			const normalizedLang = (lang || "").toLowerCase().trim();
-			if (!CLAUDE_SHELL_FENCE_LANGS.has(normalizedLang)) return full;
-			const command = code.replace(/\s+$/, "");
-			if (!command.trim()) return full;
-			toolUses.push({
-				name: "run_commands",
-				arguments: { commands: [command] },
-			});
-			return "";
-		});
-	}
-
-	const fallback = parseFallbackToolUses(remaining, prompt, availableToolNames);
-	return {
-		cleanedText: fallback.cleanedText,
-		toolUses: [...toolUses, ...fallback.toolUses],
-	};
-}
-
 /**
  * Clean the flattened prompt for Claude Web:
  *   - rephrase `Tool result: (name) ...` turns into natural first-person prose,
@@ -1917,7 +1860,7 @@ ${patchNotice}`.trim(),
 	// Claude answers in prose and puts shell commands in fences; map those to
 	// `run_commands` before the shared fallback treats every fence as a file
 	// write.
-	const fallback = parseClaudeFallbackToolUses(
+	const fallback = parseFallbackToolUses(
 		cleanedContent,
 		lastUserText(options.prompt),
 		toolNames,
