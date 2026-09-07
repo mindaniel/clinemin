@@ -97,14 +97,18 @@ function requireInputField<T>(value: T | undefined, field: string): T {
 /**
  * Completion and context-budget signals a lead needs to judge one teammate run.
  *
- * `finishReason` alone cannot answer "did the teammate actually finish?". A run
- * that ends because the model emitted plain prose — "Let me continue the job" —
- * reports `completed`, exactly like a run that finished its work. The only
- * reliable difference is whether the teammate ever called a tool that *means*
- * done, so completion is treated as explicit: no completion tool call, no
- * completion. That also catches a teammate whose tool call was malformed and
- * silently dropped by the provider's parser — it stops with prose, and the lead
- * sees it here instead of accepting the half-finished run.
+ * A teammate finishes by reporting in text (see `subagent-prompts.ts`), so a
+ * run that produced text produced its answer. This used to require an explicit
+ * completion tool call instead, which sounded stricter and was in fact useless:
+ * no scoped worker could reach any of the tools the prompt named, so every
+ * single run came back flagged. A flag that is always on is not evidence.
+ *
+ * What is still worth flagging is a run that ended with *nothing* — no report
+ * and no question — because that is a genuine stall the lead cannot see any
+ * other way. And separately, a report still carrying a literal `<tool>` or
+ * `<invoke>` block, which means the model tried to call something and its
+ * provider's parser rejected the call: the worker believes it acted, the
+ * manager is about to believe the same, and nothing ran.
  *
  * Every field is also restated in `note`, because a lead only acts on what it
  * reads, and a boolean buried in a JSON tool result is easy to skim past.
@@ -121,6 +125,20 @@ const COMPLETION_TOOL_NAMES = new Set([
 	"submit_and_exit",
 	"attempt_completion",
 ]);
+
+/**
+ * A reply that still contains the tool call the model meant to make.
+ *
+ * Matched on the opening tag only. A well-formed call never survives into
+ * `result.text` — every vendor parser strips the block it consumed — so the tag
+ * being here at all is the signal, whether or not it was ever closed.
+ */
+const UNPARSED_TOOL_CALL_PATTERN = /<\s*(?:tool|invoke)\b[^>]*>/i;
+
+/** Exported for tests: what the lead is told when a call never ran. */
+export function hasUnparsedToolCall(text: string | undefined): boolean {
+	return text !== undefined && UNPARSED_TOOL_CALL_PATTERN.test(text);
+}
 
 /** Exported for tests: the context figure here is what a manager acts on. */
 export function diagnoseRun(
@@ -148,10 +166,15 @@ export function diagnoseRun(
 		toolCalls?.some((call) => !call.error && call.name === "ask_question") ===
 		true;
 
+	// The report itself is the completion. Only a run that ended with nothing to
+	// read — no text, no question, no completion tool — is stopping early.
+	const reportedInText = (result.text ?? "").trim().length > 0;
 	const stoppedWithoutCompletion =
 		result.finishReason === "completed" &&
 		hasCompletionTool === false &&
-		!askedAQuestion;
+		!askedAQuestion &&
+		!reportedInText;
+	const droppedToolCall = hasUnparsedToolCall(result.text);
 	const contextWindow = result.model?.info?.contextWindow;
 	// `result.usage` is the run's AGGREGATE: every iteration's input tokens
 	// summed. That is not context, and reporting it as context is off by a
@@ -184,9 +207,15 @@ export function diagnoseRun(
 	}
 	if (stoppedWithoutCompletion) {
 		noteParts.push(
-			`${agentId} stopped by replying with text instead of calling a completion tool, so the task is NOT confirmed done. ` +
-				"Read its text below, then either send the next instruction with team_run_task (continueConversation=true) " +
-				"or mark the shared task complete yourself if the work is actually finished.",
+			`${agentId} ended its run without reporting anything at all, so the task is NOT done. ` +
+				"Re-send the instruction with team_run_task (continueConversation=true), " +
+				"stating what you want in its reply.",
+		);
+	}
+	if (droppedToolCall) {
+		noteParts.push(
+			`${agentId} left a tool call written out as text in its reply, which means its provider rejected the call and nothing ran. ` +
+				"Treat any action it claims to have taken as not taken, and re-send the step with team_run_task (continueConversation=true).",
 		);
 	}
 	if (contextUsedPct !== undefined && contextUsedPct >= 70) {

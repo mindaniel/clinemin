@@ -4,7 +4,11 @@ import { resolveTeamDataDir } from "@cline/shared/storage";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { createDelegatedAgentConfigProvider } from "./delegated-agent";
 import { AgentTeamsRuntime } from "./multi-agent";
-import { createAgentTeamsTools } from "./team-tools";
+import {
+	createAgentTeamsTools,
+	diagnoseRun,
+	hasUnparsedToolCall,
+} from "./team-tools";
 
 type EnvSnapshot = {
 	CLINE_DATA_DIR: string | undefined;
@@ -880,12 +884,9 @@ describe("createAgentTeamsTools runtime behavior", () => {
 					cacheWriteTokens: 120,
 					totalCost: 0.12,
 				},
-				// This fixture's teammate called `read_file` and then stopped on
-				// prose, which is precisely the run a lead must not mistake for a
-				// finished one.
-				stoppedWithoutCompletion: true,
+				// This fixture's teammate called `read_file` and then reported in
+				// text, which is how a teammate finishes: no flag, no note.
 				contextUsedTokens: 900,
-				note: "models-investigator stopped by replying with text instead of calling a completion tool, so the task is NOT confirmed done. Read its text below, then either send the next instruction with team_run_task (continueConversation=true) or mark the shared task complete yourself if the work is actually finished.",
 			},
 		});
 	});
@@ -1161,5 +1162,66 @@ describe("createAgentTeamsTools runtime behavior", () => {
 				}),
 			],
 		});
+	});
+});
+
+describe("diagnoseRun", () => {
+	function run(overrides: Record<string, unknown> = {}) {
+		return {
+			text: "Checked auth.ts:42 — the expiry guard uses < instead of <=.",
+			finishReason: "completed",
+			iterations: 2,
+			durationMs: 1000,
+			usage: {},
+			toolCalls: [{ name: "read_files" }],
+			messages: [],
+			...overrides,
+		} as never;
+	}
+
+	it("treats a text report as the completion", () => {
+		// The teammate contract says the report IS the answer, so the run that
+		// produced one must not come back flagged.
+		expect(diagnoseRun(run(), "qwen")).toEqual({});
+	});
+
+	it("flags a run that ended with nothing to read", () => {
+		const diagnostics = diagnoseRun(run({ text: "   " }), "qwen");
+		expect(diagnostics.stoppedWithoutCompletion).toBe(true);
+		expect(diagnostics.note).toContain("without reporting anything");
+	});
+
+	it("does not flag a teammate that ended by asking its manager", () => {
+		const diagnostics = diagnoseRun(
+			run({ text: "", toolCalls: [{ name: "ask_question" }] }),
+			"qwen",
+		);
+		expect(diagnostics.stoppedWithoutCompletion).toBeUndefined();
+		expect(diagnostics.note).toContain("asked a question");
+	});
+
+	it("flags a reply still carrying the tool call the provider rejected", () => {
+		// The qwen case: the model emitted a call, the vendor parser did not
+		// recognise the name, and the block survived into the reply as text. The
+		// worker believes it acted; nothing ran.
+		const diagnostics = diagnoseRun(
+			run({
+				text: [
+					"Done.",
+					'<tool>{"name": "attempt_completion", "arguments": {}}</tool>',
+				].join("\n"),
+			}),
+			"qwen",
+		);
+		expect(diagnostics.note).toContain("nothing ran");
+		// It reported text, so it is not also flagged as having stopped silently.
+		expect(diagnostics.stoppedWithoutCompletion).toBeUndefined();
+	});
+
+	it("recognises an unclosed or invoke-style block too", () => {
+		expect(hasUnparsedToolCall('<tool name="editor">')).toBe(true);
+		expect(hasUnparsedToolCall('<invoke name="read_files">')).toBe(true);
+		expect(hasUnparsedToolCall("no calls here")).toBe(false);
+		expect(hasUnparsedToolCall(undefined)).toBe(false);
 	});
 });
