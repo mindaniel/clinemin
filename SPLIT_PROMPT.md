@@ -75,6 +75,9 @@ this repo executes the injected script. One vendor per commit, verified before
 the next. That is what made the kimi failure recoverable - only one file had
 changed, so it took minutes to find.
 
+After all checks pass for a vendor, commit that vendor's split immediately
+before starting the next one.
+
 Baselines: 27 files / 329 tests passing, `tsc` clean on `llms`. One pre-existing
 biome error, `tool-parser.ts:194` (`noImplicitAnyLet`), is not yours to fix.
 `sdk/packages/core` has pre-existing failures in `compact-session-script`,
