@@ -1,7 +1,9 @@
+import { AsyncLocalStorage } from "node:async_hooks";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { shutdownLaunchedBrowsers } from "./browser-processes";
+import { clineStateFile, readStateFile, writeStateFile } from "./process-file";
 import { processGlobal } from "./process-global";
 
 /**
@@ -64,7 +66,122 @@ const latch = () =>
 	processGlobal("browserProfileLatch", () => ({
 		profile: undefined as string | undefined,
 		file: undefined as string | undefined,
+		/** CLI session this process is driving, so `/profile` can re-pin it. */
+		sessionId: undefined as string | undefined,
 	}));
+
+/**
+ * The profile of the turn currently executing, when one has been scoped.
+ *
+ * The latch above assumes the process that ran `/profile` is the process that
+ * drives Chrome. That is false whenever a hub daemon is running: sessions start
+ * with `backendMode: "auto"`, so the providers execute in the HUB, which serves
+ * every terminal at once. One hub means one latch, latched to whatever the
+ * store said the first time any session asked — so two terminals on two
+ * profiles both resolved the SAME user-data-dir and the SAME debug port, i.e.
+ * one Chrome and one logged-in account. That is the bug this scope fixes.
+ *
+ * A per-process latch cannot express "this turn is profile A and that turn is
+ * profile B" in one process. An async scope can, and it costs the seven
+ * providers nothing: they call `resolveActiveProfilePaths()` with no arguments
+ * from ~30 places, and every one of those runs inside the scope.
+ *
+ * On `globalThis` for the usual reason (two copies of `@cline/llms`, see
+ * `process-global.ts`): the runtime that opens the scope and the provider that
+ * reads it must share one store, or the read always misses.
+ */
+const profileScope = () =>
+	processGlobal("browserProfileScope", () => new AsyncLocalStorage<string>());
+
+/**
+ * Run `fn` with `name` as the active profile for everything it awaits.
+ *
+ * `undefined` runs `fn` unscoped, falling back to the latch — that is the local
+ * runtime's case, where the latch is already right.
+ */
+export function runWithBrowserProfile<T>(
+	name: string | undefined,
+	fn: () => T,
+): T {
+	if (!name) return fn();
+	return profileScope().run(name, fn);
+}
+
+/**
+ * Which profile each CLI session is on, for the process that did not choose it.
+ *
+ * `/profile` runs in the TUI; the provider runs in the hub. The hub needs the
+ * answer per session, not per process, so the CLI writes its session's choice
+ * here and the runtime reads it back when it opens the scope above. See
+ * `process-file.ts`.
+ *
+ * `{ "01JB...": "minhnq.ctd" }` -- CLI session id to profile name.
+ */
+const SESSION_PROFILES_FILE = clineStateFile("browser-profile-sessions.json");
+
+/**
+ * A CLI that is killed rather than exited never clears its entry, so the file
+ * is trimmed on write instead of growing without bound. `JSON.stringify` keeps
+ * insertion order, so the oldest keys are the first ones.
+ */
+const MAX_SESSION_PROFILES = 100;
+
+type SessionProfiles = Record<string, string>;
+
+function readSessionProfiles(): SessionProfiles {
+	const parsed = readStateFile<SessionProfiles>(SESSION_PROFILES_FILE);
+	if (!parsed || Array.isArray(parsed)) return {};
+	const pins: SessionProfiles = {};
+	for (const [sessionId, name] of Object.entries(parsed)) {
+		if (typeof name === "string" && name) pins[sessionId] = name;
+	}
+	return pins;
+}
+
+function writeSessionProfiles(pins: SessionProfiles): void {
+	writeStateFile(
+		SESSION_PROFILES_FILE,
+		Object.fromEntries(Object.entries(pins).slice(-MAX_SESSION_PROFILES)),
+	);
+}
+
+/**
+ * Record that `sessionId` runs on `name`, and remember the session so a later
+ * `/profile` switch in this process can move it without the caller having to
+ * pass the id again.
+ */
+export function pinSessionBrowserProfile(
+	sessionId: string,
+	name: string,
+): void {
+	if (!sessionId) return;
+	latch().sessionId = sessionId;
+	const pins = readSessionProfiles();
+	// Delete first so a re-pin moves the session to the end of the file and
+	// survives the trim above, rather than ageing out while it is still running.
+	delete pins[sessionId];
+	pins[sessionId] = name;
+	writeSessionProfiles(pins);
+}
+
+/** Forget a session's profile (it ended, or is being restarted). */
+export function clearSessionBrowserProfile(sessionId: string): void {
+	if (!sessionId) return;
+	const slot = latch();
+	if (slot.sessionId === sessionId) slot.sessionId = undefined;
+	const pins = readSessionProfiles();
+	if (pins[sessionId] === undefined) return;
+	delete pins[sessionId];
+	writeSessionProfiles(pins);
+}
+
+/** The profile `sessionId` was started on, if the CLI recorded one. */
+export function getSessionBrowserProfile(
+	sessionId: string | undefined,
+): string | undefined {
+	if (!sessionId) return undefined;
+	return readSessionProfiles()[sessionId];
+}
 
 /**
  * Pins this process to `name` for the rest of its life. Call after changing the
@@ -168,6 +285,13 @@ function readStore(): ProfileStore {
  * only thing that moves this process is `pinBrowserProfile`.
  */
 function latchActive(profiles: BrowserProfile[], stored: string): string {
+	// A scoped turn answers for itself and leaves the latch alone: the hub runs
+	// turns for several terminals, so letting one of them latch the process
+	// would hand its profile to the next terminal's turn.
+	const scoped = profileScope().getStore();
+	if (scoped && profiles.some((entry) => entry.name === scoped)) {
+		return scoped;
+	}
 	const slot = latch();
 	const file = profilesFile();
 	if (slot.file !== file) {
@@ -218,9 +342,15 @@ export function setActiveBrowserProfile(name: string): void {
 		throw new Error(`Unknown browser profile "${name}".`);
 	}
 	writeStore(store.profiles, name);
+	const sessionId = latch().sessionId;
 	// The file is only the default for processes that start later; this process
 	// moves because it pins itself here.
 	pinBrowserProfile(name);
+	// A TUI process drives one session, so the session it recorded at startup is
+	// the one the user just switched. Move that too, or the switch applies only
+	// to whatever runs locally and the hub keeps driving the old profile's
+	// Chrome for the rest of the session.
+	if (sessionId) pinSessionBrowserProfile(sessionId, name);
 }
 
 /**
@@ -266,7 +396,13 @@ export function deleteBrowserProfile(name: string): void {
 	);
 	// Deleting the profile this process is on leaves it with nothing to resolve,
 	// so move it home; other terminals keep their own selection.
-	if (store.active === name) pinBrowserProfile(DEFAULT_PROFILE_NAME);
+	if (store.active === name) {
+		const sessionId = latch().sessionId;
+		pinBrowserProfile(DEFAULT_PROFILE_NAME);
+		if (sessionId) {
+			pinSessionBrowserProfile(sessionId, DEFAULT_PROFILE_NAME);
+		}
+	}
 }
 
 export interface ResolvedProfilePaths {

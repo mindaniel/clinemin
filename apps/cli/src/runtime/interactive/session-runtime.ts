@@ -15,7 +15,13 @@ import {
 	type ToolApprovalResult,
 	type UserInstructionConfigService,
 } from "@cline/core";
-import { bindChatKey, clearChatKeyBinding } from "@cline/llms";
+import {
+	bindChatKey,
+	clearChatKeyBinding,
+	clearSessionBrowserProfile,
+	getActiveBrowserProfile,
+	pinSessionBrowserProfile,
+} from "@cline/llms";
 import type { Message } from "@cline/shared";
 import { createCliCore } from "../../session/session";
 import { submitAndExitInTerminal } from "../../utils/approval";
@@ -129,6 +135,7 @@ export function createInteractiveSessionRuntime(input: {
 	let pendingResumeSessionId = input.resumeSessionId?.trim() || undefined;
 
 	const clearActiveSession = (): void => {
+		if (activeSessionId) clearSessionBrowserProfile(activeSessionId);
 		activeSessionId = "";
 		setActiveCliSession(undefined);
 		// Live half only — the persisted record stays, so restarting this same
@@ -141,6 +148,11 @@ export function createInteractiveSessionRuntime(input: {
 			manifest: started.manifest,
 		});
 		activeSessionId = started.sessionId;
+		// Tell the hub which Chrome profile this session drives. The providers run
+		// there, not here, and a hub serves every terminal at once — without a
+		// per-session record they all share whichever profile the hub happened to
+		// read first, i.e. one browser and one account. See browser-profiles.ts.
+		pinSessionBrowserProfile(started.sessionId, getActiveBrowserProfile());
 		// Re-apply this session's `/findchat` pin, so a session resumed from
 		// `/history` keeps talking to the web chat it was bound to instead of
 		// falling back to the prompt hash. See utils/chat-binding.ts.

@@ -2,6 +2,8 @@ import {
 	createGateway,
 	type GatewayProviderSettings,
 	getContinuationNote,
+	getSessionBrowserProfile,
+	runWithBrowserProfile,
 } from "@cline/llms";
 import type {
 	AgentAfterToolResult,
@@ -447,12 +449,30 @@ export class AgentRuntime {
 		this.state.messages = cloneMessages(resolved.initialMessages ?? []);
 	}
 
+	/**
+	 * Web providers pick their Chrome user-data-dir and debug port from the
+	 * active `/profile`, which they read with no arguments from deep inside the
+	 * turn. That read used to answer per PROCESS — fine locally, wrong in the hub
+	 * daemon, which runs the turns of every terminal at once and so handed them
+	 * all one profile, i.e. one browser and one logged-in account.
+	 *
+	 * The profile belongs to the session, so scope the whole turn to the one the
+	 * CLI recorded for this session. A session with no record (a local runtime, a
+	 * sub-agent) runs unscoped and keeps the old per-process behaviour.
+	 */
+	private inSessionProfile<T>(fn: () => Promise<T>): Promise<T> {
+		return runWithBrowserProfile(
+			getSessionBrowserProfile(this.config.sessionId),
+			fn,
+		);
+	}
+
 	async run(input: AgentRunInput): Promise<AgentRunResult> {
-		return this.execute(input);
+		return this.inSessionProfile(() => this.execute(input));
 	}
 
 	async continue(input?: AgentRunInput): Promise<AgentRunResult> {
-		return this.execute(input);
+		return this.inSessionProfile(() => this.execute(input));
 	}
 
 	abort(reason?: unknown): void {
