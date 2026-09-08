@@ -247,7 +247,10 @@ export {
 } from "./parse/string";
 export { formatHumanReadableDate, formatUptime } from "./parse/time";
 export { validateWithZod, zodToJsonSchema } from "./parse/zod";
-export type { ClineSystemPromptOptions } from "./prompt/cline";
+export type {
+	ClineSystemPromptOptions,
+	WebProviderPrompts,
+} from "./prompt/cline";
 export {
 	buildClineSystemPrompt,
 	hasWriteTools,

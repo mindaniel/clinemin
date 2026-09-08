@@ -125,6 +125,34 @@ export interface ClineSystemPromptOptions
 	 * on rejections it has no way to diagnose.
 	 */
 	tools?: string[];
+	/**
+	 * Per-provider prompt overrides for the three roles (default, worker, manager).
+	 * When a slot is undefined, the shared prompt is used.
+	 */
+	prompts?: WebProviderPrompts;
+	/**
+	 * Role of the agent receiving this prompt. Used to select the correct slot
+	 * from `prompts`.
+	 */
+	role?: "default" | "worker" | "manager";
+}
+
+/**
+ * Three prompt slots a web provider can override.
+ *
+ * - `default` — a plain session. One human, one chat box.
+ * - `worker` — a teammate a manager delegated to. Its tool list lives in this
+ *   text and nowhere else, because there is no function-calling API behind a
+ *   scraped chat.
+ * - `manager` — a coordinator. No file or shell tools at all; it delegates and
+ *   reads reports.
+ *
+ * A slot may be `undefined`, meaning the shared prompt for that role is used.
+ */
+export interface WebProviderPrompts {
+	default?: string;
+	worker?: string;
+	manager?: string;
 }
 
 /**
@@ -313,6 +341,10 @@ export function buildClineSystemPrompt(
 	const isCline = isClineProvider(providerId || "");
 
 	if (options.managerMode && !overridePrompt?.trim()) {
+		const managerPrompt = options.prompts?.manager;
+		if (managerPrompt) {
+			return managerPrompt;
+		}
 		return buildManagerSystemPrompt({
 			workers: options.managerWorkers,
 			workspaceRoot,
@@ -364,7 +396,17 @@ export function buildClineSystemPrompt(
 	// Divert to a prompt that keeps the core tools (read, search, run, edit, etc.)
 	// but omits the team_* tools to prevent the model from attempting to use them.
 	if (isWebChatProvider(providerId || "")) {
-		return WEB_PROVIDERS_SYSTEM_PROMPT.replace("{{PLATFORM_NAME}}", platform)
+		let basePrompt = WEB_PROVIDERS_SYSTEM_PROMPT;
+		const role = options.role || "default";
+		const prompts = options.prompts;
+		if (role === "default" && prompts?.default) {
+			basePrompt = prompts.default;
+		} else if (role === "worker" && prompts?.worker) {
+			basePrompt = prompts.worker;
+		}
+		// manager is handled above; fallback to shared prompt.
+		return basePrompt
+			.replace("{{PLATFORM_NAME}}", platform)
 			.replace("{{CWD}}", workspaceRoot)
 			.replace("{{CURRENT_DATE}}", new Date().toLocaleDateString())
 			.replace("{{IDE_NAME}}", ide)
