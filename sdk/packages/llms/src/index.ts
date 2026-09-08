@@ -138,6 +138,7 @@ export {
 	openGeminiWebChat,
 	resolveGeminiWebV2Config,
 } from "./providers/vendors/gemini-web";
+
 export {
 	deleteKimiChatSession,
 	type KimiWebChatEntry,
@@ -214,4 +215,7 @@ export {
 	hasPendingInjectedReply,
 	setPendingInjectedReply,
 } from "./providers/vendors/tool-pipeline/injected-reply";
+// Per-provider prompt overrides: which providers word the default / worker /
+// manager prompt differently from the shared text.
+export { getWebProviderPrompts } from "./providers/vendors/tool-pipeline/prompt-registry";
 export { disposeLangfuseTelemetry } from "./services/langfuse-telemetry";
