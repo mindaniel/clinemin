@@ -3,6 +3,7 @@ import { homedir } from "node:os";
 import { basename, resolve } from "node:path";
 import {
 	buildWorkspaceMetadata,
+	getWebProviderPrompts,
 	listManagerWorkers,
 	mergeRulesForSystemPrompt,
 	type UserInstructionConfigService,
@@ -32,6 +33,10 @@ export async function resolveSystemPrompt(input: {
 		mode: input.mode,
 		providerId: input.providerId,
 		managerMode: input.managerMode,
+		// A plain session or a manager; the worker case is built by
+		// `buildTeammateSystemPrompt` instead. A provider with no overrides gets
+		// undefined here and the shared prompts as before.
+		prompts: getWebProviderPrompts(input.providerId),
 		// The roster is read here rather than inside the prompt builder because
 		// @cline/shared also builds for the browser and cannot touch the disk.
 		managerWorkers: input.managerMode

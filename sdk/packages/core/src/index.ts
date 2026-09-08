@@ -15,6 +15,9 @@ export {
 	getClineNotSubscribedMessage,
 	getClineOrgIndividualInferenceSubscriptionMessage,
 	getClinePassSubscriptionUrl,
+	// Per-provider prompt overrides. Re-exported so apps/cli can pick a
+	// provider's default/worker/manager wording without depending on @cline/llms.
+	getWebProviderPrompts,
 	isClineFreeModelLimitError,
 	isClineFreeModelLimitMessage,
 	isClineModelNotFoundMessage,

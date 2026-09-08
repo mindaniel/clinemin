@@ -1,3 +1,4 @@
+import { getWebProviderPrompts } from "@cline/llms";
 import { buildClineSystemPrompt, isWebChatProvider } from "@cline/shared";
 import type { DelegatedAgentRuntimeConfig } from "./delegated-agent";
 
@@ -103,6 +104,11 @@ export function buildTeammateSystemPrompt(
 				// one it cannot call guarantees it calls it and burns the turn on
 				// a rejection it cannot diagnose.
 				tools: config.tools,
+				// This is the one call site that knows a session is a worker, so it
+				// is the only one that has to say so. A provider with no `worker`
+				// override is unaffected.
+				role: "worker",
+				prompts: getWebProviderPrompts(config.providerId),
 			}),
 			`# Team Teammate Role\n${trimmedPrompt}`,
 		]

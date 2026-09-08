@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { renderAskUserInputAsText } from "./claude-web";
+import { renderAskUserInputAsText } from "./claude-web/sse";
 
 describe("renderAskUserInputAsText", () => {
 	it("writes out a question the runtime has no tool to carry", () => {

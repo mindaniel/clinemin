@@ -2,54 +2,10 @@ import type { ChoiceContext } from "@opentui-ui/dialog";
 import { useDialogKeyboard } from "@opentui-ui/dialog/react";
 import { useState } from "react";
 import { palette } from "../../palette";
+import { describePasteReply } from "./paste-reply-preview";
 
 const PREVIEW_LINES = 12;
 const PREVIEW_LINE_WIDTH = 96;
-
-/**
- * What `/paste` is about to hand the model, described well enough to catch the
- * usual mistake: the clipboard holds something else entirely (an old copy, a
- * URL, half a reply) and the queued "answer" only fails several seconds later,
- * inside a turn.
- */
-export interface PasteReplyPreview {
-	text: string;
-	lines: number;
-	/** Tool names the reply appears to call, in the order they appear. */
-	toolNames: string[];
-	/** True when the reply carries a tool envelope of some kind. */
-	looksLikeToolCall: boolean;
-}
-
-/**
- * Cheap, display-only inspection of the clipboard. The real parse ladder lives
- * in the provider (llms' tool-pipeline) and is the authority on what actually
- * runs; this only has to be right often enough to be useful in a preview, so it
- * looks for the two envelopes we see in practice — our `<tool>{json}</tool>`
- * contract and Anthropic-style `<invoke name="...">`.
- */
-export function describePasteReply(raw: string): PasteReplyPreview {
-	const text = raw.trim();
-	const toolNames: string[] = [];
-
-	const invokePattern = /<\s*invoke\s+name\s*=\s*["']([^"']+)["']/gi;
-	let match: RegExpExecArray | null;
-	while ((match = invokePattern.exec(text)) !== null) {
-		if (match[1]) toolNames.push(match[1]);
-	}
-
-	const jsonNamePattern = /"(?:name|tool)"\s*:\s*"([^"]+)"/g;
-	while ((match = jsonNamePattern.exec(text)) !== null) {
-		if (match[1] && !toolNames.includes(match[1])) toolNames.push(match[1]);
-	}
-
-	return {
-		text,
-		lines: text === "" ? 0 : text.split("\n").length,
-		toolNames,
-		looksLikeToolCall: toolNames.length > 0 || /<\s*tool\b/i.test(text),
-	};
-}
 
 function previewRows(text: string): { rows: string[]; hiddenLines: number } {
 	const all = text.split("\n");
