@@ -1,12 +1,8 @@
 import type { WebProviderPrompts } from "@cline/shared";
-import { SIMPLE_WEB_SYSTEM_PROMPT } from "./tool-pipeline/simple-system-prompt";
+import { SIMPLE_WEB_SYSTEM_PROMPT } from "../tool-pipeline/simple-system-prompt";
 
 /**
  * ChatGPT Web's three prompts.
- *
- * This file sits beside `chatgpt-web.ts` rather than inside a folder because
- * that provider has not been split yet. When it is, move it in as
- * `prompts.ts` and fix the registry's import path — nothing else changes.
  *
  * A session reaches a web provider as one of three things, and they want
  * different wording:
@@ -27,17 +23,25 @@ import { SIMPLE_WEB_SYSTEM_PROMPT } from "./tool-pipeline/simple-system-prompt";
  * `buildClineSystemPrompt`: `{{PLATFORM_NAME}}`, `{{CWD}}`, `{{CURRENT_DATE}}`,
  * `{{IDE_NAME}}`, `{{AVAILABLE_TOOLS}}`, `{{WORKFLOW}}`, `{{CLINE_RULES}}`,
  * `{{CLINE_METADATA}}`. Omitting one is fine — nothing is substituted into a
- * placeholder that is not there.
+ * placeholder that is not there, which is how a self-contained prompt like
+ * `SIMPLE_WEB_SYSTEM_PROMPT` sits in the same slot as the full tool contract.
  *
  * `{{AVAILABLE_TOOLS}}` is the one worth keeping in a `worker` prompt: it
- * renders only the tools that worker was actually granted.
+ * renders only the tools that worker was actually granted. Documenting one it
+ * cannot call guarantees it calls it and burns the turn on a rejection it
+ * cannot diagnose.
  */
 export const chatgptWebPrompts: WebProviderPrompts = {
 	// The human-in-the-loop prompt: PowerShell to read with, a patch block to
-	// edit with. This is what `applySimpleWebSystemPrompt` was meant to apply
-	// here and never did — it tests for "# CRITICAL TOOL CALLING PROTOCOL", a
-	// heading that lives in DEFAULT_CLINE_SYSTEM_PROMPT, which no web provider
-	// is ever given.
+	// edit with. ChatGPT is a strong reasoner behind a scraped chat box, not a
+	// function-calling API, and handing it the JSON tool contract makes it
+	// worse — it spends the turn formatting JSON instead of thinking.
+	//
+	// This is also the first time this prompt has actually reached a provider.
+	// It was applied by `applySimpleWebSystemPrompt`, which tests for
+	// "# CRITICAL TOOL CALLING PROTOCOL" — a heading that lives in
+	// DEFAULT_CLINE_SYSTEM_PROMPT, which no web provider is ever given. The
+	// check has never once matched. See the note in simple-system-prompt.ts.
 	default: SIMPLE_WEB_SYSTEM_PROMPT,
 
 	// ChatGPT workers get the same short human-in-the-loop prompt as the
