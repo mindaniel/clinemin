@@ -88,7 +88,33 @@
  * restart. Re-run `/findchat` afterwards to pin the new session to a chat.
  */
 
+import { clineStateFile, readStateFile, writeStateFile } from "./process-file";
 import { processGlobal } from "./process-global";
+
+/**
+ * Where a `/findchat` pin is written so the OTHER PROCESS can read it.
+ *
+ * `/findchat` runs in the CLI process; the provider that has to honour the pin
+ * usually runs in the hub daemon (`backendMode: "auto"` prefers a running hub).
+ * `globalThis` does not cross that boundary, so the in-memory binding below was
+ * invisible to the provider and every pinned turn still hashed its way into a
+ * brand-new web chat. See `process-file.ts`.
+ *
+ * `{ "chatgpt-web": "b92d63df78076b1340c03089" }` -- provider id to chat key.
+ */
+const PINS_FILE = clineStateFile("chat-pins.json");
+
+type PinsFile = Record<string, string>;
+
+function readPins(): PinsFile {
+	const parsed = readStateFile<PinsFile>(PINS_FILE);
+	if (!parsed || Array.isArray(parsed)) return {};
+	const pins: PinsFile = {};
+	for (const [providerId, chatKey] of Object.entries(parsed)) {
+		if (typeof chatKey === "string" && chatKey) pins[providerId] = chatKey;
+	}
+	return pins;
+}
 
 // Process-wide so every copy of `@cline/llms` in the process shares one view of
 // which chat is active; see `process-global.ts`.
@@ -141,16 +167,31 @@ export function clearChatKeyOverride(): void {
  */
 export function bindChatKey(providerId: string, chatKey: string): void {
 	state().boundChatKeys.set(providerId, chatKey);
+	writeStateFile(PINS_FILE, { ...readPins(), [providerId]: chatKey });
 }
 
 /** Drop the sticky binding, returning the provider to hash-derived routing. */
 export function clearChatKeyBinding(providerId: string): void {
 	state().boundChatKeys.delete(providerId);
+	const pins = readPins();
+	if (pins[providerId] !== undefined) {
+		delete pins[providerId];
+		writeStateFile(PINS_FILE, pins);
+	}
 }
 
-/** The provider's sticky binding, if `/findchat` set one. */
+/**
+ * The provider's sticky binding, if `/findchat` set one.
+ *
+ * The pin file wins, and is re-read every turn. `/findchat` runs in the CLI
+ * process while the provider usually runs in the hub daemon, so the in-memory
+ * map is only ever populated on one side of that boundary; and caching the file
+ * value would leave a hub-side session honouring a pin the CLI had already
+ * dropped (session switch, compaction). The map stays as the fallback for when
+ * the file cannot be written.
+ */
 export function getBoundChatKey(providerId: string): string | undefined {
-	return state().boundChatKeys.get(providerId);
+	return readPins()[providerId] ?? state().boundChatKeys.get(providerId);
 }
 
 /**

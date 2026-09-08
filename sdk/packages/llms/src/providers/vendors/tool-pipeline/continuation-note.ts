@@ -28,22 +28,51 @@
  * being trimmed correctly instead of silently degrading.
  */
 
+import {
+	clineStateFile,
+	deleteStateFile,
+	readStateFile,
+	writeStateFile,
+} from "./process-file";
 import { processGlobal } from "./process-global";
 
 /** Note used when a project has not customised one. */
 export const DEFAULT_CONTINUATION_NOTE =
 	"Use tool to continue the task or if finish, then tell 'finish'.";
 
-// Process-wide, not module-level: the CLI sets this from a different copy of
-// `@cline/llms` than the agent runtime reads it from. See `process-global.ts`.
+/**
+ * The active note, mirrored to disk for the OTHER PROCESS.
+ *
+ * The CLI sets the note (at startup from the project's `notes.json`, and live
+ * from `/note`), but the runtime that emits it — `agent-runtime.ts` — usually
+ * runs in the hub daemon, since `session-runtime.ts` starts sessions with
+ * `backendMode: "auto"`. `globalThis` does not cross a process boundary, so the
+ * hub only ever saw `DEFAULT_CONTINUATION_NOTE` and a project's note silently
+ * did nothing. See `process-file.ts`.
+ *
+ * One slot, not one per project: the reader has no project path to key on
+ * (`getContinuationNote()` is called deep in the runtime loop). Two CLI
+ * sessions on different projects sharing one hub therefore share the note of
+ * whichever started last — a narrower failure than the note never applying at
+ * all, which is what happens without this.
+ */
+const NOTE_FILE = clineStateFile("continuation-note.json");
+
+// Process-wide, not module-level: within one process the CLI sets this from a
+// different copy of `@cline/llms` than the runtime reads it from. See
+// `process-global.ts`.
 const state = () =>
 	processGlobal("continuationNote", () => ({
-		active: DEFAULT_CONTINUATION_NOTE,
+		active: undefined as string | undefined,
 	}));
 
 /** The note the runtime appends after each round of tool execution. */
 export function getContinuationNote(): string {
-	return state().active;
+	const stored = readStateFile<{ note?: unknown }>(NOTE_FILE)?.note;
+	if (typeof stored === "string" && stored.trim()) {
+		return stored;
+	}
+	return state().active ?? DEFAULT_CONTINUATION_NOTE;
 }
 
 /**
@@ -53,11 +82,17 @@ export function getContinuationNote(): string {
 export function setContinuationNote(note: string | undefined): void {
 	const trimmed = note?.trim();
 	state().active = trimmed ? trimmed : DEFAULT_CONTINUATION_NOTE;
+	if (trimmed) {
+		writeStateFile(NOTE_FILE, { note: trimmed });
+	} else {
+		deleteStateFile(NOTE_FILE);
+	}
 }
 
 /** Restore the built-in default. */
 export function resetContinuationNote(): void {
 	state().active = DEFAULT_CONTINUATION_NOTE;
+	deleteStateFile(NOTE_FILE);
 }
 
 /**

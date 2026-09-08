@@ -1,5 +1,5 @@
 import type { WebProviderPrompts } from "@cline/shared";
-import { chatgptWebPrompts } from "../chatgpt-web-prompts";
+import { chatgptWebPrompts } from "../chatgpt-web/prompts";
 import { geminiWebPrompts } from "../gemini-web/prompts";
 import { kimiWebPrompts } from "../kimi-web/prompts";
 
