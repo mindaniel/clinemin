@@ -2,7 +2,11 @@ import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { estimateDeepSeekWebUsage } from "./deepseek-web";
+import { estimateDeepSeekWebUsage } from "../deepseek-web";
+import {
+	DEFAULT_CONTINUATION_NOTE,
+	PASTE_CARRIER_PROMPT,
+} from "../tool-pipeline/continuation-note";
 import {
 	buildPrompt,
 	buildSendScript,
@@ -20,11 +24,7 @@ import {
 	requestThrottleRecoveryReload,
 	resolveDeepSeekWebV2Config,
 	resolveV2ModelOptions,
-} from "./deepseek-web-v2";
-import {
-	DEFAULT_CONTINUATION_NOTE,
-	PASTE_CARRIER_PROMPT,
-} from "./tool-pipeline/continuation-note";
+} from "./index";
 
 afterEach(() => {
 	vi.unstubAllEnvs();
