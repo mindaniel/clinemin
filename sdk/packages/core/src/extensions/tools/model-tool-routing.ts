@@ -89,9 +89,12 @@ export const DEFAULT_MODEL_TOOL_ROUTING_RULES: ToolRoutingRule[] = [
 		providerIdIncludes: [
 			"claude-web",
 			"chatgpt-web",
+			"deepseek-web",
+			"deepseek-web-v2",
+			"gemini-web",
 			"grok-web",
 			"kimi-web",
-			"gemini-web",
+			"qwen-web",
 		],
 		enableTools: ["apply_patch"],
 		disableTools: ["editor"],

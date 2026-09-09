@@ -83,12 +83,21 @@ describe("model tool routing", () => {
 		expect(config.enableApplyPatch).toBe(true);
 		expect(config.enableEditor).toBe(false);
 	});
+	// Every web provider, and the same list as the prompt registry in
+	// `llms/.../tool-pipeline/prompt-registry.ts`. They all get
+	// `SIMPLE_WEB_SYSTEM_PROMPT`, which teaches the `*** Begin Patch` grammar,
+	// and `parsePatchBlocks` only reads a bare patch block when the session
+	// actually holds `apply_patch`. A provider on one list and not the other
+	// writes patches nothing parses.
 	it.each([
 		"claude-web",
 		"chatgpt-web",
+		"deepseek-web",
+		"deepseek-web-v2",
+		"gemini-web",
 		"grok-web",
 		"kimi-web",
-		"gemini-web",
+		"qwen-web",
 	])("routes %s to apply_patch instead of editor", (providerId) => {
 		const config = resolveToolRoutingConfig(
 			providerId,
@@ -102,9 +111,9 @@ describe("model tool routing", () => {
 	});
 
 	it.each([
-		"deepseek-web",
-		"deepseek-web-v2",
-		"qwen-web",
+		"cline",
+		"anthropic",
+		"ollama",
 	])("leaves %s on the editor tool", (providerId) => {
 		const config = resolveToolRoutingConfig(
 			providerId,

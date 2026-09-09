@@ -2,7 +2,7 @@ import type { WebProviderPrompts } from "@cline/shared";
 import { SIMPLE_WEB_SYSTEM_PROMPT } from "../tool-pipeline/simple-system-prompt";
 
 /**
- * Kimi Web's three prompts.
+ * Qwen Web's three prompts.
  *
  * A session reaches a web provider as one of three things, and they want
  * different wording:
@@ -16,32 +16,18 @@ import { SIMPLE_WEB_SYSTEM_PROMPT } from "../tool-pipeline/simple-system-prompt"
  *   reads reports.
  *
  * Leave a slot `undefined` and that role gets the shared prompt it has always
- * had. That is the safe default and it is why adding this file to a provider
- * changes nothing until a slot is actually filled in.
- *
- * Placeholders available to `default` and `worker`, substituted by
- * `buildClineSystemPrompt`: `{{PLATFORM_NAME}}`, `{{CWD}}`, `{{CURRENT_DATE}}`,
- * `{{IDE_NAME}}`, `{{AVAILABLE_TOOLS}}`, `{{WORKFLOW}}`, `{{CLINE_RULES}}`,
- * `{{CLINE_METADATA}}`. Omitting one is fine — nothing is substituted into a
- * placeholder that is not there, which is how a self-contained prompt like
- * `SIMPLE_WEB_SYSTEM_PROMPT` sits in the same slot as the full tool contract.
- *
- * `{{AVAILABLE_TOOLS}}` is the one worth keeping in a `worker` prompt: it
- * renders only the tools that worker was actually granted. Documenting one it
- * cannot call guarantees it calls it and burns the turn on a rejection it
- * cannot diagnose.
+ * had. See `kimi-web/prompts.ts` for the placeholder list available to
+ * `default` and `worker`.
  */
-export const kimiWebPrompts: WebProviderPrompts = {
+export const qwenWebPrompts: WebProviderPrompts = {
 	// The human-in-the-loop prompt: PowerShell to read with, a patch block to
-	// edit with. Kimi is a strong reasoner behind a scraped chat box, not a
+	// edit with. Qwen is a strong reasoner behind a scraped chat box, not a
 	// function-calling API, and handing it the JSON tool contract makes it
 	// worse — it spends the turn formatting JSON instead of thinking.
 	//
-	// This is also the first time this prompt has actually reached a provider.
-	// It was applied by `applySimpleWebSystemPrompt`, which tests for
-	// "# CRITICAL TOOL CALLING PROTOCOL" — a heading that lives in
-	// DEFAULT_CLINE_SYSTEM_PROMPT, which no web provider is ever given. The
-	// check has never once matched. See the note in simple-system-prompt.ts.
+	// `qwen-web` is on the `web-chat-providers-use-apply-patch` rule in
+	// `model-tool-routing.ts`, which is what makes the patch grammar this
+	// prompt teaches actually parse. The two lists have to stay in step.
 	//
 	// Backup: `default: undefined` restores the shared coding-agent prompt built
 	// by `buildClineSystemPrompt` — the full tool-calling contract with
@@ -59,8 +45,6 @@ export const kimiWebPrompts: WebProviderPrompts = {
 	// of the two is used, under a "# Team Teammate Role" heading.
 	worker: SIMPLE_WEB_SYSTEM_PROMPT,
 
-	// Unset: a manager keeps the shared manager prompt from
-	// `@cline/shared/prompt/manager`. A value here replaces it verbatim, with
-	// no placeholder substitution.
+	// Unset: a manager keeps the shared manager prompt.
 	manager: undefined,
 };

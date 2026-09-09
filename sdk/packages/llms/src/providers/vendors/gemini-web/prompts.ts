@@ -42,6 +42,10 @@ export const geminiWebPrompts: WebProviderPrompts = {
 	// "# CRITICAL TOOL CALLING PROTOCOL" — a heading that lives in
 	// DEFAULT_CLINE_SYSTEM_PROMPT, which no web provider is ever given. The
 	// check has never once matched. See the note in simple-system-prompt.ts.
+	//
+	// Backup: `default: undefined` restores the shared coding-agent prompt built
+	// by `buildClineSystemPrompt` — the full tool-calling contract with
+	// `{{AVAILABLE_TOOLS}}` substituted in.
 	default: SIMPLE_WEB_SYSTEM_PROMPT,
 
 	// Gemini workers now use the shorter Web prompt (SIMPLE_WEB_SYSTEM_PROMPT)

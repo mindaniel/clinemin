@@ -1,7 +1,12 @@
 import type { WebProviderPrompts } from "@cline/shared";
 import { chatgptWebPrompts } from "../chatgpt-web/prompts";
+import { claudeWebPrompts } from "../claude-web/prompts";
+import { deepseekWebPrompts } from "../deepseek-web/prompts";
+import { deepseekWebV2Prompts } from "../deepseek-web-v2/prompts";
 import { geminiWebPrompts } from "../gemini-web/prompts";
+import { grokWebPrompts } from "../grok-web/prompts";
 import { kimiWebPrompts } from "../kimi-web/prompts";
+import { qwenWebPrompts } from "../qwen-web/prompts";
 
 /**
  * Which providers override which of the three prompts.
@@ -24,8 +29,13 @@ import { kimiWebPrompts } from "../kimi-web/prompts";
  */
 const WEB_PROVIDER_PROMPTS: Record<string, WebProviderPrompts> = {
 	"chatgpt-web": chatgptWebPrompts,
+	"claude-web": claudeWebPrompts,
+	"deepseek-web": deepseekWebPrompts,
+	"deepseek-web-v2": deepseekWebV2Prompts,
 	"gemini-web": geminiWebPrompts,
+	"grok-web": grokWebPrompts,
 	"kimi-web": kimiWebPrompts,
+	"qwen-web": qwenWebPrompts,
 };
 
 /**

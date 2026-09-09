@@ -3,8 +3,8 @@ import type { LanguageModelV2Prompt } from "@ai-sdk/provider";
 /**
  * The human-in-the-loop prompt for the smart web providers.
  *
- * Claude, ChatGPT, Grok, Kimi and Gemini on the web are strong reasoners behind
- * a scraped chat box, not a function-calling API. Handing them our tool-calling
+ * Claude, ChatGPT, DeepSeek, Gemini, Grok, Kimi and Qwen on the web are strong
+ * reasoners behind a chat box, not a function-calling API. Handing them our tool-calling
  * contract makes them worse: they spend the turn formatting JSON instead of
  * thinking. So they get a prompt that asks for PowerShell to read with and a
  * patch block to edit with, and the human pastes results back.

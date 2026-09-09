@@ -37,8 +37,14 @@ export async function navigateChatGPTChat(
 	}
 
 	if (sessionId) {
-		// Navigate to a specific chat
+		// Check if we are already on the correct chat to avoid unnecessary reloads
+		const currentUrl = await readPageUrl(cdp, cdpSessionId);
 		const chatUrl = `https://chatgpt.com/c/${sessionId}`;
+		if (currentUrl && currentUrl.includes(`/c/${sessionId}`)) {
+			// Already on the correct chat, no need to navigate/reload
+			return;
+		}
+		// Navigate to a specific chat
 		await cdp.send(
 			"Runtime.evaluate",
 			{

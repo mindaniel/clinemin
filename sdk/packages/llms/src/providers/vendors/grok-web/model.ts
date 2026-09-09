@@ -34,7 +34,6 @@ import {
 	unappliedPatchNotice,
 } from "../tool-pipeline/patch-block";
 import { stripPreviousUserBlock } from "../tool-pipeline/previous-user-dedupe";
-import { applySimpleWebSystemPrompt } from "../tool-pipeline/simple-system-prompt";
 import { validateToolCalls } from "../tool-pipeline/tool-dispatcher";
 import type { ProviderFactoryResult } from "../types";
 import { connectBrowser } from "./browser";
@@ -94,7 +93,12 @@ function buildGrokPrompt(
 	reInjectSystem: boolean,
 	preserveCompactionContext: boolean,
 ): string {
-	const effectivePrompt = applySimpleWebSystemPrompt(prompt);
+	// The system prompt arrives already chosen: `buildClineSystemPrompt`
+	// picks this provider's `default` / `worker` / `manager` wording from
+	// its prompts file. This used to call `applySimpleWebSystemPrompt`,
+	// which swapped the prompt here by testing it for a marker heading
+	// that no web provider is ever sent — so it never once fired.
+	const effectivePrompt = prompt;
 
 	const conversation = buildLeanConversation(
 		effectivePrompt,

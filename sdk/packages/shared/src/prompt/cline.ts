@@ -249,8 +249,7 @@ function renderWebProviderToolDocs(tools: string[] | undefined): string {
 			? allowed.has(name)
 			: // `editor` and `apply_patch` are the same job, and tool routing gives a
 				// session exactly one of them. An unrestricted session has no list to
-				// check, so the default has to be the one nearly every provider gets;
-				// documenting both sent qwen-web after a patch tool it does not have.
+				// check, so the default has to be the one nearly every web provider gets.
 				name !== "apply_patch",
 	)
 		.map((name) => WEB_PROVIDER_TOOL_DOCS[name])

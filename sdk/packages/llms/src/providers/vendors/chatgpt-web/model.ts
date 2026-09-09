@@ -424,10 +424,23 @@ export function createChatGPTWebModel(
 		);
 
 		// Extract session ID from the page URL after sending.
-		const pageUrl = await readPageUrl(cdp, cdpSessionId);
-		const chatGPTSession = pageUrl
-			? extractChatGPTSessionId(pageUrl)
-			: undefined;
+		// If we started a fresh chat, wait for the URL to update with the new chat ID.
+		let chatGPTSession: string | undefined;
+		if (sessionId) {
+			// We navigated to an existing chat, URL should already be correct
+			const pageUrl = await readPageUrl(cdp, cdpSessionId);
+			chatGPTSession = pageUrl ? extractChatGPTSessionId(pageUrl) : undefined;
+		} else {
+			// We started a fresh chat, wait for the URL to update
+			const deadline = Date.now() + 5000; // Wait up to 5 seconds
+			while (Date.now() < deadline) {
+				const pageUrl = await readPageUrl(cdp, cdpSessionId);
+				chatGPTSession = pageUrl ? extractChatGPTSessionId(pageUrl) : undefined;
+				if (chatGPTSession) break;
+				await new Promise((resolve) => setTimeout(resolve, 200));
+			}
+		}
+
 		if (chatGPTSession) {
 			currentChatGPTSession = chatGPTSession;
 			recordChatGPTChatSession(
