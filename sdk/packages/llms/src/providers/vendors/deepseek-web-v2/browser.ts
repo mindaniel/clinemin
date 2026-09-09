@@ -9,17 +9,15 @@ import {
 } from "../tool-pipeline/browser-path";
 import { registerLaunchedBrowser } from "../tool-pipeline/browser-processes";
 import { retryOnMissingExecutionContext } from "../tool-pipeline/cdp-execution-context";
+import { getPooledCdp, setPooledCdp } from "../tool-pipeline/cdp-pool";
 import {
 	CONFIG_DIR,
 	DEEPSEEK_WEB_URL,
 	type DeepSeekWebV2RuntimeConfig,
 	sleep,
 } from "./config";
-// ── Browser session (raw CDP over WebSocket) ───────────────────────────────
 
-/** The active CDP browser connection, reused across turns. */
-export let activeCdp: CdpClient | undefined;
-export let activeCdpKey: string | undefined;
+// ── Browser session (raw CDP over WebSocket) ───────────────────────────────
 
 async function isEndpointUp(port: number): Promise<boolean> {
 	try {
@@ -49,24 +47,35 @@ async function waitForEndpoint(port: number, timeoutMs: number): Promise<void> {
  * handshake fails), so the provider drives the browser directly — the same
  * transport `browser.py` relies on for network monitoring.
  */
+/**
+ * A CDP request parameter set or reply payload.
+ *
+ * Shaped by the Chrome DevTools Protocol, not by us: `send("Target.getTargets")`
+ * returns something quite different from `send("Runtime.evaluate")`, and every
+ * caller narrows the result itself at the point of use. One alias with one
+ * suppression, rather than the same escape hatch repeated at ten signatures.
+ */
+// biome-ignore lint/suspicious/noExplicitAny: CDP payloads are protocol-shaped, narrowed per call site.
+type CdpPayload = any;
+
 export class CdpClient {
 	private ws: WebSocket;
 	private id = 0;
 	private pending = new Map<
 		number,
-		{ resolve: (v: any) => void; reject: (e: Error) => void }
+		{ resolve: (v: CdpPayload) => void; reject: (e: Error) => void }
 	>();
 	private listeners = new Map<
 		string,
-		Set<(params: any, sessionId?: string) => void>
+		Set<(params: CdpPayload, sessionId?: string) => void>
 	>();
 
 	constructor(wsUrl: string) {
 		this.ws = new WebSocket(wsUrl);
 		this.ws.addEventListener("message", (event) => {
 			const msg = JSON.parse(event.data as string);
-			if (msg.id && this.pending.has(msg.id)) {
-				const p = this.pending.get(msg.id)!;
+			const p = msg.id ? this.pending.get(msg.id) : undefined;
+			if (p) {
 				this.pending.delete(msg.id);
 				if (msg.error)
 					p.reject(new Error(`${msg.error.code}: ${msg.error.message}`));
@@ -103,7 +112,11 @@ export class CdpClient {
 	// Wrapped so a page that is mid-navigation — no execution context yet —
 	// waits the moment out instead of failing the turn with nothing typed.
 	// See tool-pipeline/cdp-execution-context.ts.
-	send(method: string, params: any = {}, sessionId?: string): Promise<any> {
+	send(
+		method: string,
+		params: CdpPayload = {},
+		sessionId?: string,
+	): Promise<CdpPayload> {
 		return retryOnMissingExecutionContext(
 			method,
 			() => this.sendOnce(method, params, sessionId),
@@ -114,9 +127,9 @@ export class CdpClient {
 
 	private sendOnce(
 		method: string,
-		params: any = {},
+		params: CdpPayload = {},
 		sessionId?: string,
-	): Promise<any> {
+	): Promise<CdpPayload> {
 		const id = ++this.id;
 		return new Promise((resolve, reject) => {
 			this.pending.set(id, { resolve, reject });
@@ -137,12 +150,18 @@ export class CdpClient {
 		});
 	}
 
-	on(method: string, cb: (params: any, sessionId?: string) => void): void {
+	on(
+		method: string,
+		cb: (params: CdpPayload, sessionId?: string) => void,
+	): void {
 		if (!this.listeners.has(method)) this.listeners.set(method, new Set());
 		this.listeners.get(method)?.add(cb);
 	}
 
-	off(method: string, cb: (params: any, sessionId?: string) => void): void {
+	off(
+		method: string,
+		cb: (params: CdpPayload, sessionId?: string) => void,
+	): void {
 		this.listeners.get(method)?.delete(cb);
 	}
 
@@ -187,22 +206,11 @@ async function connectCdp(port: number, timeoutMs: number): Promise<CdpClient> {
 export async function connectBrowser(
 	config: DeepSeekWebV2RuntimeConfig,
 ): Promise<CdpClient> {
-	const key = `${config.debugPort}`;
-	if (activeCdp && activeCdpKey === key && activeCdp.isOpen()) {
-		return activeCdp;
-	}
-	// A different key means a different browser — `/profile` switched the
-	// user-data-dir and with it the debug port. Drop the old socket rather than
-	// leaking it; the Chrome behind it stays up so switching back is instant.
-	if (activeCdp && activeCdpKey !== key) {
-		try {
-			activeCdp.close();
-		} catch {
-			// Already gone; nothing to release.
-		}
-		activeCdp = undefined;
-		activeCdpKey = undefined;
-	}
+	// Connections are pooled per port, so two sessions on two profiles each
+	// keep their own socket. A single cached slot made them close each
+	// other's on every turn. See tool-pipeline/cdp-pool.ts.
+	const pooled = getPooledCdp<CdpClient>("deepseek-web-v2", config.debugPort);
+	if (pooled) return pooled;
 
 	const connectTimeoutMs = Math.max(config.launchTimeoutMs, 30_000);
 
@@ -211,9 +219,9 @@ export async function connectBrowser(
 		// must never kill it, but the claim tells whoever DOES own it not to
 		// close it out from under this session. See browser-claims.ts.
 		claimBrowserPort(config.debugPort);
-		activeCdp = await connectCdp(config.debugPort, connectTimeoutMs);
-		activeCdpKey = key;
-		return activeCdp;
+		const cdp = await connectCdp(config.debugPort, connectTimeoutMs);
+		setPooledCdp("deepseek-web-v2", config.debugPort, cdp);
+		return cdp;
 	}
 
 	const executablePath = config.chromePath ?? findChromePath();
@@ -262,9 +270,9 @@ export async function connectBrowser(
 		);
 	}
 
-	activeCdp = await connectCdp(config.debugPort, connectTimeoutMs);
-	activeCdpKey = key;
-	return activeCdp;
+	const cdp = await connectCdp(config.debugPort, connectTimeoutMs);
+	setPooledCdp("deepseek-web-v2", config.debugPort, cdp);
+	return cdp;
 }
 
 /** Attach to the chat.deepseek.com tab, reusing an open one or creating it. */
@@ -273,7 +281,7 @@ export async function ensureDeepSeekPage(
 ): Promise<{ targetId: string; sessionId: string }> {
 	const { targetInfos } = await cdp.send("Target.getTargets");
 	let target = targetInfos.find(
-		(t: any) => t.type === "page" && t.url.includes("chat.deepseek.com"),
+		(t: CdpPayload) => t.type === "page" && t.url.includes("chat.deepseek.com"),
 	);
 	if (!target) {
 		const created = await cdp.send("Target.createTarget", {

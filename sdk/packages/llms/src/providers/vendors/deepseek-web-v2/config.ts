@@ -1,7 +1,10 @@
 import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
-import { resolveActiveProfilePaths } from "../tool-pipeline/browser-profiles";
+import {
+	resolveActiveProfilePaths,
+	resolveProfileDebugPort,
+} from "../tool-pipeline/browser-profiles";
 export const DEEPSEEK_WEB_URL = "https://chat.deepseek.com/";
 
 export const CONFIG_DIR = path.join(os.homedir(), ".cline", "deepseek-web-v2");
@@ -109,9 +112,14 @@ export function resolveDeepSeekWebV2Config(): DeepSeekWebV2RuntimeConfig {
 	// debug port and chat registry this provider uses, so one provider can be
 	// driven with several logins. Env vars and config.json still win over it.
 	const profile = resolveActiveProfilePaths(CONFIG_DIR, DEFAULT_DEBUG_PORT);
-	const port =
+	// The profile's port OFFSET is applied on top of whatever base port was
+	// chosen, rather than being a fallback for it. A `debugPort` in
+	// config.json used to win outright, so every profile landed on one port,
+	// attached to the Chrome already listening there, and shared one account.
+	const port = resolveProfileDebugPort(
 		Number(process.env.DEEPSEEK_WEB_V2_DEBUG_PORT ?? fileConfig.debugPort) ||
-		profile.debugPort;
+			DEFAULT_DEBUG_PORT,
+	);
 	return {
 		chromePath:
 			process.env.DEEPSEEK_WEB_V2_CHROME_PATH || fileConfig.chromePath,
@@ -227,16 +235,36 @@ export function computeSendDelay(
 }
 
 /**
- * Human-ish markers DeepSeek uses to say "slow down". Used to detect a
+ * Human-ish markers a web chat uses to say "slow down". Used to detect a
  * throttled reply so the provider can log/back off instead of misinterpreting
  * it as a normal (possibly shorter-context) completion.
+ *
+ * `rate.limit` used to be written with a bare `.`, which matches ANY character:
+ * `rateLimit`, `rate_limit`, `RateLimiter` — every identifier in a codebase
+ * that has retry logic. A separator is required now, so only the English
+ * phrase matches and identifier spellings do not.
  */
 const RATE_LIMIT_TEXT_RE =
-	/Messages too frequent|Try again later|too many requests|rate.limit|slow down/i;
+	/Messages too frequent|Try again later|too many requests|rate[- ]limit|slow down/i;
 
-/** Return `true` when `text` looks like a DeepSeek anti-abuse / throttle reply. */
+/**
+ * How long a reply can be and still be a throttle notice.
+ *
+ * A real one is the whole message and it is short ("Messages too frequent,
+ * please try again later"). Matching the phrase anywhere in a long reply is
+ * what made this fire on ordinary answers: these providers now run coding
+ * sessions, where an assistant explaining retry code writes "rate limit" and
+ * "try again later" as normal prose. chatgpt-web arms a one-shot page reload
+ * off this flag, so a false positive reloaded the page on the next turn — every
+ * turn, for any conversation about throttling.
+ */
+const RATE_LIMIT_MAX_REPLY_CHARS = 400;
+
+/** Return `true` when `text` looks like an anti-abuse / throttle reply. */
 export function isRateLimitText(text: string): boolean {
-	return RATE_LIMIT_TEXT_RE.test(text);
+	const trimmed = text.trim();
+	if (trimmed.length > RATE_LIMIT_MAX_REPLY_CHARS) return false;
+	return RATE_LIMIT_TEXT_RE.test(trimmed);
 }
 export { findChromePath } from "../tool-pipeline/browser-path";
 export const sleep = (ms: number) =>

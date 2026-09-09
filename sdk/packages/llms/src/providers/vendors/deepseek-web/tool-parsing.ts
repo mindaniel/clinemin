@@ -54,7 +54,7 @@ const TOOL_NAME_ALIASES: Record<string, string> = {
 	write_file_from_contents: "editor",
 	update: "editor",
 	patch: "editor",
-	apply_patch: "editor",
+	apply_patch: "apply_patch",
 	create_file: "editor",
 	replace: "editor",
 	grep: "search_codebase",
@@ -235,8 +235,9 @@ export function parseLooseDeepSeekToolCalls(
 	const toolCalls: ParsedToolCall[] = [];
 
 	const openTagRe = /<\s*tool[\w:-]*\b([^>]*)>/gi;
-	let match: RegExpExecArray | null;
-	while ((match = openTagRe.exec(content)) !== null) {
+	for (;;) {
+		const match = openTagRe.exec(content);
+		if (match === null) break;
 		const attrs = (match[1] ?? "").trim();
 		const afterTag = content.slice(match.index + match[0].length);
 
@@ -425,7 +426,7 @@ function repairQuotesAndEscapes(text: string): string {
 					out += "\\\\";
 					i += 1;
 				} else {
-					out += "\\\\" + next;
+					out += `\\\\${next}`;
 					i += 2;
 				}
 				continue;

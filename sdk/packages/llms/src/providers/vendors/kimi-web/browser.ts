@@ -1,7 +1,7 @@
 /**
  * Getting a Chrome we can drive, and a Kimi page that is ready to type into.
  *
- * `activeCdp` is deliberately module state: one socket per debug port, reused
+ * The CDP socket is pooled per debug port (see cdp-pool.ts), reused
  * across turns. `/profile` can change the port between turns, so the key is
  * checked before the cached socket is handed back.
  */
@@ -22,6 +22,7 @@ import {
 	isEndpointUp,
 	waitForEndpoint,
 } from "../tool-pipeline/cdp-client";
+import { getPooledCdp, setPooledCdp } from "../tool-pipeline/cdp-pool";
 import {
 	CONFIG_DIR,
 	Kimi_WEB_URL,
@@ -32,9 +33,6 @@ import {
 export type { CdpClient };
 
 // ── CDP Client ────────────────────────────────────────────────────────────────
-
-let activeCdp: CdpClient | null = null;
-let activeCdpKey: string | null = null;
 
 /**
  * Connect with this provider's name attached.
@@ -53,22 +51,11 @@ export function connectCdp(
 export async function connectBrowser(
 	config: KimiWebV2RuntimeConfig,
 ): Promise<CdpClient> {
-	const key = `${config.debugPort}`;
-	if (activeCdp && activeCdpKey === key && activeCdp.isOpen()) {
-		return activeCdp;
-	}
-	// A different key means a different browser — `/profile` switched the
-	// user-data-dir and with it the debug port. Drop the old socket rather than
-	// leaking it; the Chrome behind it stays up so switching back is instant.
-	if (activeCdp && activeCdpKey !== key) {
-		try {
-			activeCdp.close();
-		} catch {
-			// Already gone; nothing to release.
-		}
-		activeCdp = null;
-		activeCdpKey = null;
-	}
+	// Connections are pooled per port, so two sessions on two profiles each
+	// keep their own socket. A single cached slot made them close each
+	// other's on every turn. See tool-pipeline/cdp-pool.ts.
+	const pooled = getPooledCdp<CdpClient>("kimi-web", config.debugPort);
+	if (pooled) return pooled;
 
 	const connectTimeoutMs = Math.max(config.launchTimeoutMs, 30000);
 
@@ -77,9 +64,9 @@ export async function connectBrowser(
 		// must never kill it, but the claim tells whoever DOES own it not to
 		// close it out from under this session. See browser-claims.ts.
 		claimBrowserPort(config.debugPort);
-		activeCdp = await connectCdp(config.debugPort, connectTimeoutMs);
-		activeCdpKey = key;
-		return activeCdp;
+		const cdp = await connectCdp(config.debugPort, connectTimeoutMs);
+		setPooledCdp("kimi-web", config.debugPort, cdp);
+		return cdp;
 	}
 
 	const executablePath = config.chromePath ?? findChromePath();
@@ -127,9 +114,9 @@ export async function connectBrowser(
 				"If Chrome is already running with this profile, close it or set a different Kimi_WEB_PROFILE_DIR.",
 		);
 	}
-	activeCdp = await connectCdp(config.debugPort, connectTimeoutMs);
-	activeCdpKey = key;
-	return activeCdp;
+	const cdp = await connectCdp(config.debugPort, connectTimeoutMs);
+	setPooledCdp("kimi-web", config.debugPort, cdp);
+	return cdp;
 }
 
 // ── Composer ready ─────────────────────────────────────────────────────────────

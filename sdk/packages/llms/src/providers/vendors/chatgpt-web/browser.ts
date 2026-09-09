@@ -18,6 +18,7 @@ import {
 	isEndpointUp,
 	waitForEndpoint,
 } from "../tool-pipeline/cdp-client";
+import { getPooledCdp, setPooledCdp } from "../tool-pipeline/cdp-pool";
 import {
 	CHATGPT_WEB_URL,
 	type ChatGPTWebV2RuntimeConfig,
@@ -26,8 +27,6 @@ import {
 
 export { CdpClient, CDP_CALL_TIMEOUT_MS };
 
-let activeCdp: CdpClient | null = null;
-let activeCdpKey: string | null = null;
 let activeChatGPTTargetId: string | null = null;
 let activeChatGPTCdpSessionId: string | null = null;
 export const chatgptNetworkEnabledSessions = new Set<string>();
@@ -35,29 +34,23 @@ export const chatgptNetworkEnabledSessions = new Set<string>();
 export async function connectBrowser(
 	config: ChatGPTWebV2RuntimeConfig,
 ): Promise<CdpClient> {
-	const key = `${config.debugPort}`;
-	if (activeCdp && activeCdpKey === key && activeCdp.isOpen()) {
-		return activeCdp;
-	}
-	if (activeCdp && activeCdpKey !== key) {
-		try {
-			activeCdp.close();
-		} catch {}
-		activeCdp = null;
-		activeCdpKey = null;
-	}
+	// Connections are pooled per port, so two sessions on two profiles each
+	// keep their own socket. A single cached slot made them close each
+	// other's on every turn. See tool-pipeline/cdp-pool.ts.
+	const pooled = getPooledCdp<CdpClient>("chatgpt-web", config.debugPort);
+	if (pooled) return pooled;
 
 	const connectTimeoutMs = Math.max(config.launchTimeoutMs, 30000);
 
 	if (await isEndpointUp(config.debugPort)) {
 		claimBrowserPort(config.debugPort);
-		activeCdp = await connectCdp(
+		const cdp = await connectCdp(
 			config.debugPort,
 			connectTimeoutMs,
 			"chatgpt-web",
 		);
-		activeCdpKey = key;
-		return activeCdp;
+		setPooledCdp("chatgpt-web", config.debugPort, cdp);
+		return cdp;
 	}
 
 	const executablePath = config.chromePath ?? findChromePath();
@@ -103,13 +96,13 @@ export async function connectBrowser(
 				"If Chrome is already running with this profile, close it or set a different CHATGPT_WEB_PROFILE_DIR.",
 		);
 	}
-	activeCdp = await connectCdp(
+	const cdp = await connectCdp(
 		config.debugPort,
 		connectTimeoutMs,
 		"chatgpt-web",
 	);
-	activeCdpKey = key;
-	return activeCdp;
+	setPooledCdp("chatgpt-web", config.debugPort, cdp);
+	return cdp;
 }
 
 export function getActiveChatGPTTargetId(): string | null {

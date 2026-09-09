@@ -13,15 +13,13 @@ import {
 	isEndpointUp,
 	waitForEndpoint,
 } from "../tool-pipeline/cdp-client";
+import { getPooledCdp, setPooledCdp } from "../tool-pipeline/cdp-pool";
 import type { ClaudeWebV2RuntimeConfig } from "./config";
 import { CONFIG_DIR } from "./config";
 
 export { CdpClient, connectCdp, isEndpointUp, waitForEndpoint };
 
 // ── Module-level state ─────────────────────────────────────────────────────
-
-let activeCdp: CdpClient | null = null;
-let activeCdpKey: string | null = null;
 
 // Cache the attached page target + its CDP session so consecutive turns reuse
 // the SAME session instead of re-attaching (and re-toggling the Network
@@ -70,22 +68,11 @@ export function consumeClaudeThrottleRecoveryReload(): boolean {
 export async function connectBrowser(
 	config: ClaudeWebV2RuntimeConfig,
 ): Promise<CdpClient> {
-	const key = `${config.debugPort}`;
-	if (activeCdp && activeCdpKey === key && activeCdp.isOpen()) {
-		return activeCdp;
-	}
-	// A different key means a different browser — `/profile` switched the
-	// user-data-dir and with it the debug port. Drop the old socket rather than
-	// leaking it; the Chrome behind it stays up so switching back is instant.
-	if (activeCdp && activeCdpKey !== key) {
-		try {
-			activeCdp.close();
-		} catch {
-			// Already gone; nothing to release.
-		}
-		activeCdp = null;
-		activeCdpKey = null;
-	}
+	// Connections are pooled per port, so two sessions on two profiles each
+	// keep their own socket. A single cached slot made them close each
+	// other's on every turn. See tool-pipeline/cdp-pool.ts.
+	const pooled = getPooledCdp<CdpClient>("claude-web", config.debugPort);
+	if (pooled) return pooled;
 
 	const connectTimeoutMs = Math.max(config.launchTimeoutMs, 30000);
 
@@ -94,13 +81,13 @@ export async function connectBrowser(
 		// must never kill it, but the claim tells whoever DOES own it not to
 		// close it out from under this session. See browser-claims.ts.
 		claimBrowserPort(config.debugPort);
-		activeCdp = await connectCdp(
+		const cdp = await connectCdp(
 			config.debugPort,
 			connectTimeoutMs,
 			"claude-web",
 		);
-		activeCdpKey = key;
-		return activeCdp;
+		setPooledCdp("claude-web", config.debugPort, cdp);
+		return cdp;
 	}
 
 	const executablePath = config.chromePath ?? findChromePath();
@@ -148,11 +135,11 @@ export async function connectBrowser(
 				"If Chrome is already running with this profile, close it or set a different CLAUDE_WEB_PROFILE_DIR.",
 		);
 	}
-	activeCdp = await connectCdp(
+	const cdp = await connectCdp(
 		config.debugPort,
 		connectTimeoutMs,
 		"claude-web",
 	);
-	activeCdpKey = key;
-	return activeCdp;
+	setPooledCdp("claude-web", config.debugPort, cdp);
+	return cdp;
 }

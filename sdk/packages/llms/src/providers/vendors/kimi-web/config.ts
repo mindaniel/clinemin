@@ -8,7 +8,10 @@
 import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
-import { resolveActiveProfilePaths } from "../tool-pipeline/browser-profiles";
+import {
+	resolveActiveProfilePaths,
+	resolveProfileDebugPort,
+} from "../tool-pipeline/browser-profiles";
 
 export const CONFIG_DIR = path.join(os.homedir(), ".cline", "kimi-web");
 export const CONFIG_FILE = path.join(CONFIG_DIR, "config.json");
@@ -97,9 +100,14 @@ export function resolveKimiWebV2Config(): KimiWebV2RuntimeConfig {
 	// debug port and chat registry this provider uses, so one provider can be
 	// driven with several logins. Env vars and config.json still win over it.
 	const profile = resolveActiveProfilePaths(CONFIG_DIR, DEFAULT_DEBUG_PORT);
-	const port =
+	// The profile's port OFFSET is applied on top of whatever base port was
+	// chosen, rather than being a fallback for it. A `debugPort` in
+	// config.json used to win outright, so every profile landed on one port,
+	// attached to the Chrome already listening there, and shared one account.
+	const port = resolveProfileDebugPort(
 		Number(process.env.Kimi_WEB_DEBUG_PORT ?? fileConfig.debugPort) ||
-		profile.debugPort;
+			DEFAULT_DEBUG_PORT,
+	);
 	return {
 		chromePath: process.env.Kimi_WEB_CHROME_PATH || fileConfig.chromePath,
 		profileDir:

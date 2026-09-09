@@ -5,7 +5,10 @@
 import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
-import { resolveActiveProfilePaths } from "../tool-pipeline/browser-profiles";
+import {
+	resolveActiveProfilePaths,
+	resolveProfileDebugPort,
+} from "../tool-pipeline/browser-profiles";
 
 export const CONFIG_DIR = path.join(os.homedir(), ".cline", "chatgpt-web");
 const CONFIG_FILE = path.join(CONFIG_DIR, "config.json");
@@ -29,14 +32,21 @@ export function resolveChatGPTWebV2Config(): ChatGPTWebV2RuntimeConfig {
 	const fileConfig = readConfigFile();
 	// The active named profile (`/profile`) decides which Chrome user-data-dir,
 	// debug port and chat registry to use. If none, fall back to the default.
-	const { profileDir: activeProfileDir, debugPort: activeDebugPort } =
-		resolveActiveProfilePaths(CONFIG_DIR, DEFAULT_DEBUG_PORT);
+	const { profileDir: activeProfileDir } = resolveActiveProfilePaths(
+		CONFIG_DIR,
+		DEFAULT_DEBUG_PORT,
+	);
 	const profileDir =
 		fileConfig.profileDir ??
 		activeProfileDir ??
 		path.join(CONFIG_DIR, "profile");
-	const debugPort =
-		fileConfig.debugPort ?? activeDebugPort ?? DEFAULT_DEBUG_PORT;
+	// The profile's port OFFSET is applied on top of whatever base port was
+	// chosen, rather than being a fallback for it. A `debugPort` in
+	// config.json used to win outright, so every profile landed on one port,
+	// attached to the Chrome already listening there, and shared one account.
+	const debugPort = resolveProfileDebugPort(
+		fileConfig.debugPort ?? DEFAULT_DEBUG_PORT,
+	);
 
 	return {
 		chromePath: fileConfig.chromePath,

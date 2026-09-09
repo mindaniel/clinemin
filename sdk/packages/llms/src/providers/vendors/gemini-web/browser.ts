@@ -1,9 +1,11 @@
 /**
  * Getting a Chrome we can drive, and a Gemini page that is ready to type into.
  *
- * `activeCdp` is deliberately module state: one socket per debug port, reused
- * across turns. `/profile` can change the port between turns, so the key is
- * checked before the cached socket is handed back.
+ * `cdpConnections` is deliberately module state: one socket per debug port,
+ * reused across turns and keyed by port so two profiles can hold two live
+ * connections at once. The other vendors have been moved onto the shared
+ * `tool-pipeline/cdp-pool.ts`, which is this same design; gemini-web already
+ * had it.
  */
 
 import { spawn } from "node:child_process";
@@ -54,7 +56,7 @@ export async function connectBrowser(
 ): Promise<CdpClient> {
 	const key = `${config.debugPort}`;
 	const existing = cdpConnections.get(key);
-	if (existing && existing.isOpen()) {
+	if (existing?.isOpen()) {
 		return existing;
 	}
 

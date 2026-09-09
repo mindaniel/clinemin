@@ -591,3 +591,27 @@ export function resolveActiveProfilePaths(
 		chatsFile: path.join(base, "chats.json"),
 	};
 }
+
+/**
+ * Apply the active profile's port offset to a base debug port.
+ *
+ * Every provider resolves its port as "env var, else config.json, else the
+ * stock default". `resolveActiveProfilePaths().debugPort` was only ever the
+ * LAST of those, so a `debugPort` written into `~/.cline/<provider>/config.json`
+ * won outright and the profile offset was never applied: two profiles resolved
+ * the same port, the second found Chrome already listening there and attached
+ * to it, and both sessions drove one browser and one logged-in account. The
+ * user-data-dir still differed, so the second profile's directory was simply
+ * never used.
+ *
+ * The offset is a property of the profile, not of the default port, so it has
+ * to be applied on top of whichever base the provider picked. Providers call
+ * this instead of falling back to `profile.debugPort`.
+ */
+export function resolveProfileDebugPort(basePort: number): number {
+	const store = readStore();
+	const active =
+		store.profiles.find((entry) => entry.name === store.active) ??
+		store.profiles[0];
+	return basePort + (active?.portOffset ?? 0) * PORT_STEP;
+}
