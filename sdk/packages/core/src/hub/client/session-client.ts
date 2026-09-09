@@ -391,6 +391,50 @@ export class HubSessionClient {
 		};
 	}
 
+	/**
+	 * Send a turn to a session this client did not start.
+	 *
+	 * `sendRuntimeSession` above takes a whole `ChatRunTurnRequest` because it is
+	 * called right after `startRuntimeSession`, where the config is in hand. It
+	 * only ever reads `mode` and `timeoutSeconds` out of it, and the hub needs
+	 * nothing more: `session.send_input` is addressed by session id and carries a
+	 * prompt (see `run-handlers.ts`). A caller steering a session someone else
+	 * started has no config to pass, so this is the same command without it.
+	 *
+	 * `delivery: "steer"` jumps the pending-prompt queue, for a correction that
+	 * should land before whatever is already waiting. The default queues.
+	 *
+	 * `session.send_input` has no default timeout, so this resolves when the turn
+	 * finishes and the reply carries its result — a caller that wants to print
+	 * the answer does not have to subscribe to events for it.
+	 */
+	async sendSessionInput(
+		sessionId: string,
+		input: {
+			prompt: string;
+			mode?: string;
+			delivery?: "queue" | "steer";
+			timeoutSeconds?: number;
+		},
+		options?: { timeoutMs?: number | null },
+	): Promise<{ result?: ChatTurnResult }> {
+		await this.ensureMetadataApplied();
+		const reply = await this.client.command(
+			"session.send_input",
+			{
+				prompt: input.prompt,
+				mode: input.mode,
+				delivery: input.delivery,
+				timeoutSeconds: input.timeoutSeconds,
+			},
+			sessionId,
+			options,
+		);
+		return {
+			result: reply.payload?.result as ChatTurnResult | undefined,
+		};
+	}
+
 	async stopRuntimeSession(sessionId: string): Promise<{ applied: boolean }> {
 		await this.ensureMetadataApplied();
 		await this.client.command("session.detach", { sessionId }, sessionId);

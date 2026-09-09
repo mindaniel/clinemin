@@ -159,7 +159,10 @@ export async function runZen(
 				`${c.dim}[zen]${c.reset} the CLI is exiting; the session ${sessionId} will continue running in the background.`,
 			);
 			writeln(
-				`${c.dim}[zen]${c.reset} check ${c.dim} history${c.reset} later to see the result.`,
+				`${c.dim}[zen]${c.reset} check ${c.dim} history${c.reset} later to see the result,`,
+			);
+			writeln(
+				`${c.dim}[zen]${c.reset} or steer it with ${c.dim}cline send ${sessionId} "<message>"${c.reset}.`,
 			);
 		}
 		process.exitCode = 0;

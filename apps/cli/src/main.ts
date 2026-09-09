@@ -508,6 +508,40 @@ export async function runCli(): Promise<void> {
 		isInteractiveTTY: () => isFullTTY,
 	});
 
+	// The other half of `--zen`: zen dispatches one prompt and exits, leaving a
+	// session running that nothing could reach again. This drives it across
+	// turns. See commands/send.ts.
+	const sendCmd = program
+		.command("send")
+		.argument("<session>", "Session id to send to (see `cline history`)")
+		.argument("<message>", "Message to send")
+		.description("Send a message to a session running in the background hub")
+		.option("--json", "Output as JSON")
+		.option(
+			"--steer",
+			"Deliver ahead of anything already queued for the session",
+		)
+		.option("--force", "Send even to a session that was not started with --zen")
+		.action(async (session: string, message: string) => {
+			const { runSendCommand } = await import("./commands/send");
+			const opts = sendCmd.opts();
+			const outputMode =
+				program.opts().json || opts.json
+					? ("json" as const)
+					: ("text" as const);
+			setCurrentOutputMode(outputMode);
+			const cwd = program.opts().cwd ?? process.cwd();
+			ctx.exitCode = await runSendCommand({
+				sessionId: session,
+				message,
+				steer: Boolean(opts.steer),
+				force: Boolean(opts.force),
+				outputMode,
+				workspaceRoot: resolveWorkspaceRoot(cwd),
+				cwd,
+			});
+		});
+
 	program
 		.command("hook")
 		.description("Handle a hook payload from stdin")
