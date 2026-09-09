@@ -201,9 +201,19 @@ export function resetBrowserProfilePin(): void {
 }
 
 /**
- * Ports are spaced by this much per profile. The providers' stock ports are
- * consecutive (9222-9226), so a step of 1 would put profile 1's DeepSeek on
- * Qwen's port. 10 leaves room for providers added later.
+ * Ports are spaced by this much per profile.
+ *
+ * The providers' stock ports are consecutive — 9222-9228 for the seven in
+ * `WEB_PROVIDER_BROWSERS` — so the step has to be at least as large as that
+ * range. A step of 1 would put profile 1's DeepSeek (9222+1) on profile 0's
+ * Qwen (9223), and the collision is silent: the second Chrome finds a live
+ * DevTools endpoint on the port and attaches to it instead of launching, so
+ * two profiles end up on one browser and one logged-in account.
+ *
+ * 10 leaves room for 3 more providers. Adding a fourth means raising this,
+ * which renumbers every non-default profile's ports — harmless in itself
+ * (`--user-data-dir` is keyed by profile NAME, not port) but it strands any
+ * Chrome already running on an old port until it is closed by hand.
  */
 const PORT_STEP = 10;
 
