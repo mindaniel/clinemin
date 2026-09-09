@@ -300,6 +300,14 @@ export function createChatGPTWebModel(
 		if (runtimeConfig.debug) logger?.debug(`[chatgpt-web] ${msg}`);
 	};
 
+	// How long to wait for ChatGPT to put the chat id in the URL after a send.
+	//
+	// A brand-new chat is assigned its id server-side and the URL is rewritten
+	// once the response starts, which is slower than a 5s budget under load or
+	// on a long prompt. Missing it is permanent for the conversation (see the
+	// capture loop below), so the wait is generous.
+	const CHAT_ID_CAPTURE_TIMEOUT_MS = 20_000;
+
 	// Cached across runs: the session ID of the chat we're currently in.
 	// Used to skip navigation on the second turn of the same chat.
 	let currentChatGPTSession: string | undefined;
@@ -423,22 +431,29 @@ export function createChatGPTWebModel(
 			options.abortSignal,
 		);
 
-		// Extract session ID from the page URL after sending.
-		// If we started a fresh chat, wait for the URL to update with the new chat ID.
+		// Read the chat id back out of the page URL, which is how the next turn
+		// finds its way to this same conversation.
+		//
+		// Missing it is not a one-turn cosmetic problem: nothing is recorded, so
+		// the next turn looks the chat up, misses, and opens a FRESH chat — and
+		// so does every turn after that. A new chat per message loses all
+		// context, which the model reports as not being able to see the repo at
+		// all. So the poll runs whether or not we navigated to a known chat: a
+		// fresh chat needs time for ChatGPT to rewrite the URL, and an existing
+		// one answers on the first read.
 		let chatGPTSession: string | undefined;
-		if (sessionId) {
-			// We navigated to an existing chat, URL should already be correct
+		const chatIdDeadline = Date.now() + CHAT_ID_CAPTURE_TIMEOUT_MS;
+		for (;;) {
 			const pageUrl = await readPageUrl(cdp, cdpSessionId);
 			chatGPTSession = pageUrl ? extractChatGPTSessionId(pageUrl) : undefined;
-		} else {
-			// We started a fresh chat, wait for the URL to update
-			const deadline = Date.now() + 5000; // Wait up to 5 seconds
-			while (Date.now() < deadline) {
-				const pageUrl = await readPageUrl(cdp, cdpSessionId);
-				chatGPTSession = pageUrl ? extractChatGPTSessionId(pageUrl) : undefined;
-				if (chatGPTSession) break;
-				await new Promise((resolve) => setTimeout(resolve, 200));
-			}
+			if (chatGPTSession || Date.now() >= chatIdDeadline) break;
+			await new Promise((resolve) => setTimeout(resolve, 200));
+		}
+		if (!chatGPTSession) {
+			debugLog(
+				"could not read a chat id from the page URL; the next turn will " +
+					"start a new chat instead of continuing this one",
+			);
 		}
 
 		if (chatGPTSession) {

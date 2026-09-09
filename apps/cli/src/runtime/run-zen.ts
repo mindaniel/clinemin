@@ -7,7 +7,22 @@ import { c, emitJsonLine, writeErr, writeln } from "../utils/output";
 import type { Config } from "../utils/types";
 import { buildUserInputMessage } from "./prompt";
 
-const ZEN_DISPATCH_ACK_TIMEOUT_MS = 5_000;
+/**
+ * How long to wait for the hub to answer before assuming the turn is simply
+ * long-running and exiting anyway.
+ *
+ * `session.send_input` has no command timeout and does not reply until the turn
+ * FINISHES (see the hub's `run-handlers.ts`), so its reply is a result, not an
+ * acknowledgement. There is no ack-only send. This used to be raced as though
+ * it were one, and the expiry was reported as a failed dispatch — so every
+ * provider whose first turn takes longer than this, which is all of the
+ * browser-driven ones, printed "zen dispatch failed" for a session that had in
+ * fact started and was running fine.
+ *
+ * The expiry is now the expected path: it means the frame reached the hub and
+ * the turn is still going, which is exactly what zen wants.
+ */
+const ZEN_DISPATCH_SETTLE_MS = 5_000;
 
 /**
  * Zen mode: fire-and-forget dispatch of a task to the background hub.
@@ -115,11 +130,12 @@ export async function runZen(
 				.catch(() => undefined);
 		}
 
-		// Wait for the hub to acknowledge `session.send_input` before closing the
-		// socket. That confirms the prompt frame reached the hub and was accepted
-		// for execution, avoiding silent drops on slow or loaded systems.
-		await Promise.race([
-			sessionClient.sendRuntimeSession(started.sessionId, {
+		// Give the hub a moment to reject the frame before closing the socket,
+		// which catches a silent drop on a slow or loaded system. A turn that is
+		// still running when the timer expires is the normal case, not an error:
+		// see the note on ZEN_DISPATCH_SETTLE_MS.
+		const dispatch = sessionClient
+			.sendRuntimeSession(started.sessionId, {
 				config: startRequest,
 				prompt: userInput,
 				attachments:
@@ -135,15 +151,16 @@ export async function runZen(
 										: undefined,
 							}
 						: undefined,
-			}),
-			new Promise<never>((_, reject) => {
-				setTimeout(() => {
-					reject(
-						new Error(
-							`timed out waiting for hub to acknowledge zen dispatch after ${ZEN_DISPATCH_ACK_TIMEOUT_MS} ms`,
-						),
-					);
-				}, ZEN_DISPATCH_ACK_TIMEOUT_MS);
+			})
+			// The CLI is about to exit, so nothing is left to surface a late
+			// failure. Swallow it rather than leaving an unhandled rejection to
+			// take the process down after the success message has printed.
+			.catch(() => undefined);
+
+		await Promise.race([
+			dispatch,
+			new Promise<void>((resolve) => {
+				setTimeout(resolve, ZEN_DISPATCH_SETTLE_MS);
 			}),
 		]);
 

@@ -56,8 +56,7 @@ function detectUnparsedToolBlock(
 	const lower = text.toLowerCase();
 	const open = lower.indexOf("<tool");
 	if (open === -1) return null;
-	const example =
-		"<tool>" + JSON.stringify({ name: "tool_name", arguments: {} }) + "</tool>";
+	const example = `<tool>${JSON.stringify({ name: "tool_name", arguments: {} })}</tool>`;
 	const close = lower.indexOf("</tool>", open);
 	if (close === -1) {
 		return (
@@ -949,7 +948,7 @@ function createDeepSeekWebV2Model(
 			// JSON body itself is broken too).
 			const malformedError = detectMalformedToolTag(text);
 			if (malformedError) {
-				finalText = text + "\n\n" + malformedError;
+				finalText = `${text}\n\n${malformedError}`;
 				finalToolCalls = [];
 				break;
 			}
@@ -967,7 +966,7 @@ function createDeepSeekWebV2Model(
 					sendPrompt = unparsedError;
 					continue;
 				}
-				finalText = text + "\n\n" + unparsedError;
+				finalText = `${text}\n\n${unparsedError}`;
 				finalToolCalls = [];
 				break;
 			}
@@ -1122,15 +1121,30 @@ function createDeepSeekWebV2Model(
 				invoked.toolCalls.length > 0 ? invoked.toolCalls : streamToolCalls;
 			const recoveredContent =
 				invoked.toolCalls.length > 0 ? invoked.cleanedContent : cleanedContent;
+
+			// Fallback: convert shell fences (```powershell) and other code fences
+			// into tool calls if no structured tool calls were found.
+			let finalCalls = recoveredCalls;
+			let finalContent = recoveredContent;
+			if (finalCalls.length === 0 && functionTools.length > 0) {
+				const fallback = parseFallbackToolUses(
+					finalContent,
+					lastUserText(options.prompt),
+					functionTools.map((t) => t.name),
+				);
+				finalContent = fallback.cleanedText;
+				finalCalls = fallback.toolUses;
+			}
+
 			// Python-validation gate (same as doCompletion's non-streaming path):
 			// drop editor calls with malformed `new_text` and surface the retry
 			// prompt as text so the correction feeds back to the model instead of
 			// executing bad code.
 			const { tools: validatedCalls, retryPrompt } =
-				validateToolCalls(recoveredCalls);
+				validateToolCalls(finalCalls);
 			const displayText = retryPrompt
-				? `${recoveredContent}\n\n${retryPrompt}`.trim()
-				: recoveredContent;
+				? `${finalContent}\n\n${retryPrompt}`.trim()
+				: finalContent;
 
 			const parts: LanguageModelV2StreamPart[] = [
 				{ type: "stream-start", warnings: [] },

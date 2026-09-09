@@ -32,10 +32,8 @@ export function resolveChatGPTWebV2Config(): ChatGPTWebV2RuntimeConfig {
 	const fileConfig = readConfigFile();
 	// The active named profile (`/profile`) decides which Chrome user-data-dir,
 	// debug port and chat registry to use. If none, fall back to the default.
-	const { profileDir: activeProfileDir } = resolveActiveProfilePaths(
-		CONFIG_DIR,
-		DEFAULT_DEBUG_PORT,
-	);
+	const { profileDir: activeProfileDir, chatsFile: activeChatsFile } =
+		resolveActiveProfilePaths(CONFIG_DIR, DEFAULT_DEBUG_PORT);
 	const profileDir =
 		fileConfig.profileDir ??
 		activeProfileDir ??
@@ -58,7 +56,15 @@ export function resolveChatGPTWebV2Config(): ChatGPTWebV2RuntimeConfig {
 		responseTimeoutMs:
 			fileConfig.responseTimeoutMs ?? DEFAULT_RESPONSE_TIMEOUT_MS,
 		loginTimeoutMs: fileConfig.loginTimeoutMs ?? 60000,
-		chatsFile: fileConfig.chatsFile ?? path.join(profileDir, "chats.json"),
+		// The chat registry belongs next to the provider's config, NOT inside the
+		// Chrome user-data-dir. This used to be `path.join(profileDir, ...)`,
+		// which pointed at a file inside the browser profile that nothing ever
+		// created — so every lookup missed, every turn was treated as a brand-new
+		// conversation, and `navigateChatGPTChat` opened a fresh chat page for
+		// every message and every tool result. It also meant `/profile` did not
+		// isolate the registry, which is the whole reason the profile resolves
+		// one. Every other vendor uses `profile.chatsFile`; so does this one now.
+		chatsFile: fileConfig.chatsFile ?? activeChatsFile,
 		minSendDelayMs: fileConfig.minSendDelayMs ?? DEFAULT_MIN_SEND_DELAY_MS,
 		maxSendDelayMs: fileConfig.maxSendDelayMs ?? DEFAULT_MAX_SEND_DELAY_MS,
 		toolTurnExtraMinMs:
