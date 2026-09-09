@@ -444,7 +444,7 @@ export function createChatGPTWebModel(
 		let chatGPTSession: string | undefined;
 		const chatIdDeadline = Date.now() + CHAT_ID_CAPTURE_TIMEOUT_MS;
 		for (;;) {
-			const pageUrl = await readPageUrl(cdp, cdpSessionId);
+			const pageUrl = await readPageUrl(cdp, cdpSessionId, pageTarget.targetId);
 			chatGPTSession = pageUrl ? extractChatGPTSessionId(pageUrl) : undefined;
 			if (chatGPTSession || Date.now() >= chatIdDeadline) break;
 			await new Promise((resolve) => setTimeout(resolve, 200));

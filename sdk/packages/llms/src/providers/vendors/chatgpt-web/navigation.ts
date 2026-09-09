@@ -122,10 +122,38 @@ export async function ensureChatGPTPage(
 	return { targetId: pageTarget.targetId, cdpSessionId };
 }
 
+/**
+ * The page's current URL.
+ *
+ * Prefers `Target.getTargets`, which reads the browser's own record of the tab
+ * and is unaffected by page state. `Runtime.evaluate` needs a live execution
+ * context in the page, and the caller that matters most here runs immediately
+ * after a send that navigated the SPA to a brand-new chat — exactly when the
+ * old context is being torn down. That read would throw, get swallowed by the
+ * catch, and return undefined, so the new chat's id was never captured and
+ * every following turn opened yet another fresh chat.
+ *
+ * `targetId` picks the right tab when several ChatGPT tabs are open. Without
+ * it, the first ChatGPT page wins, which is the same assumption
+ * `ensureChatGPTPage` makes.
+ */
 export async function readPageUrl(
 	cdp: CdpClient,
 	cdpSessionId: string,
+	targetId?: string,
 ): Promise<string | undefined> {
+	try {
+		const targets = await cdp.send("Target.getTargets");
+		const infos = (targets?.targetInfos ?? []) as TargetInfo[];
+		const match = targetId
+			? infos.find((t) => t.targetId === targetId)
+			: infos.find(
+					(t) => t.type === "page" && t.url?.startsWith("https://chatgpt.com"),
+				);
+		if (match?.url) return match.url;
+	} catch {
+		// Fall through to the in-page read.
+	}
 	try {
 		const result = await cdp.send(
 			"Runtime.evaluate",
