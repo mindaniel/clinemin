@@ -114,54 +114,14 @@ interface ParsedToolCall {
 	arguments: Record<string, unknown>;
 }
 
-/** File extension for a markdown code-fence language tag. */
-function extensionForLanguage(lang?: string): string {
-	const map: Record<string, string> = {
-		python: ".py",
-		py: ".py",
-		javascript: ".js",
-		js: ".js",
-		jsx: ".jsx",
-		typescript: ".ts",
-		ts: ".ts",
-		tsx: ".tsx",
-		bash: ".sh",
-		sh: ".sh",
-		shell: ".sh",
-		powershell: ".ps1",
-		ps1: ".ps1",
-		json: ".json",
-		yaml: ".yaml",
-		yml: ".yaml",
-		markdown: ".md",
-		md: ".md",
-		html: ".html",
-		css: ".css",
-		go: ".go",
-		rust: ".rs",
-		rs: ".rs",
-		java: ".java",
-		c: ".c",
-		cpp: ".cpp",
-		csharp: ".cs",
-		cs: ".cs",
-		ruby: ".rb",
-		rb: ".rb",
-		php: ".php",
-		sql: ".sql",
-		text: ".txt",
-	};
-	return map[lang ?? ""] ?? ".txt";
-}
-
 /** Best-effort filename for a code block, from nearby text, the prompt, or a generated name. */
 function inferFileName(
 	fullText: string,
 	blockIndex: number,
 	prompt: string,
-	lang: string,
-	index: number,
-): string {
+	_lang: string,
+	_index: number,
+): string | undefined {
 	// The directory prefix is optional but captured when present. A reply that
 	// says "**File:** `C:\Users\me\thing.py`" is naming one exact file, and
 	// reducing that to `thing.py` both writes to the wrong place and hides the
@@ -177,7 +137,11 @@ function inferFileName(
 	if (inReply) return inReply[1];
 	const inPrompt = namePattern.exec(prompt);
 	if (inPrompt) return inPrompt[1];
-	return `output_${index + 1}${extensionForLanguage(lang)}`;
+	// No name anywhere means the model never asked for a file. This used to
+	// invent `output_${index + 1}.txt`, so any fence nobody named became a new
+	// file — an ASCII diagram in a report turned into `output_2.txt`, and the
+	// model then saw a file it had not written and tried to explain it.
+	return undefined;
 }
 
 /**
@@ -239,6 +203,14 @@ export function parseFallbackToolUses(
 ): { cleanedText: string; toolUses: ParsedToolCall[] } {
 	const hasEditor = availableToolNames.includes("editor");
 	const hasRunCommands = availableToolNames.includes("run_commands");
+	// Guessing a file write from a bare fence is only defensible for a session
+	// that has no way to say "write this file" explicitly. Every web provider is
+	// now routed to `apply_patch` and prompted to send `*** Begin Patch` blocks
+	// for edits (see model-tool-routing.ts and simple-system-prompt.ts), so a
+	// bare fence there is prose: a quote, an example, a report. Guessing anyway
+	// wrote files during a read-only investigation and derailed the run.
+	const guessFileWrites =
+		hasEditor && !availableToolNames.includes("apply_patch");
 
 	// Shell fences FIRST, and their text removed before anything below sees it.
 	// The fence-to-file pass further down cannot tell a command from a program,
@@ -272,7 +244,7 @@ export function parseFallbackToolUses(
 	// with "[code saved to a file]" — a lie about a file that was never written.
 	let cleanedText = text;
 	const quoted: string[] = [];
-	if (hasEditor) {
+	if (guessFileWrites) {
 		const fencePattern = /```([\w+-]*)\s*\n([\s\S]*?)```/g;
 		let index = 0;
 		cleanedText = text.replace(
@@ -286,6 +258,10 @@ export function parseFallbackToolUses(
 				}
 				const filename = inferFileName(text, offset, prompt, lang, index);
 				index++;
+				if (!filename) {
+					// Nobody named a file, so this fence is not a file.
+					return full;
+				}
 				if (fileAlreadyExists(filename)) {
 					// The fence is a QUOTE, not a file. A reply like "Old line
 					// (line 569): ```python ...```" names an existing file in its

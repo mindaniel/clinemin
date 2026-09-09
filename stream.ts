@@ -1,0 +1,1 @@
+     await sessionClient.respondToCapability(requestId, result);

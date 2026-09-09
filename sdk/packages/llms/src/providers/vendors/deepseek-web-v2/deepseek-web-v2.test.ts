@@ -159,13 +159,40 @@ describe("deepseek-web-v2 parseFallbackToolUses", () => {
 		});
 	});
 
-	it("generates a filename when neither reply nor prompt names one", () => {
-		const { toolUses } = parseFallbackToolUses(
+	it("writes nothing when neither reply nor prompt names a file", () => {
+		// This used to invent `output_<n>.<ext>`, so every unnamed fence became a
+		// new file. A read-only investigation that quoted an ASCII diagram had it
+		// written to `output_2.txt`, and the model then spent the rest of the run
+		// trying to explain a file it had not asked for.
+		const { toolUses, cleanedText } = parseFallbackToolUses(
 			"```python\nx = 1\n```",
 			"write some code",
 			["editor"],
 		);
-		expect(toolUses[0]?.arguments.path).toMatch(/^output_\d+\.py$/);
+		expect(toolUses).toHaveLength(0);
+		// The fence stays in the reply, since nothing was done with it.
+		expect(cleanedText).toContain("x = 1");
+	});
+
+	it("still writes a file the reply names", () => {
+		const { toolUses } = parseFallbackToolUses(
+			"Save this as helper_xyz.py:\n\n```python\nx = 1\n```",
+			"write some code",
+			["editor"],
+		);
+		expect(toolUses[0]?.arguments.path).toBe("helper_xyz.py");
+	});
+
+	it("does not guess a file write for a session that has apply_patch", () => {
+		// Every web provider is routed to `apply_patch` and prompted to send
+		// `*** Begin Patch` blocks for edits, so a bare fence there is prose — a
+		// quote, an example, a report — not a file the model asked to create.
+		const { toolUses } = parseFallbackToolUses(
+			"Save this as helper_xyz.py:\n\n```python\nx = 1\n```",
+			"write some code",
+			["editor", "apply_patch"],
+		);
+		expect(toolUses).toHaveLength(0);
 	});
 
 	it("turns pip install lines into a run_commands call", () => {
