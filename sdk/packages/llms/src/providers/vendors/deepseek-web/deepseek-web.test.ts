@@ -12,7 +12,7 @@ import {
 	serializeDeepSeekToolPrompt,
 	sha3_256Hex,
 	solveDeepSeekPow,
-} from "./deepseek-web";
+} from "./index";
 
 // DeepSeekHashV1 digests (SHA3-256 with the Keccak-f[1600] permutation running
 // only rounds 1..23 — validated against OmniRoute's working solver).
