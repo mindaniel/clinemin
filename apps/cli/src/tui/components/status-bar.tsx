@@ -233,9 +233,21 @@ export function StatusBar(props: StatusBarProps) {
 		typeof maxInputTokens === "number" &&
 		Number.isFinite(maxInputTokens) &&
 		maxInputTokens > 0;
-	const bar = hasMaxInputTokens
-		? createContextBar(totalTokens, maxInputTokens)
-		: undefined;
+	// Claude Web has no token budget to fill a bar against, so when its session
+	// percentage is known the bar tracks that instead. Otherwise the bar would
+	// read ~0% off a nominal 1M window while the text beside it said 42%.
+	const claudePercent =
+		props.providerId === "claude-web" &&
+		claudeSessionStatus &&
+		Number.isFinite(claudeSessionStatus.percent)
+			? Math.max(0, Math.min(claudeSessionStatus.percent, 100))
+			: undefined;
+	const bar =
+		claudePercent !== undefined
+			? createContextBar(claudePercent, 100)
+			: hasMaxInputTokens
+				? createContextBar(totalTokens, maxInputTokens)
+				: undefined;
 
 	// Available content width after accounting for padding.
 	// Home view: parent box is capped at 60 wide, status bar adds paddingX=1 (-2).

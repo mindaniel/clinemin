@@ -1301,7 +1301,15 @@ const BUILTIN_SPEC_OVERRIDES: BuiltinSpecOverride[] = [
 				id: "claude-auto",
 				name: "Claude Auto",
 				capabilities: ["streaming"],
-				contextWindow: 100,
+				// Claude Web does not expose a token budget: it reports remaining
+				// capacity as a percentage of a rolling session limit, which the
+				// status bar renders from `providerMetadata["claude-web"]` instead of
+				// from this number. But `contextWindow` is ALSO the compaction budget
+				// (see `resolveEffectiveContextLimit` in `compaction-shared.ts`), so it
+				// cannot be set to 100 to make the meter read as a percentage — that
+				// puts the budget at ~80 tokens and compacts on literally every turn.
+				// Keep a real window here; the meter reads the percentage elsewhere.
+				contextWindow: 1_000_000,
 			},
 		}),
 		metadata: { usageCostDisplay: "hide" },
