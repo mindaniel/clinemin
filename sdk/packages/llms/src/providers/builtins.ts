@@ -1301,7 +1301,7 @@ const BUILTIN_SPEC_OVERRIDES: BuiltinSpecOverride[] = [
 				id: "claude-auto",
 				name: "Claude Auto",
 				capabilities: ["streaming"],
-				contextWindow: 1_000_000,
+				contextWindow: 100,
 			},
 		}),
 		metadata: { usageCostDisplay: "hide" },

@@ -94,6 +94,7 @@ export interface AgentTokenUsage {
  */
 export interface AgentUsage extends AgentTokenUsage {
 	totalCost?: number;
+	metadata?: Record<string, unknown>;
 }
 
 export interface AgentMessage {

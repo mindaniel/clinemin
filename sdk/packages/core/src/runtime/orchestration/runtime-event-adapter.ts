@@ -365,6 +365,7 @@ export class RuntimeEventAdapter {
 				totalCacheWriteTokens:
 					next.cacheWriteTokens === 0 ? undefined : next.cacheWriteTokens,
 				totalCost: next.totalCost,
+				metadata: next.metadata,
 			},
 		];
 	}

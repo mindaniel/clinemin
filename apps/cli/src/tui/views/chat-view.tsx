@@ -151,6 +151,7 @@ export function ChatView(props: {
 					totalTokens={session.lastTotalTokens}
 					totalCost={session.lastTotalCost}
 					maxInputTokens={maxInputTokens}
+					claudeSessionStatus={session.claudeSessionStatus}
 					ttftMs={session.lastTtftMs}
 					tokensPerSecond={session.lastTokensPerSecond}
 					uiMode={session.uiMode}

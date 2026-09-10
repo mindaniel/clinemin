@@ -32,6 +32,7 @@ interface ClaudeSSEEvent {
 		resolved?: {
 			limit?: {
 				percent?: number;
+				resets_at?: string;
 			};
 		};
 	};
@@ -200,7 +201,7 @@ export function consumeClaudeSse(
 		totalTokens: number;
 	}) => void,
 	onAskUserInput?: (json: string) => void,
-	onSessionPercent?: (percent: number) => void,
+	onSessionPercent?: (percent: number, resetsAt?: string) => void,
 ): void {
 	try {
 		// Claude SSE parsing: Anthropic content block format.
@@ -314,12 +315,17 @@ export function consumeClaudeSse(
 
 			if (parsed.type === "message_limit" && onSessionPercent) {
 				const resolvedPercent = parsed.message_limit?.resolved?.limit?.percent;
+				const resolvedResetsAt =
+					parsed.message_limit?.resolved?.limit?.resets_at;
 				if (
 					typeof resolvedPercent === "number" &&
 					Number.isFinite(resolvedPercent) &&
 					resolvedPercent >= 0
 				) {
-					onSessionPercent(resolvedPercent);
+					onSessionPercent(
+						resolvedPercent,
+						typeof resolvedResetsAt === "string" ? resolvedResetsAt : undefined,
+					);
 				}
 			}
 

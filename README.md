@@ -2,6 +2,14 @@
 
 Needs Node.js 22+ and [bun](https://bun.sh) (this repo's package manager/runtime — Node alone won't run it). If you already have both, skip to `git clone`.
 
+On Windows, PowerShell blocks script execution by default, which stops `bun`,
+`npm`, and the install scripts below from running. Allow signed scripts for your
+own account once (no admin needed):
+
+```powershell
+Set-ExecutionPolicy -Scope CurrentUser -ExecutionPolicy RemoteSigned -Force
+```
+
 ```powershell
 npm install -g bun
 git clone https://github.com/mindaniel/clinemin.git

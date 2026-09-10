@@ -73,6 +73,10 @@ interface ClaudeCompletionResult {
 	toolCalls: { name: string; arguments: Record<string, unknown> }[];
 	usage: { inputTokens: number; outputTokens: number; totalTokens: number };
 	retryPrompt?: string;
+	sessionStatus?: {
+		percent: number;
+		resetsAt?: string;
+	};
 }
 
 function lastUserText(prompt: LanguageModelV2Prompt): string {
@@ -461,6 +465,7 @@ function createClaudeWebModel(
 				result.usage,
 				result.askUserInput,
 			);
+			parsed.sessionStatus = result.sessionStatus;
 
 			try {
 				logConversationTurn("claude-web", chatKey, result.rawBody, {
@@ -519,7 +524,7 @@ function createClaudeWebModel(
 
 		async doGenerate(options: LanguageModelV2CallOptions) {
 			try {
-				const { text, toolCalls, usage } = await withBrowserLock(
+				const { text, toolCalls, usage, sessionStatus } = await withBrowserLock(
 					"claude-web",
 					options.abortSignal,
 					() => runCompletionWithOptions(options),
@@ -540,6 +545,18 @@ function createClaudeWebModel(
 					content,
 					finishReason: finishReasonFor(text, toolCalls),
 					usage,
+					...(sessionStatus
+						? {
+								providerMetadata: {
+									"claude-web": {
+										sessionPercent: sessionStatus.percent,
+										...(sessionStatus.resetsAt
+											? { sessionResetsAt: sessionStatus.resetsAt }
+											: {}),
+									},
+								},
+							}
+						: {}),
 					warnings: [],
 				};
 			} catch (error) {
@@ -550,7 +567,7 @@ function createClaudeWebModel(
 		},
 
 		async doStream(options: LanguageModelV2CallOptions) {
-			const { text, toolCalls, usage } = await withBrowserLock(
+			const { text, toolCalls, usage, sessionStatus } = await withBrowserLock(
 				"claude-web",
 				options.abortSignal,
 				() => runCompletionWithOptions(options),
@@ -586,6 +603,18 @@ function createClaudeWebModel(
 				type: "finish",
 				finishReason: finishReasonFor(text, toolCalls),
 				usage,
+				...(sessionStatus
+					? {
+							providerMetadata: {
+								"claude-web": {
+									sessionPercent: sessionStatus.percent,
+									...(sessionStatus.resetsAt
+										? { sessionResetsAt: sessionStatus.resetsAt }
+										: {}),
+								},
+							},
+						}
+					: {}),
 			});
 
 			const stream = new ReadableStream<LanguageModelV2StreamPart>({

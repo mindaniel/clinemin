@@ -497,6 +497,10 @@ function usageEventFromPayload(payload: Record<string, unknown> | undefined): {
 			totalCacheReadTokens: usageMetric(totals, "cacheReadTokens"),
 			totalCacheWriteTokens: usageMetric(totals, "cacheWriteTokens"),
 			totalCost: finiteNumber(totals?.totalCost),
+			metadata:
+				delta?.metadata && typeof delta.metadata === "object"
+					? (delta.metadata as Record<string, unknown>)
+					: undefined,
 		},
 		teamAgentId:
 			typeof agent?.teamAgentId === "string" ? agent.teamAgentId : undefined,

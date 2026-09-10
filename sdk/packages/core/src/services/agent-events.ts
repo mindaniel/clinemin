@@ -117,6 +117,7 @@ function usageDeltaFromEvent(event: Extract<AgentEvent, { type: "usage" }>) {
 		cacheWriteTokens: event.cacheWriteTokens,
 		cacheReadTokens: event.cacheReadTokens,
 		totalCost: event.cost,
+		metadata: event.metadata,
 	};
 }
 

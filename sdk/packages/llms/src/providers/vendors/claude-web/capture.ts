@@ -38,6 +38,10 @@ export async function sendAndCapture(
 	rateLimited?: boolean;
 	/** Raw JSON from a native `ask_user_input_v0` widget, when present. */
 	askUserInput?: string;
+	sessionStatus?: {
+		percent: number;
+		resetsAt?: string;
+	};
 	rawBody: string;
 }> {
 	const debugLog = (msg: string) => {
@@ -146,7 +150,12 @@ export async function sendAndCapture(
 
 	let fullText = "";
 	let askUserInput: string | undefined;
-	let sessionPercent: number | undefined;
+	let sessionStatus:
+		| {
+				percent: number;
+				resetsAt?: string;
+		  }
+		| undefined;
 	const finishReason: LanguageModelV2FinishReason = "stop";
 	let usage = { inputTokens: 0, outputTokens: 0, totalTokens: 0 };
 	consumeClaudeSse(
@@ -164,23 +173,15 @@ export async function sendAndCapture(
 		(json) => {
 			if (json) askUserInput = json;
 		},
-		(percent) => {
-			sessionPercent = percent;
+		(percent, resetsAt) => {
+			sessionStatus = { percent, resetsAt };
+			usage = {
+				...usage,
+				inputTokens: percent,
+				totalTokens: percent,
+			};
 		},
 	);
-
-	if (sessionPercent !== undefined) {
-		// Claude Web reports session usage as a percentage rather than an
-		// absolute token count. Preserve that value so consumers can display
-		// the actual Claude-reported percentage instead of estimating tokens
-		// against an assumed context window.
-		const inputTokens = Math.max(0, Math.min(sessionPercent, 100));
-		usage = {
-			inputTokens,
-			outputTokens: usage.outputTokens,
-			totalTokens: inputTokens + usage.outputTokens,
-		};
-	}
 
 	// Flag a throttled reply so the caller can back off / report it, and
 	// arm a one-shot recovery reload so the next turn forces a page
@@ -200,6 +201,7 @@ export async function sendAndCapture(
 		usage,
 		rateLimited,
 		askUserInput,
+		sessionStatus,
 		rawBody: capturedBody,
 	};
 }

@@ -28,6 +28,9 @@ interface AgentEventDeps {
 		outputTokens?: number;
 		cost?: number;
 	}) => void;
+	setClaudeSessionStatus: (
+		v: { percent: number; resetsAt?: string } | null,
+	) => void;
 	setLastTtftMs: (v: number | null) => void;
 	setLastTokensPerSecond: (v: number | null) => void;
 	onTurnErrorReported: TuiProps["onTurnErrorReported"];
@@ -46,6 +49,7 @@ export function useAgentEventHandlers(deps: AgentEventDeps) {
 		setIsRunning,
 		setIsStreaming,
 		addUsageDelta,
+		setClaudeSessionStatus,
 		setLastTtftMs,
 		setLastTokensPerSecond,
 		onTurnErrorReported,
@@ -294,7 +298,35 @@ export function useAgentEventHandlers(deps: AgentEventDeps) {
 						}
 					}
 					break;
-				case "usage":
+				case "usage": {
+					const claudeMetadata =
+						event.metadata &&
+						typeof event.metadata === "object" &&
+						event.metadata !== null &&
+						"claude-web" in event.metadata
+							? (
+									event.metadata as {
+										"claude-web"?: {
+											sessionPercent?: number;
+											sessionResetsAt?: string;
+										};
+									}
+								)["claude-web"]
+							: undefined;
+					if (
+						typeof claudeMetadata?.sessionPercent === "number" &&
+						Number.isFinite(claudeMetadata.sessionPercent)
+					) {
+						setClaudeSessionStatus({
+							percent: Math.max(
+								0,
+								Math.min(claudeMetadata.sessionPercent, 100),
+							),
+							...(typeof claudeMetadata.sessionResetsAt === "string"
+								? { resetsAt: claudeMetadata.sessionResetsAt }
+								: {}),
+						});
+					}
 					addUsageDelta({
 						inputTokens: event.inputTokens,
 						outputTokens: event.outputTokens,
@@ -307,6 +339,7 @@ export function useAgentEventHandlers(deps: AgentEventDeps) {
 						}
 					}
 					break;
+				}
 			}
 		},
 		[
@@ -318,6 +351,7 @@ export function useAgentEventHandlers(deps: AgentEventDeps) {
 			setIsRunning,
 			setIsStreaming,
 			addUsageDelta,
+			setClaudeSessionStatus,
 			setLastTtftMs,
 			setLastTokensPerSecond,
 			onTurnErrorReported,

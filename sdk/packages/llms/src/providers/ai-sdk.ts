@@ -860,6 +860,11 @@ export function normalizeUsage(
 		...(typeof resolvedTotalCost === "number"
 			? { totalCost: resolvedTotalCost }
 			: {}),
+		...(providerMetadata &&
+		typeof providerMetadata === "object" &&
+		providerMetadata !== null
+			? { metadata: providerMetadata as Record<string, unknown> }
+			: {}),
 	};
 }
 
@@ -1091,6 +1096,7 @@ async function* emitAiSdkEvents(
 	} else if (stream.usage) {
 		try {
 			usageToEmit = await stream.usage;
+			metadataToUse = finishProviderMetadata;
 		} catch (error) {
 			if (!streamError) {
 				streamError = capturedError?.current ?? extractErrorMessage(error);

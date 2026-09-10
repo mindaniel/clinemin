@@ -162,6 +162,12 @@ export interface AgentUsageEvent extends AgentEventMetadata {
 	totalCacheWriteTokens?: number;
 	totalOutputTokens: number;
 	totalCost?: number;
+	/**
+	 * Provider-specific usage detail that has no place in the token counters —
+	 * e.g. `claude-web` reports a session budget as a percentage plus a reset
+	 * time rather than a token total. Keyed by provider id.
+	 */
+	metadata?: Record<string, unknown>;
 }
 
 export interface AgentNoticeEvent extends AgentEventMetadata {

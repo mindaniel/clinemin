@@ -84,7 +84,28 @@ export function formatStatusBarUsageText(input: {
 	totalCost: number;
 	providerId: string;
 	maxInputTokens?: number;
+	claudeSessionStatus?: {
+		percent: number;
+		resetsAt?: string;
+	} | null;
 }): string {
+	if (
+		input.providerId === "claude-web" &&
+		input.claudeSessionStatus &&
+		Number.isFinite(input.claudeSessionStatus.percent)
+	) {
+		const percent = Math.max(
+			0,
+			Math.min(input.claudeSessionStatus.percent, 100),
+		);
+		const resetText = input.claudeSessionStatus.resetsAt
+			? ` · resets ${new Date(
+					input.claudeSessionStatus.resetsAt,
+				).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}`
+			: "";
+		return `(${Number.isInteger(percent) ? percent : percent.toFixed(1)}/100%${resetText})`;
+	}
+
 	// When the effective context limit is known, show usage as "used/total"
 	// (e.g. "60k/1M") so the remaining budget is visible at a glance. Otherwise
 	// fall back to the bare token count.
@@ -164,6 +185,10 @@ export interface StatusBarProps {
 	totalTokens: number;
 	totalCost: number;
 	maxInputTokens?: number;
+	claudeSessionStatus?: {
+		percent: number;
+		resetsAt?: string;
+	} | null;
 	ttftMs?: number | null;
 	tokensPerSecond?: number | null;
 	uiMode: AgentMode;
@@ -185,6 +210,7 @@ export function StatusBar(props: StatusBarProps) {
 		totalTokens,
 		totalCost,
 		maxInputTokens,
+		claudeSessionStatus,
 		ttftMs,
 		tokensPerSecond,
 		uiMode,
@@ -228,6 +254,7 @@ export function StatusBar(props: StatusBarProps) {
 		totalCost,
 		providerId: props.providerId,
 		maxInputTokens,
+		claudeSessionStatus,
 	});
 	const contextText = bar
 		? ` ${bar.filled}${bar.empty} ${usageText}`
