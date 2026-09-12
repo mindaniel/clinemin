@@ -44,8 +44,10 @@ export function resolveModelOptions(modelId: string): {
 	thinkingEnabled: boolean;
 } {
 	const m = modelId.toLowerCase();
-	const modelType =
-		m.includes("pro") || m.includes("expert") ? "expert" : "default";
+	// The web UI no longer exposes an expert model — only Instant (chat) and
+	// Deep Thinking (reasoner) — so the API "model_type" is always "default".
+	// The mode is carried entirely by `thinking_enabled`.
+	const modelType = "default";
 	const thinkingEnabled =
 		m.includes("r1") ||
 		m.includes("think") ||

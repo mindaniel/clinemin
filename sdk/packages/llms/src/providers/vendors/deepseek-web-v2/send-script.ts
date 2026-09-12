@@ -27,15 +27,19 @@ function toggleDeepThinking(enable) {
         console.warn('Deep thinking toggle not found');
         return false;
     }
-    var isSelected = toggle.classList.contains('ds-toggle-button--selected')
-                     || toggle.getAttribute('aria-pressed') === 'true';
-    if ((enable && !isSelected) || (!enable && isSelected)) {
+    var isSelected = function () {
+        return toggle.classList.contains('ds-toggle-button--selected')
+               || toggle.getAttribute('aria-pressed') === 'true';
+    };
+    if (enable !== isSelected()) {
         toggle.click();
         console.log('Deep thinking ' + (enable ? 'ENABLED' : 'DISABLED'));
     } else {
         console.log('Deep thinking already ' + (enable ? 'ENABLED' : 'DISABLED'));
     }
-    return true;
+    // Report whether the toggle now matches the request. A click that did not
+    // commit (React not listening yet) leaves this false so the caller retries.
+    return enable === isSelected();
 }
 
 function findSendButton() {
@@ -70,19 +74,20 @@ function sendMessageToDeepSeek(message, options) {
         return false;
     }
 
-    // Apply the Deep Thinking toggle before typing. The current UI has only
-    // two modes (Instant = off, Deep thinking = on), driven by this toggle.
-    if (deepThinking !== null) toggleDeepThinking(deepThinking);
-
-    // Type after any clicks settle, then submit 300ms later. This mirrors the
-    // reference sendmessage.js exactly — fire-and-forget from the caller's
-    // perspective; the caller verifies the outcome via the DOM afterwards.
+    // Type first, then set the Deep Thinking toggle right before sending, then
+    // submit. The toggle is applied last (and verified) because chat.deepseek.com
+    // can re-render the model controls between typing and submit, which would
+    // silently revert an earlier click. Mirrors the reference sendmessage.js
+    // fire-and-forget contract — the caller verifies the outcome via the DOM.
     setTimeout(function () {
         var nativeSetter = Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, 'value').set;
         nativeSetter.call(textarea, message);
         textarea.dispatchEvent(new Event('input', { bubbles: true }));
 
-        setTimeout(function () {
+        // Apply the toggle, then submit. Retries are spaced out because React
+        // commits the toggle's aria-pressed asynchronously — clicking again
+        // immediately would toggle it back off before the state settles.
+        var submit = function () {
             var sendBtn = findSendButton();
             if (sendBtn) {
                 sendBtn.click();
@@ -91,8 +96,26 @@ function sendMessageToDeepSeek(message, options) {
                 textarea.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true }));
                 console.log('Sent with Enter: "' + message + '"');
             }
-        }, 300);
-    }, deepThinking !== null ? 400 : 0);
+        };
+        var attemptToggle = function (remaining) {
+            if (deepThinking === null) {
+                submit();
+                return;
+            }
+            if (toggleDeepThinking(deepThinking)) {
+                // Let the toggle commit before the submit click.
+                setTimeout(submit, 250);
+                return;
+            }
+            if (remaining <= 0) {
+                console.warn('Deep thinking toggle could not be set; sending anyway');
+                submit();
+                return;
+            }
+            setTimeout(function () { attemptToggle(remaining - 1); }, 200);
+        };
+        setTimeout(function () { attemptToggle(5); }, 300);
+    }, 0);
 
     return true;
 }
