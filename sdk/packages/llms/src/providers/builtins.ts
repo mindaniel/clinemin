@@ -1169,13 +1169,13 @@ const BUILTIN_SPEC_OVERRIDES: BuiltinSpecOverride[] = [
 		modelsFactory: () => ({
 			"deepseek-chat": {
 				id: "deepseek-chat",
-				name: "DeepSeek Chat",
+				name: "DeepSeek Chat (Instant)",
 				capabilities: ["streaming"],
 				contextWindow: 1_000_000,
 			},
 			"deepseek-reasoner": {
 				id: "deepseek-reasoner",
-				name: "DeepSeek Reasoner (R1 thinking)",
+				name: "DeepSeek Reasoner (Deep Thinking)",
 				capabilities: ["streaming", "reasoning"],
 				contextWindow: 1_000_000,
 			},
@@ -1213,24 +1213,6 @@ const BUILTIN_SPEC_OVERRIDES: BuiltinSpecOverride[] = [
 				id: "deepseek-reasoner",
 				name: "DeepSeek Reasoner (Deep Thinking)",
 				capabilities: ["streaming", "reasoning"],
-				contextWindow: 1_000_000,
-			},
-			"deepseek-expert": {
-				id: "deepseek-expert",
-				name: "DeepSeek Expert",
-				capabilities: ["streaming"],
-				contextWindow: 1_000_000,
-			},
-			"deepseek-expert-reasoner": {
-				id: "deepseek-expert-reasoner",
-				name: "DeepSeek Expert (Deep Thinking)",
-				capabilities: ["streaming", "reasoning"],
-				contextWindow: 1_000_000,
-			},
-			"deepseek-vision": {
-				id: "deepseek-vision",
-				name: "DeepSeek Vision",
-				capabilities: ["streaming"],
 				contextWindow: 1_000_000,
 			},
 		}),

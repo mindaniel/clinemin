@@ -1,6 +1,6 @@
 import { resolveModelOptions } from "../deepseek-web";
 
-// ── Page-side send script (transcribed from sendmessage.js) ─────────────────
+// ── Page-side send script (transcribed from sendmessage.js) ──────────────────
 
 /**
  * The same UI-driving code as the reference `sendmessage.js` (functions only —
@@ -8,53 +8,34 @@ import { resolveModelOptions } from "../deepseek-web";
  * `page.evaluate`. Selectors intentionally mirror the working reference.
  */
 const SEND_MESSAGE_SOURCE = `
-function selectModel(modelType) {
-    var validModels = ['default', 'expert', 'vision'];
-    if (validModels.indexOf(modelType) === -1) {
-        console.warn('Invalid model type: ' + modelType + '. Using current.');
-        return false;
-    }
-    var radioGroup = document.querySelector('[role="radiogroup"]');
-    if (!radioGroup) {
-        console.warn('Model selection not found');
-        return false;
-    }
-    var buttons = radioGroup.querySelectorAll('[role="radio"]');
-    var found = false;
-    buttons.forEach(function (button) {
-        var model = button.getAttribute('data-model-type');
-        if (model === modelType) {
-            var isChecked = button.getAttribute('aria-checked') === 'true';
-            if (!isChecked) {
-                button.click();
-                console.log('Model set to: ' + modelType);
-            } else {
-                console.log('Model already: ' + modelType);
-            }
-            found = true;
-        }
-    });
-    if (!found) console.warn('Model button for "' + modelType + '" not found');
-    return found;
-}
-
 function toggleDeepThinking(enable) {
+    // The current chat.deepseek.com UI exposes a single "Deep thinking"
+    // toggle button instead of the old model radiogroup. Find it either by
+    // the label span or by the toggle-button classes / aria-pressed state.
+    var toggle = null;
     var buttons = document.querySelectorAll('.ds-toggle-button');
-    var found = false;
-    buttons.forEach(function (button) {
-        var label = button.querySelector('._6dbc175');
-        if (label && label.textContent.trim() === 'Deep thinking') {
-            var isSelected = button.classList.contains('ds-toggle-button--selected');
-            if ((enable && !isSelected) || (!enable && isSelected)) {
-                button.click();
-                console.log('Deep thinking ' + (enable ? 'ENABLED' : 'DISABLED'));
-            } else {
-                console.log('Deep thinking already ' + (enable ? 'ENABLED' : 'DISABLED'));
-            }
-            found = true;
+    for (var i = 0; i < buttons.length; i++) {
+        var label = buttons[i].querySelector('._6dbc175, .ds-toggle-button__label');
+        var text = label ? label.textContent.trim().toLowerCase()
+                         : (buttons[i].textContent || '').trim().toLowerCase();
+        if (text.indexOf('deep thinking') !== -1 || text.indexOf('deepthink') !== -1) {
+            toggle = buttons[i];
+            break;
         }
-    });
-    if (!found) console.warn('Deep thinking toggle not found');
+    }
+    if (!toggle) {
+        console.warn('Deep thinking toggle not found');
+        return false;
+    }
+    var isSelected = toggle.classList.contains('ds-toggle-button--selected')
+                     || toggle.getAttribute('aria-pressed') === 'true';
+    if ((enable && !isSelected) || (!enable && isSelected)) {
+        toggle.click();
+        console.log('Deep thinking ' + (enable ? 'ENABLED' : 'DISABLED'));
+    } else {
+        console.log('Deep thinking already ' + (enable ? 'ENABLED' : 'DISABLED'));
+    }
+    return true;
 }
 
 function findSendButton() {
@@ -73,17 +54,24 @@ function findSendButton() {
 
 function sendMessageToDeepSeek(message, options) {
     options = options || {};
-    var model = options.model !== undefined ? options.model : null;
     var deepThinking = options.deepThinking !== undefined ? options.deepThinking : null;
-
-    var textarea = document.querySelector('textarea[name="search"]');
+    var textarea = null;
+    var textareas = document.querySelectorAll('textarea');
+    for (var ti = 0; ti < textareas.length; ti++) {
+        var candidate = textareas[ti];
+        if (candidate.getAttribute('placeholder')) {
+            textarea = candidate;
+            break;
+        }
+    }
+    if (!textarea && textareas.length > 0) textarea = textareas[0];
     if (!textarea) {
         console.error('Textarea not found');
         return false;
     }
 
-    // Apply model selection / Deep Thinking toggle before typing.
-    if (model !== null) selectModel(model);
+    // Apply the Deep Thinking toggle before typing. The current UI has only
+    // two modes (Instant = off, Deep thinking = on), driven by this toggle.
     if (deepThinking !== null) toggleDeepThinking(deepThinking);
 
     // Type after any clicks settle, then submit 300ms later. This mirrors the
@@ -104,7 +92,7 @@ function sendMessageToDeepSeek(message, options) {
                 console.log('Sent with Enter: "' + message + '"');
             }
         }, 300);
-    }, (model !== null || deepThinking !== null) ? 400 : 0);
+    }, deepThinking !== null ? 400 : 0);
 
     return true;
 }
@@ -125,7 +113,7 @@ export function buildSendScript(
 	prompt: string,
 	options: { modelType: string; deepThinking: boolean | null },
 ): string {
-	const opts: Record<string, unknown> = { model: options.modelType };
+	const opts: Record<string, unknown> = {};
 	if (options.deepThinking !== null) {
 		opts.deepThinking = options.deepThinking;
 	}
@@ -137,15 +125,18 @@ return true;
 }
 
 /**
- * Map a model id to the web UI's radio model + Deep Thinking toggle state.
- * `deepThinking` is `null` when the toggle should be left untouched (vision).
+ * Map a model id to the web UI's Deep Thinking toggle state. The current UI
+ * has only two modes (Instant = off, Deep thinking = on), so `modelType` is
+ * always `"default"` and `deepThinking` is never null.
  */
 export function resolveV2ModelOptions(modelId: string): {
 	modelType: string;
 	deepThinking: boolean | null;
 } {
-	const m = modelId.toLowerCase();
-	if (m.includes("vision")) return { modelType: "vision", deepThinking: null };
 	const { modelType, thinkingEnabled } = resolveModelOptions(modelId);
-	return { modelType, deepThinking: thinkingEnabled };
+	// The radio-based model selector is gone; only the Deep Thinking toggle
+	// distinguishes the two modes. `modelType` is kept in the return shape for
+	// callers that still log/thread it, but is always "default" now.
+	void modelType;
+	return { modelType: "default", deepThinking: thinkingEnabled };
 }

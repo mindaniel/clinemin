@@ -2,7 +2,8 @@
 
 This file (plus `AGENTS.md`) is the only rule content auto-loaded into the system prompt.
 For project details (architecture, providers, llama.cpp, storage, networking, skills,
-release), read `AI-CONTEXT.md` at the repo root — re-read it after compaction or when unsure.
+release), read `README.md` at the repo root and the relevant source under `apps/*/src`
+and `sdk/packages/*/src`. There is no `AI-CONTEXT.md` in this repo.
 
 ## Non-negotiables
 

@@ -44,37 +44,15 @@ describe("deepseek-web-v2 resolveV2ModelOptions", () => {
 			deepThinking: true,
 		});
 	});
-
-	it("maps deepseek-expert to the expert radio model", () => {
-		expect(resolveV2ModelOptions("deepseek-expert")).toEqual({
-			modelType: "expert",
-			deepThinking: false,
-		});
-	});
-
-	it("maps deepseek-expert-reasoner to expert + deep thinking", () => {
-		expect(resolveV2ModelOptions("deepseek-expert-reasoner")).toEqual({
-			modelType: "expert",
-			deepThinking: true,
-		});
-	});
-
-	it("maps deepseek-vision to the vision radio and leaves the toggle alone", () => {
-		expect(resolveV2ModelOptions("deepseek-vision")).toEqual({
-			modelType: "vision",
-			deepThinking: null,
-		});
-	});
 });
 
 describe("deepseek-web-v2 buildSendScript", () => {
 	it("embeds the prompt and options as JSON literals", () => {
 		const script = buildSendScript("Hello world", {
-			modelType: "expert",
+			modelType: "default",
 			deepThinking: true,
 		});
 		expect(script).toContain(JSON.stringify("Hello world"));
-		expect(script).toContain('"model":"expert"');
 		expect(script).toContain('"deepThinking":true');
 		expect(script).toContain("function sendMessageToDeepSeek");
 		expect(script).toContain("sendMessageToDeepSeek(");
@@ -82,12 +60,11 @@ describe("deepseek-web-v2 buildSendScript", () => {
 		expect(script).not.toContain('"Hello!"');
 	});
 
-	it("omits deepThinking when the model has no toggle (vision)", () => {
+	it("omits deepThinking when the toggle should be left untouched", () => {
 		const script = buildSendScript("Describe this", {
-			modelType: "vision",
+			modelType: "default",
 			deepThinking: null,
 		});
-		expect(script).toContain('"model":"vision"');
 		expect(script).not.toContain('"deepThinking"');
 	});
 
