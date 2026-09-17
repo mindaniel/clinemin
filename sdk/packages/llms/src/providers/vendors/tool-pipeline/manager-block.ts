@@ -37,6 +37,7 @@ import {
 	MANAGER_EXAMPLE_BODY,
 	MANAGER_EXAMPLE_COMMAND,
 } from "@cline/shared";
+import { parseShellFenceFlags } from "./shell-fence";
 
 const OPEN_TAG_RE = /^[ \t]*<\s*manager\s*>[ \t]*\r?$/im;
 const CLOSE_LINE_RE = /^[ \t]*<\s*\/\s*manager\s*>[ \t]*$/;
@@ -59,7 +60,7 @@ const CLOSE_LINE_RE = /^[ \t]*<\s*\/\s*manager\s*>[ \t]*$/;
 // the same tool-result path either way ("Here is the output of the command I
 // just ran:").
 const SHELL_FENCE_OPEN_RE =
-	/^[ \t]*(?:`{3,}|~{3,})[ \t]*(?:powershell|pwsh|ps1|bash|shell|sh|zsh|cmd|bat|console|terminal)(?:[ \t]+[^\r\n]*)?[ \t]*\r?$/im;
+	/^[ \t]*(?:`{3,}|~{3,})[ \t]*(?:powershell|pwsh|ps1|bash|shell|sh|zsh|cmd|bat|console|terminal)((?:[ \t]+[^\r\n]*)?)[ \t]*\r?$/im;
 const SHELL_FENCE_CLOSE_LINE_RE = /^[ \t]*(?:`{3,}|~{3,})[ \t]*$/;
 const HEADER_LINE_RE = /^[ \t]*(TO|TOOLS)[ \t]*:[ \t]*(.+?)[ \t]*$/i;
 
@@ -230,7 +231,7 @@ export interface ManagerRunTask {
 
 export interface ManagerVerify {
 	name: "run_commands";
-	arguments: { commands: string[] };
+	arguments: { commands: string[]; timeout_seconds?: number; echo?: true };
 }
 
 export type ManagerDelegation = ManagerRunTask | ManagerVerify;
@@ -259,6 +260,8 @@ export interface ShellFenceBlock {
 	end: number;
 	/** The PowerShell inside the fence, verbatim. */
 	command: string;
+	/** `-timeout` / `-echo` written after the fence language. */
+	flags: ReturnType<typeof parseShellFenceFlags>;
 	unterminated: boolean;
 }
 
@@ -307,6 +310,7 @@ export function scanShellFences(text: string): ShellFenceBlock[] {
 			start: openStart,
 			end: blockEnd,
 			command: text.slice(bodyStart, bodyEnd).trim(),
+			flags: parseShellFenceFlags(openMatch[1]),
 			unterminated,
 		});
 		cursor = blockEnd;
@@ -358,7 +362,7 @@ function extractShellFences(text: string): ParsedManagerBlocks {
 		}
 		delegations.push({
 			name: "run_commands",
-			arguments: { commands: [block.command] },
+			arguments: { commands: [block.command], ...block.flags },
 		});
 	}
 

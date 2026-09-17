@@ -1,5 +1,9 @@
 import { describe, expect, it } from "vitest";
-import { extractShellFenceCommands, isShellFenceLanguage } from "./shell-fence";
+import {
+	extractShellFenceCommands,
+	isShellFenceLanguage,
+	parseShellFenceFlags,
+} from "./shell-fence";
 
 const TOOLS = ["read_files", "run_commands", "editor"];
 
@@ -81,5 +85,38 @@ describe("extractShellFenceCommands", () => {
 		]);
 		expect(toolUses).toEqual([]);
 		expect(remainingText).toBe(text);
+	});
+});
+
+describe("shell fence flags", () => {
+	it("reads -timeout and -echo off the fence line", () => {
+		const { toolUses } = extractShellFenceCommands(
+			"```powershell -timeout 10m -echo\nbun run build\n```",
+			["run_commands"],
+		);
+		expect(toolUses[0]?.arguments).toEqual({
+			commands: ["bun run build"],
+			timeout_seconds: 600,
+			echo: true,
+		});
+	});
+
+	it("adds nothing when no flags are written", () => {
+		const { toolUses } = extractShellFenceCommands(
+			"```powershell\nGet-ChildItem\n```",
+			["run_commands"],
+		);
+		expect(toolUses[0]?.arguments).toEqual({ commands: ["Get-ChildItem"] });
+	});
+
+	it("parses flag forms", () => {
+		expect(parseShellFenceFlags(" -timeout 90")).toEqual({
+			timeout_seconds: 90,
+		});
+		expect(parseShellFenceFlags(" --timeout=2h")).toEqual({
+			timeout_seconds: 7200,
+		});
+		expect(parseShellFenceFlags(" -echo")).toEqual({ echo: true });
+		expect(parseShellFenceFlags(" -echoes")).toEqual({});
 	});
 });

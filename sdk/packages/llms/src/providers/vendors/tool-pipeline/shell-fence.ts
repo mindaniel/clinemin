@@ -40,6 +40,41 @@ export function isShellFenceLanguage(lang: string | undefined): boolean {
 }
 
 /**
+ * Flags a model may write after the fence language:
+ *
+ *     ```powershell -timeout 600
+ *     ```powershell -echo
+ *
+ * `-timeout` is seconds (`600`, `600s`, `10m`), and `-echo` runs the command in
+ * the background with its output reported back when it ends. They become the
+ * `timeout_seconds` / `echo` fields of the `run_commands` call. Anything else
+ * on the line is ignored, as it always was.
+ */
+export function parseShellFenceFlags(rest: string | undefined): {
+	timeout_seconds?: number;
+	echo?: true;
+} {
+	const text = rest ?? "";
+	const flags: { timeout_seconds?: number; echo?: true } = {};
+	const timeout =
+		/(?:^|\s)-{1,2}timeout(?:\s*[=:]\s*|\s+)(\d+(?:\.\d+)?)\s*([smh])?(?=\s|$)/i.exec(
+			text,
+		);
+	if (timeout) {
+		const unit = (timeout[2] ?? "s").toLowerCase();
+		const factor = unit === "h" ? 3600 : unit === "m" ? 60 : 1;
+		const seconds = Number(timeout[1]) * factor;
+		if (Number.isFinite(seconds) && seconds > 0) {
+			flags.timeout_seconds = seconds;
+		}
+	}
+	if (/(?:^|\s)-{1,2}echo(?=\s|$)/i.test(text)) {
+		flags.echo = true;
+	}
+	return flags;
+}
+
+/**
  * Pull shell fences out of a reply and turn each into a `run_commands` call.
  *
  * Returns the text with those fences removed, so a caller can hand the rest to
@@ -61,8 +96,8 @@ export function extractShellFenceCommands(
 
 	const toolUses: { name: string; arguments: Record<string, unknown> }[] = [];
 	const remainingText = text.replace(
-		/```([\w+-]*)[ \t]*\r?\n([\s\S]*?)```/g,
-		(full: string, lang: string, code: string) => {
+		/```([\w+-]*)([^\r\n`]*)\r?\n([\s\S]*?)```/g,
+		(full: string, lang: string, rest: string, code: string) => {
 			if (!isShellFenceLanguage(lang)) {
 				return full;
 			}
@@ -72,7 +107,7 @@ export function extractShellFenceCommands(
 			}
 			toolUses.push({
 				name: "run_commands",
-				arguments: { commands: [command] },
+				arguments: { commands: [command], ...parseShellFenceFlags(rest) },
 			});
 			return "";
 		},

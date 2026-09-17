@@ -78,6 +78,7 @@ import {
 	type DelegatedAgentRuntimeConfig,
 } from "./delegated-agent";
 import type { AgentTeamsRuntime } from "./multi-agent";
+import { appendWorkerToolGuide } from "./worker-tool-guide";
 
 function truncateText(value: string, maxLength: number): string {
 	const normalized = value.replace(/\s+/g, " ").trim();
@@ -872,10 +873,19 @@ export function createAgentTeamsTools(
 			inputSchema: zodToJsonSchema(TeamRunTaskInputSchema),
 			execute: async (input) => {
 				const validatedInput = validateWithZod(TeamRunTaskInputSchema, input);
+				// A fresh TOOLS grant may name tools a web worker's prompt never
+				// taught it; the task carries the how-to for those.
+				const taskText = appendWorkerToolGuide(
+					validatedInput.task,
+					validatedInput.tools,
+					spawnedSpecsByRuntime
+						.get(options.runtime)
+						?.get(validatedInput.agentId)?.providerId,
+				);
 				if (validatedInput.runMode === "async") {
 					const run = options.runtime.startTeammateRun(
 						validatedInput.agentId,
-						validatedInput.task,
+						taskText,
 						{
 							taskId: validatedInput.taskId || undefined,
 							fromAgentId: options.requesterId,
@@ -916,7 +926,7 @@ export function createAgentTeamsTools(
 					});
 				}
 				const runPromise = options.runtime
-					.routeToTeammate(validatedInput.agentId, validatedInput.task, {
+					.routeToTeammate(validatedInput.agentId, taskText, {
 						taskId: validatedInput.taskId || undefined,
 						fromAgentId: options.requesterId,
 						continueConversation:

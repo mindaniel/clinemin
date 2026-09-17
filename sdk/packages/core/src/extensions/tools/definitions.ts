@@ -16,6 +16,10 @@ import {
 	zodToJsonSchema,
 } from "@cline/shared";
 import { captureRunCommandsTimeout } from "../../services/telemetry/core-events";
+import {
+	canReportBackgroundCommand,
+	reportBackgroundCommand,
+} from "./background-command-reports";
 import { CommandExitError } from "./executors/bash";
 import {
 	MAX_COMMAND_OUTPUT_CHARS,
@@ -188,8 +192,23 @@ async function executeShellCommands(
 		telemetry?: ITelemetryService;
 	},
 ): Promise<ToolOperationResult[]> {
-	const { executor, cwd, context, timeoutMs, timeoutSource, telemetry } =
-		options;
+	const {
+		cwd,
+		context: baseContext,
+		timeoutMs,
+		timeoutSource,
+		telemetry,
+	} = options;
+	const { executor } = options;
+	// The executor kills the child on its own timer, so it has to see the
+	// per-call value too, not just the wrapper below.
+	const context: AgentToolContext = {
+		...baseContext,
+		metadata: {
+			...baseContext.metadata,
+			[COMMAND_TIMEOUT_METADATA_KEY]: timeoutMs,
+		},
+	};
 
 	return Promise.all(
 		commands.map(async (command): Promise<ToolOperationResult> => {
@@ -397,9 +416,50 @@ export function createSearchTool(
 	});
 }
 
+/** Every command gets this long unless the call asks for more. */
+export const DEFAULT_COMMAND_TIMEOUT_MS = 120_000;
+/** Upper bound for a per-call `timeout_seconds`. */
+export const MAX_COMMAND_TIMEOUT_MS = 60 * 60_000;
+
+/**
+ * Metadata key the shell executor reads a per-call timeout from. The executor
+ * is built once per session, so a call that asks for a longer timeout has to
+ * carry it on the context.
+ */
+export const COMMAND_TIMEOUT_METADATA_KEY = "commandTimeoutMs";
+
 const RUN_COMMANDS_SHARED_INSTRUCTIONS =
 	"Use for listing files, checking git status, running builds, executing tests, etc. " +
-	"Commands must be non-interactive. Commands that require follow-up input like pagers should be skipped or used with supported flags/env (e.g. git --no-pager, --non-interactive) to bypass the interaction steps. ";
+	"Commands must be non-interactive. Commands that require follow-up input like pagers should be skipped or used with supported flags/env (e.g. git --no-pager, --non-interactive) to bypass the interaction steps. " +
+	`Each command times out after ${DEFAULT_COMMAND_TIMEOUT_MS / 1000}s. For a longer one set "timeout_seconds" (max ${MAX_COMMAND_TIMEOUT_MS / 1000}). For a long build or test run you don't need to wait on, set "echo": true: it runs in the background, this call returns at once, and the output is sent to you as a new message when it finishes. `;
+
+/**
+ * Read `timeout_seconds` / `echo` off a run_commands call. They sit beside
+ * `commands` and are ignored by the input normalizer, so they are read from
+ * the raw input here.
+ */
+export function readRunCommandsOptions(input: unknown): {
+	timeoutMs?: number;
+	echo: boolean;
+} {
+	if (!input || typeof input !== "object" || Array.isArray(input)) {
+		return { echo: false };
+	}
+	const record = input as Record<string, unknown>;
+	const rawTimeout = record.timeout_seconds ?? record.timeout;
+	const seconds =
+		typeof rawTimeout === "number"
+			? rawTimeout
+			: typeof rawTimeout === "string"
+				? Number.parseFloat(rawTimeout)
+				: Number.NaN;
+	const timeoutMs =
+		Number.isFinite(seconds) && seconds > 0
+			? Math.min(Math.round(seconds * 1000), MAX_COMMAND_TIMEOUT_MS)
+			: undefined;
+	const echo = record.echo === true || record.echo === "true";
+	return { timeoutMs, echo };
+}
 
 /**
  * Build the run_commands tool description for the shell that will actually
@@ -460,7 +520,7 @@ export function createShellTool(
 		shell?: string | (() => string);
 	} = {},
 ): AgentTool<unknown, ToolOperationResult[]> {
-	const timeoutMs = config.bashTimeoutMs ?? 60000;
+	const timeoutMs = config.bashTimeoutMs ?? DEFAULT_COMMAND_TIMEOUT_MS;
 	const timeoutSource =
 		config.bashTimeoutMs === undefined
 			? "default_setting"
@@ -479,20 +539,60 @@ export function createShellTool(
 		name: "run_commands",
 		description: describe(),
 		inputSchema: zodToJsonSchema(RunCommandsInputSchema),
-		timeoutMs: timeoutMs * 2,
+		// The real limit is enforced per command below; this outer guard only has
+		// to outlast the longest timeout a call is allowed to ask for.
+		timeoutMs: Math.max(timeoutMs, MAX_COMMAND_TIMEOUT_MS) + 60_000,
 		retryable: false,
 		maxRetries: 0,
 		execute: async (input, context) => {
 			const commands = coalesceAdjacentStringHeredocs(
 				normalizeRunCommandsInput(input),
 			);
+			const callOptions = readRunCommandsOptions(input);
+			const effectiveTimeoutMs = callOptions.timeoutMs ?? timeoutMs;
+			const effectiveSource = callOptions.timeoutMs
+				? "configured_setting"
+				: timeoutSource;
+
+			const sessionId = context.sessionId;
+			if (
+				callOptions.echo &&
+				sessionId &&
+				canReportBackgroundCommand(sessionId)
+			) {
+				// Detach from the turn: its abort signal must not kill a job the
+				// model asked to outlive the turn.
+				const backgroundContext: AgentToolContext = {
+					...context,
+					signal: undefined,
+				};
+				const startedAt = Date.now();
+				void executeShellCommands(commands, {
+					executor,
+					cwd,
+					context: backgroundContext,
+					timeoutMs: effectiveTimeoutMs,
+					timeoutSource: effectiveSource,
+					telemetry: config.telemetry,
+				}).then((results) => {
+					reportBackgroundCommand(
+						sessionId,
+						formatBackgroundCommandReport(results, Date.now() - startedAt),
+					);
+				});
+				return commands.map((command) => ({
+					query: formatRunCommandQueryPreview(command),
+					result: `Started in the background (timeout ${Math.round(effectiveTimeoutMs / 1000)}s). Its output will be sent to you as a new message when it finishes; do not wait for it in this turn.`,
+					success: true,
+				}));
+			}
 
 			return executeShellCommands(commands, {
 				executor,
 				cwd,
 				context,
-				timeoutMs,
-				timeoutSource,
+				timeoutMs: effectiveTimeoutMs,
+				timeoutSource: effectiveSource,
 				telemetry: config.telemetry,
 			});
 		},
@@ -508,6 +608,27 @@ export function createShellTool(
 		});
 	}
 	return tool;
+}
+
+function formatBackgroundCommandReport(
+	results: ToolOperationResult[],
+	durationMs: number,
+): string {
+	const blocks = results.map((result) => {
+		const status = result.success ? "finished" : "failed";
+		const output =
+			typeof result.result === "string"
+				? result.result
+				: JSON.stringify(result.result, null, 2);
+		return [
+			`Command ${status}: ${result.query}`,
+			result.error ? `Error: ${result.error}` : "",
+			output ? `Output:\n${output}` : "(no output)",
+		]
+			.filter(Boolean)
+			.join("\n");
+	});
+	return `[Background command report, ran ${Math.round(durationMs / 1000)}s]\n${blocks.join("\n\n")}`;
 }
 
 /**

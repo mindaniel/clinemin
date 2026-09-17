@@ -396,7 +396,18 @@ function createClaudeWebModel(
 		}
 
 		if (!claudeNetworkEnabledSessions.has(cdpSessionId)) {
-			await cdp.send("Network.enable", {}, cdpSessionId);
+			// Chrome's default buffers evict response bodies quickly on a busy
+			// claude.ai page, and `getResponseBody` then fails with "No data found
+			// for resource with given identifier" — the reply is on screen but
+			// unreadable. Larger buffers keep the completion body around.
+			await cdp.send(
+				"Network.enable",
+				{
+					maxTotalBufferSize: 200 * 1024 * 1024,
+					maxResourceBufferSize: 50 * 1024 * 1024,
+				},
+				cdpSessionId,
+			);
 			claudeNetworkEnabledSessions.add(cdpSessionId);
 		}
 

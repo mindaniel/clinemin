@@ -295,6 +295,18 @@ function spawnAndCollect(
 }
 
 /**
+ * A per-call timeout set by `run_commands` (`timeout_seconds`). Read by key
+ * rather than importing the constant, to keep this executor free of the tool
+ * definitions module.
+ */
+function readCommandTimeoutOverride(
+	context: AgentToolContext,
+): number | undefined {
+	const value = context.metadata?.commandTimeoutMs;
+	return typeof value === "number" && value > 0 ? value : undefined;
+}
+
+/**
  * Create a shell executor using Node.js spawn
  *
  * @example
@@ -312,7 +324,7 @@ export function createShellExecutor(
 ): ShellExecutor {
 	const {
 		shell = getDefaultShell(process.platform),
-		timeoutMs = 60000,
+		timeoutMs = 120_000,
 		env = {},
 		combineOutput = true,
 	} = options;
@@ -333,7 +345,7 @@ export function createShellExecutor(
 				env,
 			},
 			context,
-			timeoutMs,
+			readCommandTimeoutOverride(context) ?? timeoutMs,
 			maxOutputChars,
 			combineOutput,
 		);

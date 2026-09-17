@@ -21,6 +21,7 @@ import {
 } from "../../extensions/context/compaction";
 import type { ToolExecutors } from "../../extensions/tools";
 import { DefaultToolNames } from "../../extensions/tools";
+import { registerBackgroundCommandReporter } from "../../extensions/tools/background-command-reports";
 import type { TeamEvent } from "../../extensions/tools/team";
 import type { HookEventPayload } from "../../hooks";
 import { buildTelemetryAgentIdentity } from "../../services/agent-events";
@@ -248,6 +249,7 @@ export class LocalRuntimeHost implements RuntimeHost {
 	private readonly pendingPromptsController: PendingPromptsController;
 	private readonly eventBridge: AgentEventBridge;
 	private readonly sessionVersioning = new SessionVersioningService();
+	private readonly unregisterBackgroundReporter: () => void;
 
 	constructor(options: LocalRuntimeHostOptions) {
 		const homeDir = homedir();
@@ -274,6 +276,22 @@ export class LocalRuntimeHost implements RuntimeHost {
 		this.defaultLogger = options.logger;
 		this.defaultTelemetry?.setDistinctId(distinctId);
 		this.defaultFetch = options.fetch;
+
+		// `run_commands` with `echo` reports back here when its command ends.
+		// Without an explicit delivery, runTurn starts a turn when the session
+		// is idle and queues behind the current one when it is busy.
+		this.unregisterBackgroundReporter = registerBackgroundCommandReporter({
+			owns: (sid) => this.sessions.has(sid),
+			deliver: (sid, message) => {
+				void this.runTurn({ sessionId: sid, prompt: message }).catch(
+					(error) => {
+						this.defaultLogger?.error?.(
+							`background command report failed for ${sid}: ${error}`,
+						);
+					},
+				);
+			},
+		});
 
 		this.pendingPromptsController = new PendingPromptsController({
 			getSession: (sid) => this.sessions.get(sid),
@@ -1067,6 +1085,7 @@ export class LocalRuntimeHost implements RuntimeHost {
 	}
 
 	async dispose(reason = "session_manager_dispose"): Promise<void> {
+		this.unregisterBackgroundReporter();
 		const sessions = [...this.sessions.values()];
 		if (sessions.length === 0) return;
 		await Promise.allSettled(

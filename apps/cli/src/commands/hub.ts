@@ -111,14 +111,19 @@ async function hubStillUp(url: string | undefined): Promise<boolean> {
 	return Boolean(await probeHubServer(url));
 }
 
+type HubStopResult = "stopped" | "not_running" | "still_running";
+
 /**
  * Stop the local hub, and report whether it is actually stopped.
+ *
+ * "not_running" is separate from "still_running": both used to print
+ * `{"stopped":false}`, so "there was no hub" read like "the stop failed".
  *
  * The old version returned `!!pid` — whether a discovery record happened to
  * name a process — which was neither "we killed it" nor "it is gone". Now the
  * answer is the observable one: nothing is listening any more.
  */
-async function stopHubServer(_workspaceRoot: string): Promise<boolean> {
+async function stopHubServer(_workspaceRoot: string): Promise<HubStopResult> {
 	const owner = resolveCliHubOwnerContext();
 	const discovery = await readHubDiscovery(owner.discoveryPath);
 	const url = discovery?.url;
@@ -126,7 +131,7 @@ async function stopHubServer(_workspaceRoot: string): Promise<boolean> {
 	if (await stopLocalHubServerGracefully(owner)) {
 		await clearHubDiscovery(owner.discoveryPath);
 		if (!(await hubStillUp(url))) {
-			return true;
+			return "stopped";
 		}
 	}
 
@@ -145,16 +150,16 @@ async function stopHubServer(_workspaceRoot: string): Promise<boolean> {
 
 	await clearHubDiscovery(owner.discoveryPath);
 	if (pids.size === 0) {
-		return false;
+		return (await hubStillUp(url)) ? "still_running" : "not_running";
 	}
 	// Give the port a moment to be released before answering.
 	for (let attempt = 0; attempt < 10; attempt++) {
 		if (!(await hubStillUp(url))) {
-			return true;
+			return "stopped";
 		}
 		await new Promise((resolve) => setTimeout(resolve, 200));
 	}
-	return false;
+	return "still_running";
 }
 
 function formatHubUptimeFromStartedAt(
@@ -280,8 +285,17 @@ export function createHubCommand(
 	hub.command("stop").action(
 		action(async () => {
 			const opts = hub.opts<{ cwd: string }>();
-			const stopped = await stopHubServer(opts.cwd);
-			io.writeln(JSON.stringify({ stopped }));
+			const result = await stopHubServer(opts.cwd);
+			if (result === "stopped") {
+				io.writeln(JSON.stringify({ stopped: true }));
+				return;
+			}
+			io.writeln(JSON.stringify({ stopped: false, reason: result }));
+			if (result === "still_running") {
+				io.writeErr(
+					"hub is still answering after stop; close running cline sessions and retry",
+				);
+			}
 		}),
 	);
 

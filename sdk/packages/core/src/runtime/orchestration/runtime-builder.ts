@@ -57,7 +57,6 @@ import type {
  * run PowerShell locally and paste results back; those commands and the model
  * turns around them can take much longer than the SDK's normal 60s default.
  */
-const CLAUDE_WEB_COMMAND_TIMEOUT_MS = 1_200_000; // 20 minutes, matching the web provider's response timeout
 
 /**
  * The project's rule files, concatenated, for handing to delegated agents.
@@ -214,12 +213,9 @@ function createBuiltinToolsList(
 			...preset,
 			enableSkills: !!skillsExecutor,
 			...toolRoutingConfig,
-			// The Claude Web provider drives its own built-in tools through the
-			// browser and hands us PowerShell commands to run locally; those
-			// commands (and the model turns around them) routinely outlive the
-			// SDK's 60s default, so give this provider a much larger budget.
-			bashTimeoutMs:
-				providerId === "claude-web" ? CLAUDE_WEB_COMMAND_TIMEOUT_MS : undefined,
+			// One command timeout for every provider (DEFAULT_COMMAND_TIMEOUT_MS,
+			// 120s). A command that needs longer asks for it with
+			// `timeout_seconds`, or runs in the background with `echo`.
 			executors: {
 				...(skillsExecutor
 					? {

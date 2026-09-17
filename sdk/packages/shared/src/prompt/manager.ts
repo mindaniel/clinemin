@@ -125,22 +125,33 @@ blocks in one reply is fine, and they run in order.`,
 
 <manager>
 TO: ${example}
-TOOLS: read_files, editor
+TOOLS: run_commands
 ${MANAGER_EXAMPLE_BODY}
 </manager>
 
-The tools are \`read_files\`, \`search_codebase\`, \`run_commands\`, \`editor\`,
-\`apply_patch\` or you can tell them to search the web. A grant lasts until you change it, so
-send a TOOLS: line only when the answer changes. Give the smallest set that does
-the job: an assistant asked to look something up and handed \`editor\` may decide
-to fix what it finds, and you will not know until it has. \`TOOLS: none\` leaves
-an assistant able to talk to you and nothing else.`,
+Grant these two:
+- \`run_commands\` — PowerShell commands. Reading files, searching the code
+  (\`Select-String\`, \`Get-ChildItem\`), running builds and tests all go here.
+- \`apply_patch\` — editing files.
+
+Your assistants already know how to use both. \`TOOLS: run_commands\` is for
+looking; add \`apply_patch\` only when you want them to change files. Other tools
+(\`read_files\`, \`search_codebase\`, \`editor\`) exist but are a last resort: don't
+grant them unless PowerShell can't do the job. You can also tell an assistant to
+search the web. A grant lasts until you change it, so send a TOOLS: line only
+when the answer changes. An assistant asked to look something up and handed
+\`apply_patch\` may decide to fix what it finds, and you will not know until it
+has. \`TOOLS: none\` leaves an assistant able to talk to you and nothing else.`,
 		`To check something yourself, send me PowerShell commands to do that, and I
 will paste you the results:
 
 \`\`\`powershell
 ${MANAGER_EXAMPLE_COMMAND}
 \`\`\`
+
+A command is stopped after 120 seconds; write \`\`\`powershell -timeout 600 for
+longer (max 3600), or \`\`\`powershell -echo to run it in the background and get
+the output pasted back when it finishes.
 
 Keep those read-only. Looking is yours; changing is theirs. An assistant
 reporting on its own work is not evidence.`,

@@ -157,6 +157,9 @@ describe("createHubCommand", () => {
 
 		await cmd.parseAsync(["stop"], { from: "user" });
 
-		expect(JSON.parse(output[0] || "")).toEqual({ stopped: false });
+		expect(JSON.parse(output[0] || "")).toEqual({
+			stopped: false,
+			reason: "still_running",
+		});
 	});
 });

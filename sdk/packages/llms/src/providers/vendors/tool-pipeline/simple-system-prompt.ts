@@ -29,6 +29,8 @@ export const SIMPLE_WEB_SYSTEM_PROMPT = [
 	"",
 	"Always put a PowerShell command in a fence tagged ```powershell. An untagged ``` fence is treated as quoted text and will not run.",
 	"",
+	"A command is stopped after 120 seconds. If it needs longer, add -timeout with the seconds on the fence line: ```powershell -timeout 600 (max 3600). For a long build or test run, add -echo instead: ```powershell -echo runs it in the background, I tell you it started, and I paste you the output when it finishes.",
+	"",
 	"When a file needs to be edited, do not ask me to edit it manually, and do not send PowerShell code that writes to the file. Instead send the change as a patch block that I paste into my auto-patcher, in exactly this format:",
 	"",
 	"*** Begin Patch",
