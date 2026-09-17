@@ -26,6 +26,10 @@ import { isSyntheticUserText } from "../tool-pipeline/continuation-note";
 import { logConversationTurn } from "../tool-pipeline/conversation-logger";
 import { consumePendingInjectedReply } from "../tool-pipeline/injected-reply";
 import { parseInvokeStyleToolCalls } from "../tool-pipeline/invoke-parser";
+import {
+	parsePatchBlocks,
+	unappliedPatchNotice,
+} from "../tool-pipeline/patch-block";
 import { stripPreviousUserBlock } from "../tool-pipeline/previous-user-dedupe";
 import { extractShellFenceCommands } from "../tool-pipeline/shell-fence";
 import {
@@ -672,6 +676,31 @@ function buildCompletionFromText(
 		};
 	}
 
+	const patched = parsePatchBlocks(cleanedContent, toolNames);
+	if (patched.toolCalls.length > 0) {
+		const { tools: validatedPatched, retryPrompt } = validateToolCalls(
+			patched.toolCalls,
+		);
+		return {
+			text: retryPrompt
+				? `${patched.cleanedContent}\n\n${retryPrompt}`.trim()
+				: patched.cleanedContent,
+			reasoning: "",
+			toolCalls: validatedPatched,
+			usage,
+		};
+	}
+
+	const patchNotice = unappliedPatchNotice(cleanedContent, toolNames);
+	if (patchNotice) {
+		return {
+			text: `${cleanedContent}\n\n${patchNotice}`.trim(),
+			reasoning: "",
+			toolCalls: [],
+			usage,
+		};
+	}
+
 	const malformedError = detectMalformedToolTag(text);
 	if (malformedError) {
 		return {
@@ -1098,10 +1127,18 @@ function createDeepSeekWebV2Model(
 			const recoveredContent =
 				invoked.toolCalls.length > 0 ? invoked.cleanedContent : cleanedContent;
 
+			const patched = parsePatchBlocks(
+				recoveredContent,
+				functionTools.map((t) => t.name),
+			);
+			const patchedCalls = patched.toolCalls;
+			const patchedContent = patched.cleanedContent;
+
 			// Fallback: convert shell fences (```powershell) and other code fences
 			// into tool calls if no structured tool calls were found.
-			let finalCalls = recoveredCalls;
-			let finalContent = recoveredContent;
+			let finalCalls = patchedCalls.length > 0 ? patchedCalls : recoveredCalls;
+			let finalContent =
+				patchedCalls.length > 0 ? patchedContent : recoveredContent;
 			if (finalCalls.length === 0 && functionTools.length > 0) {
 				const fallback = parseFallbackToolUses(
 					finalContent,

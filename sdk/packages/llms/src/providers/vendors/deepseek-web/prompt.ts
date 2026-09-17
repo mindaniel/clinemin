@@ -90,9 +90,13 @@ function toolResultOutputText(output: unknown): string {
 
 function promptPartText(part: PromptPart): string {
 	if (typeof part.text === "string" && part.text.length > 0) return part.text;
-	if (part.type === "tool-result") {
-		// v2 shape takes precedence; fall back to the legacy `result` field.
+	if (part.type === "tool-result" || part.type === "tool_result") {
+		// v2 shape takes precedence; fall back to the core SDK's `content`
+		// field or the legacy `result` field.
 		if (part.output !== undefined) return toolResultOutputText(part.output);
+		if ((part as { content?: unknown }).content !== undefined) {
+			return toolResultOutputText((part as { content?: unknown }).content);
+		}
 		if (part.result !== undefined) {
 			return typeof part.result === "string"
 				? part.result
@@ -149,7 +153,9 @@ export function messagesToPrompt(
 		const parts = toPromptParts(message);
 		const text = parts
 			.map((part) =>
-				part.type === "text" || part.type === "tool-result"
+				part.type === "text" ||
+				part.type === "tool-result" ||
+				part.type === "tool_result"
 					? promptPartText(part)
 					: "",
 			)
@@ -168,7 +174,9 @@ export function messagesToPrompt(
 			// Tool results have no native slot in the flat-prompt format; fold
 			// them in as plain text so the model keeps seeing the output.
 			if (text) {
-				const toolResult = parts.find((p) => p.type === "tool-result");
+				const toolResult = parts.find(
+					(p) => p.type === "tool-result" || p.type === "tool_result",
+				);
 				const toolName =
 					typeof toolResult?.toolName === "string"
 						? toolResult.toolName

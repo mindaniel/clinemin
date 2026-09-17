@@ -47,6 +47,11 @@ export interface LocalSlashCommandActionInput {
 	 * driven with several accounts.
 	 */
 	switchProfile: () => Promise<boolean>;
+	/**
+	 * `/telegram`: open the interactive Telegram connector config box and
+	 * persist the token, chat ID, and on/off toggle.
+	 */
+	configureTelegram: () => Promise<boolean>;
 }
 
 /**
@@ -157,6 +162,9 @@ export function runLocalSlashCommandAction(
 	}
 	if (normalized === "note") {
 		return input.setNote(commandArgument(input.invocation?.text));
+	}
+	if (normalized === "telegram") {
+		return input.configureTelegram();
 	}
 	if (normalized === "quit") {
 		setTimeout(input.exitCline, 0);

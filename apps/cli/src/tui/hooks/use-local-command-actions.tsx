@@ -127,10 +127,12 @@ const webProviderConfigs: Record<string, WebProviderConfig> = {
 	},
 };
 
+import { disableConnectorAutostart } from "@cline/core";
 import { useTerminalDimensions } from "@opentui/react";
 import type { ChoiceContext } from "@opentui-ui/dialog";
 import { useDialog } from "@opentui-ui/dialog/react";
 import { useCallback } from "react";
+import { runConnectAdapter, runStopConnector } from "../../commands/connect";
 import type { SlashCommandRegistry } from "../commands/slash-command-registry";
 import { resolveSlashCommand } from "../commands/slash-command-registry";
 import { FindChatDialogContent } from "../components/dialogs/find-chat-dialog";
@@ -144,10 +146,20 @@ import {
 import { PasteReplyDialogContent } from "../components/dialogs/paste-reply-dialog";
 import { ProfilePickerContent } from "../components/dialogs/profile-picker";
 import {
+	TelegramConfigDialogContent,
+	type TelegramConfigDialogResult,
+} from "../components/dialogs/telegram-config-dialog";
+import {
 	WorkersDialogContent,
 	type WorkersDialogResult,
 } from "../components/dialogs/workers-dialog";
 import { useSession } from "../contexts/session-context";
+import {
+	buildTelegramConnectArgs,
+	isTelegramConnectorRunning,
+	readTelegramConnectorConfig,
+	writeTelegramCredentials,
+} from "../telegram-connector-config";
 import type { AppView, TuiProps } from "../types";
 import { formatTokenCount } from "../utils/compaction-status";
 import { hydrateSessionMessages } from "../utils/hydrate-messages";
@@ -912,13 +924,85 @@ export function useLocalCommandActions(input: {
 			setContinuationNote(arg);
 			session.appendEntry({
 				kind: "status",
-				text: `/note: this project's note is now:
-  ${arg}`,
+				text: `/note: this project's note is now:\n  ${arg}`,
 			});
 			return true;
 		},
 		[cwd, session],
 	);
+
+	/**
+	 * `/telegram` - open the interactive connector box. The token and chat ID
+	 * are persisted in the shared connector store; the toggle starts or stops
+	 * the live connector process immediately, so it can be turned on and off
+	 * whenever the user wants while using Cline. Autostart is always cleared so
+	 * Telegram never connects on its own when Cline starts.
+	 */
+	const configureTelegram = useCallback(async (): Promise<boolean> => {
+		const initial = readTelegramConnectorConfig();
+		const result = await dialog.choice<TelegramConfigDialogResult | null>({
+			size: "large",
+			style: { maxHeight: termHeight - 2 },
+			content: (ctx: ChoiceContext<TelegramConfigDialogResult | null>) => (
+				<TelegramConfigDialogContent {...ctx} initial={initial} />
+			),
+		});
+		refocusTextarea();
+		if (!result) {
+			return true;
+		}
+		// The hub daemon reconnects any connector marked enabled on startup.
+		// Always clear that flag: Telegram should only run when explicitly
+		// toggled on here.
+		disableConnectorAutostart("telegram");
+		const io = {
+			writeln: (text?: string) => {
+				if (text) session.appendEntry({ kind: "status", text });
+			},
+			writeErr: (text?: string) => {
+				if (text) session.appendEntry({ kind: "error", text });
+			},
+		};
+		try {
+			writeTelegramCredentials({
+				botToken: result.botToken,
+				chatId: result.chatId,
+			});
+			const wasRunning = isTelegramConnectorRunning();
+			if (result.running && !wasRunning) {
+				await runConnectAdapter(
+					"telegram",
+					buildTelegramConnectArgs(result),
+					io,
+				);
+				// Starting through the connect command records an autostart row.
+				// Drop it: Telegram must never reconnect on its own at startup.
+				disableConnectorAutostart("telegram");
+				session.appendEntry({
+					kind: "status",
+					text: "/telegram: credentials saved, connector started.",
+				});
+			} else if (!result.running && wasRunning) {
+				await runStopConnector("telegram", io);
+				disableConnectorAutostart("telegram");
+				session.appendEntry({
+					kind: "status",
+					text: "/telegram: credentials saved, connector stopped.",
+				});
+			} else {
+				session.appendEntry({
+					kind: "status",
+					text: `/telegram: credentials saved. Connector is ${result.running ? "running" : "stopped"}.`,
+				});
+			}
+		} catch (error) {
+			session.appendEntry({
+				kind: "error",
+				text: `/telegram: ${error instanceof Error ? error.message : String(error)}`,
+			});
+		}
+		return true;
+	}, [dialog, refocusTextarea, session, termHeight]);
 
 	const handleSlashCommand = useCallback(
 		(command: string, invocation?: LocalSlashCommandInvocation) => {
@@ -949,6 +1033,7 @@ export function useLocalCommandActions(input: {
 				pasteReply,
 				setNote,
 				switchProfile,
+				configureTelegram,
 			});
 		},
 		[
@@ -971,6 +1056,7 @@ export function useLocalCommandActions(input: {
 			pasteReply,
 			setNote,
 			switchProfile,
+			configureTelegram,
 			session.isRunning,
 			slashCommandRegistry,
 		],

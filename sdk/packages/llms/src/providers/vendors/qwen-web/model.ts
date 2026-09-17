@@ -28,7 +28,9 @@ import { withBrowserLock } from "../tool-pipeline/browser-lock";
 import { getBoundChatKey, resolveChatKey } from "../tool-pipeline/chat-target";
 import { logConversationTurn } from "../tool-pipeline/conversation-logger";
 import { consumePendingInjectedReply } from "../tool-pipeline/injected-reply";
+import { parseInvokeStyleToolCalls } from "../tool-pipeline/invoke-parser";
 import { parseManagerBlocks } from "../tool-pipeline/manager-block";
+import { parsePatchBlocks } from "../tool-pipeline/patch-block";
 import { stripPreviousUserBlock } from "../tool-pipeline/previous-user-dedupe";
 import { validateToolCalls } from "../tool-pipeline/tool-dispatcher";
 import type { ProviderFactoryResult } from "../types";
@@ -345,6 +347,54 @@ function createQwenWebModel(
 				break;
 			}
 
+			const invoked = parseInvokeStyleToolCalls(result.text, toolNames);
+			if (invoked.toolCalls.length > 0) {
+				const { tools: validatedInvoked, retryPrompt } = validateToolCalls(
+					invoked.toolCalls,
+				);
+				if (
+					validatedInvoked.length === 0 &&
+					retryPrompt &&
+					attempt < MAX_TOOL_REJECTION_RETRIES
+				) {
+					logger?.log(
+						`[qwen-web] all <invoke> tool calls rejected, resending correction into chat (attempt ${attempt + 1}/${MAX_TOOL_REJECTION_RETRIES})`,
+						{ severity: "warn" },
+					);
+					sendPrompt = retryPrompt;
+					continue;
+				}
+				finalText = retryPrompt
+					? `${invoked.cleanedContent}\n\n${retryPrompt}`.trim()
+					: invoked.cleanedContent;
+				finalToolCalls = validatedInvoked;
+				break;
+			}
+
+			const patched = parsePatchBlocks(cleanedContent, toolNames);
+			if (patched.toolCalls.length > 0) {
+				const { tools: validatedPatched, retryPrompt } = validateToolCalls(
+					patched.toolCalls,
+				);
+				if (
+					validatedPatched.length === 0 &&
+					retryPrompt &&
+					attempt < MAX_TOOL_REJECTION_RETRIES
+				) {
+					logger?.log(
+						`[qwen-web] all patch tool calls rejected, resending correction into chat (attempt ${attempt + 1}/${MAX_TOOL_REJECTION_RETRIES})`,
+						{ severity: "warn" },
+					);
+					sendPrompt = retryPrompt;
+					continue;
+				}
+				finalText = retryPrompt
+					? `${patched.cleanedContent}\n\n${retryPrompt}`.trim()
+					: patched.cleanedContent;
+				finalToolCalls = validatedPatched;
+				break;
+			}
+
 			// The web model often ignores the `<tool>` contract and answers with
 			// plain text (a plan, code fences, install commands). Convert the
 			// visible structure of the reply into real tool calls so the agent
@@ -417,6 +467,34 @@ function createQwenWebModel(
 					? `${cleanedContent}\n\n${retryPrompt}`.trim()
 					: cleanedContent,
 				toolCalls: validatedCalls,
+				usage,
+			};
+		}
+
+		const invoked = parseInvokeStyleToolCalls(text, toolNames);
+		if (invoked.toolCalls.length > 0) {
+			const { tools: validatedInvoked, retryPrompt } = validateToolCalls(
+				invoked.toolCalls,
+			);
+			return {
+				text: retryPrompt
+					? `${invoked.cleanedContent}\n\n${retryPrompt}`.trim()
+					: invoked.cleanedContent,
+				toolCalls: validatedInvoked,
+				usage,
+			};
+		}
+
+		const patched = parsePatchBlocks(cleanedContent, toolNames);
+		if (patched.toolCalls.length > 0) {
+			const { tools: validatedPatched, retryPrompt } = validateToolCalls(
+				patched.toolCalls,
+			);
+			return {
+				text: retryPrompt
+					? `${patched.cleanedContent}\n\n${retryPrompt}`.trim()
+					: patched.cleanedContent,
+				toolCalls: validatedPatched,
 				usage,
 			};
 		}

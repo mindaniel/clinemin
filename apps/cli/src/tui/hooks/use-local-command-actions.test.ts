@@ -29,6 +29,7 @@ function makeActions(
 		pasteReply: vi.fn(async () => true),
 		setNote: vi.fn(() => true),
 		switchProfile: vi.fn(async () => true),
+		configureTelegram: vi.fn(async () => true),
 		...overrides,
 	};
 }

@@ -506,6 +506,23 @@ describe("deepseek-web parseLooseDeepSeekToolCalls", () => {
 		expect(loose[0].name).toBe("run_commands");
 	});
 
+	it("normalizes powershell and applypatch aliases", () => {
+		const powershellReply =
+			'<tool>{"name":"powershell","arguments":{"commands":["Get-ChildItem"]}}</tool>';
+		const applyPatchReply =
+			'<tool>{"name":"applypatch","arguments":{"patch":"*** Begin Patch\\n*** End Patch"}}</tool>';
+		const powershell = parseLooseDeepSeekToolCalls(powershellReply, [
+			"run_commands",
+		]);
+		const applyPatch = parseLooseDeepSeekToolCalls(applyPatchReply, [
+			"apply_patch",
+		]);
+		expect(powershell).toHaveLength(1);
+		expect(powershell[0].name).toBe("run_commands");
+		expect(applyPatch).toHaveLength(1);
+		expect(applyPatch[0].name).toBe("apply_patch");
+	});
+
 	it("ignores prose that merely contains <tool and no real name", () => {
 		const reply = "Please use the <tool> tag when you need to call a function.";
 		const loose = parseLooseDeepSeekToolCalls(reply, ["search_codebase"]);

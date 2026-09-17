@@ -30,6 +30,7 @@ export type LocalSlashCommandName =
 	| "paste"
 	| "note"
 	| "profile"
+	| "telegram"
 	| "quit"
 	| "help";
 
@@ -143,6 +144,10 @@ const TUI_LOCAL_COMMANDS: Array<{
 			"Switch the browser profile web providers log in with, or sign one out",
 	},
 	{
+		name: "telegram",
+		description: "Configure the Telegram connector (token, chat ID, on/off)",
+	},
+	{
 		name: "help",
 		description: "Show help",
 	},
@@ -172,6 +177,7 @@ const SYSTEM_COMMAND_ORDER = [
 	"paste",
 	"note",
 	"profile",
+	"telegram",
 	"help",
 	"quit",
 ] satisfies ReadonlyArray<LocalSlashCommandName | "team">;
