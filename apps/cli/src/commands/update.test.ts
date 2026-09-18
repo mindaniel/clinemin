@@ -258,9 +258,11 @@ describe("hub restart owner selection", () => {
 
 		const owner = resolveCliHubOwnerContext();
 
-		expect(owner.discoveryPath).toContain("/locks/hub/owners/");
+		// The path is built with `path.join`, so it is separated by backslashes on
+		// Windows. Assert against a joined path rather than a POSIX literal.
+		expect(owner.discoveryPath).toContain(join("locks", "hub", "owners"));
 		expect(owner.discoveryPath).not.toBe(
-			"/tmp/cline-update-test-data/locks/hub/production.json",
+			join("/tmp/cline-update-test-data", "locks", "hub", "production.json"),
 		);
 	});
 });

@@ -541,13 +541,42 @@ function getWrapperPackageName(
 async function runCommand(
 	command: string,
 	args: string[],
-	options: { cwd?: string } = {},
+	options: { cwd?: string; windowsShell?: boolean } = {},
 ): Promise<void> {
+	// `npm` on Windows is `npm.cmd`, a batch shim, and CreateProcess cannot run
+	// one: spawning it without a shell fails immediately with `spawn EFTYPE`, so
+	// plugin installs were impossible on Windows. Batch files also need cmd.exe
+	// quoting, which Node only applies when `shell` is set -- that is the
+	// supported way to launch one, and Node escapes the arguments for it.
+	//
+	// Scoped to the callers that name a shim on purpose. `git` is a real .exe and
+	// needs none of this, so it keeps spawning without a shell in between.
+	const useShell =
+		options.windowsShell === true && process.platform === "win32";
+	// Node does not escape arguments when `shell` is set -- it concatenates them
+	// (see DEP0190) -- and one of these is a package spec the user supplied. So
+	// build the command line here instead of handing Node a list: every token is
+	// wrapped in double quotes, inside which cmd.exe stops treating `&`, `|`,
+	// `<`, `>` and `^` as syntax. That leaves `%` (still expanded inside quotes)
+	// and the quote character itself, which are rejected outright.
+	const shellCommandLine = useShell
+		? [command, ...args]
+				.map((token) => {
+					if (/["%\r\n\0]/.test(token)) {
+						throw new Error(
+							`Refusing to run ${command}: argument contains an unsafe character`,
+						);
+					}
+					return `"${token}"`;
+				})
+				.join(" ")
+		: undefined;
 	await new Promise<void>((resolvePromise, reject) => {
-		const child = spawn(command, args, {
+		const child = spawn(shellCommandLine ?? command, useShell ? [] : args, {
 			cwd: options.cwd,
 			stdio: ["ignore", "ignore", "pipe"],
 			env: process.env,
+			shell: useShell,
 			// Prevent a console window from flashing on Windows.
 			windowsHide: true,
 		});
@@ -769,18 +798,22 @@ async function installNpmPackage(
 		JSON.stringify({ name: "cline-plugin-install", private: true }, null, 2),
 		"utf8",
 	);
-	await runCommand(npmCommand, [
-		"install",
-		parsed.spec,
-		"--prefix",
-		packageRoot,
-		"--omit=dev",
-		"--omit=peer",
-		"--legacy-peer-deps",
-		"--no-audit",
-		"--no-fund",
-		"--package-lock=false",
-	]);
+	await runCommand(
+		npmCommand,
+		[
+			"install",
+			parsed.spec,
+			"--prefix",
+			packageRoot,
+			"--omit=dev",
+			"--omit=peer",
+			"--legacy-peer-deps",
+			"--no-audit",
+			"--no-fund",
+			"--package-lock=false",
+		],
+		{ windowsShell: true },
+	);
 	removeInstalledHostProvidedSdkDependencies(packageRoot, parsed.name);
 	return join(packageRoot, "node_modules", parsed.name);
 }
@@ -804,7 +837,7 @@ async function installPackageDependencies(
 			"--no-fund",
 			"--package-lock=false",
 		],
-		{ cwd: packageRoot },
+		{ cwd: packageRoot, windowsShell: true },
 	);
 }
 

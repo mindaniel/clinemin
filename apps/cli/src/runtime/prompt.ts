@@ -48,7 +48,12 @@ export async function resolveSystemPrompt(input: {
 	});
 }
 
-const FILE_MENTION_PREFIX = String.raw`(?:\/|~\/|\.{1,2}\/)`;
+// A mention has to look like a path, or every `@name` in a sentence would be
+// read as one. That means a rooted or explicitly relative path -- and on
+// Windows those are spelled with a drive letter, a UNC prefix, or backslashes,
+// none of which the POSIX-only version of this accepted. `@C:\notes\todo.md`
+// simply passed through to the model as literal text.
+const FILE_MENTION_PREFIX = String.raw`(?:[A-Za-z]:[\\/]|\\\\|[\\/]|~[\\/]|\.{1,2}[\\/])`;
 const FILE_MENTION_PATTERN_TEST = new RegExp(
 	String.raw`@(?:"${FILE_MENTION_PREFIX}[^"\r\n]+"|${FILE_MENTION_PREFIX}\S+)`,
 	"i",
@@ -86,7 +91,7 @@ function extractFileMentions(
 }
 
 function resolveMentionPath(filePath: string): string {
-	if (filePath.startsWith("~/")) {
+	if (filePath.startsWith("~/") || filePath.startsWith("~\\")) {
 		return resolve(homedir(), filePath.slice(2));
 	}
 	return resolve(filePath);
