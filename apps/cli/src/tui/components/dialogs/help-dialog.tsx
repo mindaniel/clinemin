@@ -2,6 +2,7 @@
 import type { ChoiceContext } from "@opentui-ui/dialog";
 import { useDialogKeyboard } from "@opentui-ui/dialog/react";
 import { palette } from "../../palette";
+import { buildCommandPaletteItems } from "./command-palette-items";
 
 type HelpRow =
 	| { kind: "heading"; id: string; text: string }
@@ -74,7 +75,13 @@ const HELP_ROWS: HelpRow[] = [
 		kind: "entry",
 		id: "k-escape",
 		key: "Escape",
-		desc: "Close menu / Abort running agent",
+		desc: "Close menu / Discard queued-message edit / Abort running agent",
+	},
+	{
+		kind: "entry",
+		id: "k-ctrl-x",
+		key: "Ctrl+X",
+		desc: "Halt the running agent (always aborts the active run)",
 	},
 	{
 		kind: "entry",
@@ -112,6 +119,23 @@ const HELP_ROWS: HelpRow[] = [
 		key: "Ctrl+G/Ctrl+Alt+G",
 		desc: "Jump to first or last message",
 	},
+
+	{ kind: "spacer", id: "s-palette" },
+	// Built from the palette's own list, so a new palette entry shows up here
+	// without anyone remembering to copy it.
+	{
+		kind: "heading",
+		id: "h-palette",
+		text: "Palette Shortcuts (Opt = Alt on Windows/Linux, work anywhere)",
+	},
+	...buildCommandPaletteItems({ canForkSession: true }).map(
+		(item): HelpRow => ({
+			kind: "entry",
+			id: `p-${item.id}`,
+			key: item.shortcut,
+			desc: item.label,
+		}),
+	),
 
 	{ kind: "spacer", id: "s1" },
 	{ kind: "heading", id: "h-slash", text: "Slash Commands" },
@@ -174,6 +198,12 @@ const HELP_ROWS: HelpRow[] = [
 		id: "c-manager",
 		key: "/manager",
 		desc: "Delegate the task to workers (start of session only)",
+	},
+	{
+		kind: "entry",
+		id: "c-manager-off",
+		key: "/manager off",
+		desc: "Leave manager mode (restarts the session)",
 	},
 	{
 		kind: "entry",

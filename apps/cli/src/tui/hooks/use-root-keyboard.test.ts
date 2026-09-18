@@ -1,5 +1,50 @@
 import { describe, expect, it } from "vitest";
-import { shouldHandleInputHistory } from "./root-keyboard-routing";
+import {
+	resolveEscapeAction,
+	shouldHandleInputHistory,
+} from "./root-keyboard-routing";
+
+describe("resolveEscapeAction", () => {
+	it("discards the queued edit (not the run) when editing while running", () => {
+		expect(
+			resolveEscapeAction({
+				editingQueuedPrompt: true,
+				hasSelectedQueuedPrompt: true,
+				isRunning: true,
+			}),
+		).toBe("cancel-queued-edit");
+	});
+
+	it("halts the run only when no queued edit is open", () => {
+		expect(
+			resolveEscapeAction({
+				editingQueuedPrompt: false,
+				hasSelectedQueuedPrompt: false,
+				isRunning: true,
+			}),
+		).toBe("halt-run");
+	});
+
+	it("clears the queued selection when idle with a selection", () => {
+		expect(
+			resolveEscapeAction({
+				editingQueuedPrompt: false,
+				hasSelectedQueuedPrompt: true,
+				isRunning: false,
+			}),
+		).toBe("clear-queued-selection");
+	});
+
+	it("falls back to checkpoint restore when idle and nothing is selected", () => {
+		expect(
+			resolveEscapeAction({
+				editingQueuedPrompt: false,
+				hasSelectedQueuedPrompt: false,
+				isRunning: false,
+			}),
+		).toBe("restore-checkpoint");
+	});
+});
 
 describe("root keyboard input history routing", () => {
 	it("handles history while idle", () => {

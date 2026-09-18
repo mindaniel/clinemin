@@ -127,5 +127,11 @@ export async function applyInteractiveModeConfig(input: {
 		cwd: input.config.cwd,
 		providerId: input.config.providerId,
 		mode: input.mode,
+		// A plan/act switch rebuilds the whole system prompt, so it has to carry
+		// every other flag that prompt is built from. Dropping `managerMode` here
+		// meant one Tab press silently replaced a manager's prompt (and its worker
+		// roster) with a plain one, while `config.managerMode` stayed true and the
+		// status bar kept claiming the session was a manager.
+		managerMode: input.config.managerMode,
 	});
 }

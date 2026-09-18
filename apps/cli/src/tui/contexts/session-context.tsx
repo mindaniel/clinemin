@@ -9,7 +9,12 @@ import {
 } from "react";
 import { getCliCompactionMode } from "../../utils/compaction-mode";
 import type { CliCompactionMode } from "../../utils/types";
-import type { ChatEntry, InlineStream, TuiProps } from "../types";
+import type {
+	ChatEntry,
+	InlineStream,
+	TuiProps,
+	WebSessionStatus,
+} from "../types";
 import { MAX_BUFFERED_LINES } from "../types";
 
 interface SessionContextValue {
@@ -25,10 +30,7 @@ interface SessionContextValue {
 	lastTotalCost: number;
 	lastTtftMs: number | null;
 	lastTokensPerSecond: number | null;
-	claudeSessionStatus: {
-		percent: number;
-		resetsAt?: string;
-	} | null;
+	webSessionStatus: WebSessionStatus | null;
 	isExitRequested: boolean;
 
 	appendEntry: (entry: ChatEntry) => void;
@@ -45,9 +47,7 @@ interface SessionContextValue {
 	setLastTotalCost: (v: number) => void;
 	setLastTtftMs: (v: number | null) => void;
 	setLastTokensPerSecond: (v: number | null) => void;
-	setClaudeSessionStatus: (
-		v: { percent: number; resetsAt?: string } | null,
-	) => void;
+	setWebSessionStatus: (v: WebSessionStatus | null) => void;
 	addUsageDelta: (usage: UsageDelta) => void;
 	setUiMode: (mode: AgentMode) => void;
 	toggleMode: () => void;
@@ -133,10 +133,8 @@ export function SessionProvider(props: {
 	const [lastTotalTokens, setLastTotalTokens] = useState(
 		() => initialUsage?.totalTokens ?? 0,
 	);
-	const [claudeSessionStatus, setClaudeSessionStatus] = useState<{
-		percent: number;
-		resetsAt?: string;
-	} | null>(null);
+	const [webSessionStatus, setWebSessionStatus] =
+		useState<WebSessionStatus | null>(null);
 	const [lastTotalCost, setLastTotalCost] = useState(
 		() => initialUsage?.totalCost ?? 0,
 	);
@@ -244,7 +242,7 @@ export function SessionProvider(props: {
 		setLastTotalCost(0);
 		setLastTtftMs(null);
 		setLastTokensPerSecond(null);
-		setClaudeSessionStatus(null);
+		setWebSessionStatus(null);
 	}, []);
 
 	const addUsageDelta = useCallback((usage: UsageDelta) => {
@@ -283,7 +281,7 @@ export function SessionProvider(props: {
 		lastTotalCost,
 		lastTtftMs,
 		lastTokensPerSecond,
-		claudeSessionStatus,
+		webSessionStatus,
 		isExitRequested,
 		appendEntry,
 		updateLastEntry,
@@ -298,7 +296,7 @@ export function SessionProvider(props: {
 		setLastTotalCost,
 		setLastTtftMs,
 		setLastTokensPerSecond,
-		setClaudeSessionStatus,
+		setWebSessionStatus,
 		addUsageDelta,
 		setUiMode,
 		toggleMode,

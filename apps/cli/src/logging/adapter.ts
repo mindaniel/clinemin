@@ -135,6 +135,18 @@ function createWritableDestination(
 ): DestinationStream | undefined {
 	try {
 		mkdirSync(dirname(destinationPath), { recursive: true });
+		// Windows happily hands back a handle for `open(dir, "a")`, so the probe
+		// below is not enough on its own: the path looks writable, the sync
+		// destination is built, and the *first* log line throws EISDIR from inside
+		// sonic-boom. That throw also arrives as an unhandled 'error' event, which
+		// takes the whole process down -- in the unit suite it killed the vitest
+		// worker mid-file and the run then hung forever waiting for it.
+		if (
+			existsSync(destinationPath) &&
+			statSync(destinationPath).isDirectory()
+		) {
+			return undefined;
+		}
 		const fd = openSync(destinationPath, "a");
 		closeSync(fd);
 		const dest = pino.destination({
@@ -155,6 +167,13 @@ function createWritableDestination(
 				// Best-effort: stream not ready or already closed.
 			}
 		};
+		// A log destination must never be able to kill the process. Anything that
+		// goes wrong after the handle is open (the disk fills, the file is deleted
+		// or replaced by a directory, the volume goes away) reaches us as an
+		// 'error' event, and an EventEmitter with no 'error' listener rethrows.
+		(dest as unknown as NodeJS.EventEmitter).on("error", () => {
+			// Best-effort logging: dropping a line beats taking down the CLI.
+		});
 		return dest;
 	} catch {
 		return undefined;

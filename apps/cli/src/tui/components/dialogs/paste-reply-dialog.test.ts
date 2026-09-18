@@ -42,6 +42,24 @@ describe("describePasteReply", () => {
 		expect(untagged.looksLikeToolCall).toBe(false);
 	});
 
+	it("wraps a bare command as a run_commands call", () => {
+		const preview = describePasteReply(
+			"Get-Content C:\\Users\\quang\\.cline\\browser-profiles.json\n",
+		);
+		expect(preview.toolNames).toEqual(["run_commands"]);
+		expect(preview.text).toBe(
+			"```powershell\nGet-Content C:\\Users\\quang\\.cline\\browser-profiles.json\n```",
+		);
+
+		expect(describePasteReply("git status\nbun run build").toolNames).toEqual([
+			"run_commands",
+		]);
+		// A sentence starting with a command word is prose, not a command.
+		expect(
+			describePasteReply("Git is fine, the build passed.").looksLikeToolCall,
+		).toBe(false);
+	});
+
 	it("reports plain prose as a text answer", () => {
 		const preview = describePasteReply("I read the file and it looks fine.");
 		expect(preview.looksLikeToolCall).toBe(false);

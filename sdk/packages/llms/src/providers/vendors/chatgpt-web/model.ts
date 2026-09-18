@@ -58,6 +58,11 @@ import {
 	resolveChatGPTWebV2Config,
 } from "./config";
 import { navigateChatGPTChat, readPageUrl } from "./navigation";
+import {
+	type ChatGPTMessageQuota,
+	mergeChatGPTMessageQuota,
+	pickChatGPTMessageQuota,
+} from "./quota";
 import type { ChatGPTWebCallOptions, TargetInfo } from "./types";
 
 // ── Main provider ─────────────────────────────────────────────────────────────
@@ -73,6 +78,26 @@ export interface ChatGPTCompletionResult {
 	 * client's server-side history has no idea we rejected anything.
 	 */
 	retryPrompt?: string;
+	/** ChatGPT's own message allowance, read from the captured stream. */
+	messageQuota?: ChatGPTMessageQuota;
+}
+
+/**
+ * The status bar reads this from `providerMetadata["chatgpt-web"]`, the same
+ * way it reads Claude Web's session percentage, instead of a token estimate
+ * that means nothing against a web session's message cap.
+ */
+function quotaProviderMetadata(quota: ChatGPTMessageQuota | undefined) {
+	return quota
+		? {
+				providerMetadata: {
+					"chatgpt-web": {
+						messagesRemaining: quota.remaining,
+						...(quota.resetsAt ? { messagesResetAt: quota.resetsAt } : {}),
+					},
+				},
+			}
+		: {};
 }
 
 /** The text of the last user message in the prompt (for dedup + fallback filename hints). */
@@ -119,7 +144,7 @@ export function buildChatGPTPrompt(
 	const alreadyHasSystem = conversation.some((m) => m.role === "system");
 	const promptOptions = {
 		historyWindow: 10,
-		userLabel: "Previous user message",
+		userLabel: "My last message",
 		lastUserLabel: currentUserLabel(conversation),
 		toolResultLabel: "Tool result",
 	};
@@ -312,6 +337,10 @@ export function createChatGPTWebModel(
 	// Used to skip navigation on the second turn of the same chat.
 	let currentChatGPTSession: string | undefined;
 
+	// The most recent allowance ChatGPT reported, held so a turn that reports
+	// nothing still shows the reset time instead of "—".
+	let lastMessageQuota: ChatGPTMessageQuota | undefined;
+
 	// Shared by doGenerate/doStream (mirrors deepseek-web-v2's doCompletion):
 	// drives the CDP session, sends the prompt, captures + parses the SSE
 	// body, and recovers `<tool>` calls the model emitted — one code path so
@@ -467,6 +496,17 @@ export function createChatGPTWebModel(
 
 		// Parse the captured reply.
 		const parsed = parseCapturedReply(captured.text, options, captured.usage);
+		// ChatGPT reports the allowance on some turns and nothing on others, so
+		// the last known answer is carried forward rather than letting the status
+		// bar drop back to "—" between reports. `mergeChatGPTMessageQuota` expires
+		// it once the reset time has passed.
+		lastMessageQuota = mergeChatGPTMessageQuota(
+			lastMessageQuota,
+			pickChatGPTMessageQuota(captured.quota),
+		);
+		if (lastMessageQuota) {
+			parsed.messageQuota = lastMessageQuota;
+		}
 
 		// Log the turn for debugging.
 		if (runtimeConfig.debug) {
@@ -488,7 +528,7 @@ export function createChatGPTWebModel(
 
 		async doGenerate(options: LanguageModelV2CallOptions) {
 			try {
-				const { text, toolCalls, usage } = await withBrowserLock(
+				const { text, toolCalls, usage, messageQuota } = await withBrowserLock(
 					"chatgpt-web",
 					options.abortSignal,
 					() => runCompletion(options),
@@ -509,6 +549,7 @@ export function createChatGPTWebModel(
 					content,
 					finishReason: finishReasonFor(text, toolCalls),
 					usage,
+					...quotaProviderMetadata(messageQuota),
 					warnings: [],
 				};
 			} catch (error) {
@@ -519,7 +560,7 @@ export function createChatGPTWebModel(
 		},
 
 		async doStream(options: LanguageModelV2CallOptions) {
-			const { text, toolCalls, usage } = await withBrowserLock(
+			const { text, toolCalls, usage, messageQuota } = await withBrowserLock(
 				"chatgpt-web",
 				options.abortSignal,
 				() => runCompletion(options),
@@ -555,6 +596,7 @@ export function createChatGPTWebModel(
 				type: "finish",
 				finishReason: finishReasonFor(text, toolCalls),
 				usage,
+				...quotaProviderMetadata(messageQuota),
 			});
 
 			const stream = new ReadableStream<LanguageModelV2StreamPart>({

@@ -245,7 +245,7 @@ function buildClaudePrompt(
 	const alreadyHasSystem = conversation.some((m) => m.role === "system");
 	const promptOptions = {
 		historyWindow: 10,
-		userLabel: "Previous user message",
+		userLabel: "My last message",
 		lastUserLabel: continuationLabel(conversation),
 		toolResultLabel: "Tool result",
 	};
@@ -268,11 +268,10 @@ function buildClaudePrompt(
 		.filter((segment, index) => {
 			const trimmed = segment.trim();
 			const isLastPreviousUser =
-				trimmed.startsWith("Previous user message:") &&
-				index === segments.length - 1;
+				trimmed.startsWith("My last message:") && index === segments.length - 1;
 			return (
 				isLastPreviousUser ||
-				(!trimmed.startsWith("Previous user message:") &&
+				(!trimmed.startsWith("My last message:") &&
 					!trimmed.startsWith("Note:"))
 			);
 		})

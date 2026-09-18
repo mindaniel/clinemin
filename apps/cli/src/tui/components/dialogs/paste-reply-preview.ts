@@ -20,10 +20,73 @@ export interface PasteReplyPreview {
 	looksLikeToolCall: boolean;
 }
 
+// First words that make a line a shell command rather than prose. PowerShell
+// Verb-Noun cmdlets are matched by shape; everything else must be listed.
+const BARE_COMMAND_WORDS = new Set([
+	"bun",
+	"bunx",
+	"cat",
+	"cd",
+	"cline",
+	"cp",
+	"curl",
+	"dir",
+	"echo",
+	"findstr",
+	"gh",
+	"git",
+	"grep",
+	"ls",
+	"mkdir",
+	"mv",
+	"node",
+	"npm",
+	"npx",
+	"pip",
+	"pnpm",
+	"powershell",
+	"pwsh",
+	"py",
+	"python",
+	"python3",
+	"rg",
+	"rm",
+	"rmdir",
+	"uv",
+	"yarn",
+]);
+
+function isBareCommandLine(line: string): boolean {
+	const trimmed = line.trim();
+	if (/^(?:&\s|\.{1,2}[\\/]|\$\w+\s*=)/.test(trimmed)) return true;
+	const first = trimmed.split(/\s+/, 1)[0] ?? "";
+	if (/^[A-Z][a-z]+-[A-Z][A-Za-z]+$/.test(first)) return true;
+	// Case-sensitive on purpose: a sentence starts "Git is ...", a command "git".
+	return BARE_COMMAND_WORDS.has(first.replace(/\.exe$/, ""));
+}
+
 /**
- * Cheap, display-only inspection of the clipboard. The real parse ladder lives
- * in the provider (llms' tool-pipeline) and is the authority on what actually
- * runs; this only has to be right often enough to be useful in a preview.
+ * A reply that is nothing but a few shell command lines — no fence, no tool
+ * envelope — as happens when the browser copy drops the code block around a
+ * command. Every provider reads that as a plain text answer, so `/paste` wraps
+ * it in a PowerShell fence, which every provider runs as `run_commands`.
+ */
+export function wrapBareCommand(text: string): string | undefined {
+	if (text.includes("```") || /<\s*(?:tool|invoke|manager)\b/i.test(text)) {
+		return undefined;
+	}
+	const lines = text.split("\n").filter((line) => line.trim() !== "");
+	if (lines.length === 0 || lines.length > 5) return undefined;
+	if (!lines.every(isBareCommandLine)) return undefined;
+	return `\`\`\`powershell\n${lines.map((line) => line.trim()).join("\n")}\n\`\`\``;
+}
+
+/**
+ * Cheap inspection of the clipboard. The real parse ladder lives in the
+ * provider (llms' tool-pipeline) and is the authority on what actually runs;
+ * this only has to be right often enough to be useful in a preview. The one
+ * thing it changes is a bare command, which it wraps (see `wrapBareCommand`);
+ * `text` is what gets sent.
  *
  * It has to know every envelope that ladder dispatches, not just the ones that
  * name a tool. A manager's `<manager>` block, a bare `*** Begin Patch`, and a
@@ -33,7 +96,7 @@ export interface PasteReplyPreview {
  * anyway; the banner just said it would not, which reads as a refusal.
  */
 export function describePasteReply(raw: string): PasteReplyPreview {
-	const text = raw.trim();
+	const text = wrapBareCommand(raw.trim()) ?? raw.trim();
 	const toolNames: string[] = [];
 
 	const invokePattern = /<\s*invoke\s+name\s*=\s*["']([^"']+)["']/gi;

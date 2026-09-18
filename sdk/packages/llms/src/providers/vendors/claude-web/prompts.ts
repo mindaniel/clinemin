@@ -130,7 +130,7 @@ function formatClaudeToolResult(toolName: string, text: string): string {
 /**
  * Clean the flattened prompt for Claude Web:
  *   - rephrase `Tool result: (name) ...` turns into natural first-person prose,
- *   - drop the stale `Previous user message:` echo (Claude Web keeps its own
+ *   - drop the stale `My last message:` echo (Claude Web keeps its own
  *     server-side history, so re-sending the prior user text is redundant), and
  *   - drop the runtime's synthetic `Note:` continuation (it reads like a
  *     machine instruction, not a human pasting results back).
@@ -142,16 +142,15 @@ function rephraseClaudeToolResults(promptText: string): string {
 	return segments
 		.filter((segment, index) => {
 			const trimmed = segment.trim();
-			// Keep the LAST "Previous user message:" segment: it is the current
+			// Keep the LAST "My last message:" segment: it is the current
 			// queued directive when the user steers the turn right after a tool
 			// round. Every earlier one is stale context (Claude Web already
 			// holds it server-side) and is dropped.
 			const isLastPreviousUser =
-				trimmed.startsWith("Previous user message:") &&
-				index === segments.length - 1;
+				trimmed.startsWith("My last message:") && index === segments.length - 1;
 			return (
 				isLastPreviousUser ||
-				(!trimmed.startsWith("Previous user message:") &&
+				(!trimmed.startsWith("My last message:") &&
 					!trimmed.startsWith("Note:"))
 			);
 		})
@@ -192,7 +191,7 @@ export function buildClaudePrompt(
 	const alreadyHasSystem = conversation.some((m) => m.role === "system");
 	const promptOptions = {
 		historyWindow: 10,
-		userLabel: "Previous user message",
+		userLabel: "My last message",
 		lastUserLabel: continuationLabel(conversation),
 		toolResultLabel: "Tool result",
 	};

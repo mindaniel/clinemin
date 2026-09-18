@@ -630,7 +630,7 @@ describe("deepseek-web-v2 buildPrompt (lean conversation on follow-up turns)", (
 		const built = buildPrompt(prompt, undefined);
 		// The prior user prompt is folded as context (so the model doesn't re-answer
 		// it), and the trailing tool result is preserved under its own label.
-		expect(built).toContain("Previous user message: do the thing");
+		expect(built).toContain("My last message: do the thing");
 		expect(built).toContain("Tool result:");
 		expect(built).toContain("the latest result");
 		// No bare "User:" or "Assistant:" prefixes should be used for v2.
@@ -653,17 +653,16 @@ describe("deepseek-web-v2 buildPrompt (lean conversation on follow-up turns)", (
 		// after tool execution, so the trimmer must not reduce the prompt to the
 		// bare continuation sentence: the previous user message (as context) and
 		// the fresh tool results must ride along. The continuation itself is the
-		// current directive, so it is framed as "Note:" — not "Previous user
-		// message:" (stale context).
+		// current directive, so it is framed as "Note:" instead of "My last message:" (stale context).
 		const built = buildPrompt(prompt, undefined);
-		expect(built).toContain("Previous user message: do the thing");
+		expect(built).toContain("My last message: do the thing");
 		expect(built).toContain("Tool result:");
 		expect(built).toContain("the latest result");
 		expect(built).toContain(
 			"Note: Use tool to continue the task or if finish, then tell 'finish'.",
 		);
 		expect(built).not.toContain(
-			"Previous user message: Use tool to continue the task or if finish, then tell 'finish'.",
+			"My last message: Use tool to continue the task or if finish, then tell 'finish'.",
 		);
 		expect(built).not.toContain("sys");
 	});
@@ -684,7 +683,7 @@ describe("deepseek-web-v2 buildPrompt (lean conversation on follow-up turns)", (
 		const built = buildPrompt(prompt, undefined);
 		expect(built).toContain("first result");
 		expect(built).toContain("second result");
-		expect(built).toContain("Previous user message: run it");
+		expect(built).toContain("My last message: run it");
 		expect(built).not.toContain("sys");
 	});
 
@@ -702,7 +701,7 @@ describe("deepseek-web-v2 buildPrompt (lean conversation on follow-up turns)", (
 		] as never;
 		const built = buildPrompt(prompt, undefined);
 
-		expect(built).toContain("Previous user message: do the first task");
+		expect(built).toContain("My last message: do the first task");
 		expect(built).toContain("Tool result:");
 		expect(built).toContain("pending tool result");
 		expect(built).toContain("User: now do the second task");

@@ -1,7 +1,11 @@
 import type { AgentMode } from "@cline/core";
 import type { ToolApprovalRequest, ToolApprovalResult } from "@cline/shared";
 import { useCallback, useEffect, useRef, useState } from "react";
-import type { RuntimeToolInteraction, TuiProps } from "../types";
+import type {
+	RuntimeToolInteraction,
+	ToolApprovalOutcome,
+	TuiProps,
+} from "../types";
 
 type PendingRuntimeToolInteraction =
 	| {
@@ -106,13 +110,20 @@ export function useRuntimeDialogBridge(input: {
 	);
 
 	const resolveToolApproval = useCallback(
-		(id: number, approved: boolean) => {
+		(id: number, outcome: ToolApprovalOutcome) => {
 			const pending = activeRef.current;
 			if (!pending || pending.id !== id || pending.kind !== "tool_approval") {
 				return;
 			}
+			// "skip" is not a quieter "deny". A denial is a message: the runtime
+			// turns it into a tool result the model reads and argues with. A skip
+			// sends nothing at all -- see `silentSkip` in the agent runtime.
 			pending.resolve(
-				approved ? { approved: true } : deniedToolResult(pending.request),
+				outcome === "approve"
+					? { approved: true }
+					: outcome === "skip"
+						? { approved: false, silentSkip: true }
+						: deniedToolResult(pending.request),
 			);
 			const hasNext = finishActive(id);
 			if (!hasNext) {

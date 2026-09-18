@@ -1,6 +1,8 @@
 import { describe, expect, it, vi } from "vitest";
+import { readWebSessionStatus } from "../hooks/use-agent-events";
 import {
 	createContextBar,
+	formatResetTime,
 	formatStatusBarUsageText,
 	resolveContextBarFilledForeground,
 	resolveModelDisplayName,
@@ -112,6 +114,100 @@ describe("formatStatusBarUsageText", () => {
 				maxInputTokens: 0,
 			}),
 		).toBe("(12,345)");
+	});
+
+	it("shows ChatGPT Web's remaining messages instead of tokens", () => {
+		const now = new Date("2026-08-25T20:00:00Z");
+		const resetsAt = "2026-08-26T00:29:00Z";
+		const time = new Date(resetsAt).toLocaleTimeString([], {
+			hour: "2-digit",
+			minute: "2-digit",
+		});
+		expect(
+			formatStatusBarUsageText({
+				totalTokens: 60_000,
+				totalCost: 0,
+				providerId: "chatgpt-web",
+				maxInputTokens: 1_000_000,
+				webSessionStatus: { messagesRemaining: 148, resetsAt },
+				now,
+			}),
+		).toBe(`(148 messages left · resets ${time})`);
+	});
+
+	it("says the limit was reached instead of counting zero messages", () => {
+		// ChatGPT keeps answering on a fallback model once the metered one is
+		// capped, so "0 messages left" would read as "session over".
+		const now = new Date("2026-09-17T20:35:00Z");
+		const resetsAt = "2026-09-18T01:18:40Z";
+		const time = new Date(resetsAt).toLocaleTimeString([], {
+			hour: "2-digit",
+			minute: "2-digit",
+		});
+		expect(
+			formatStatusBarUsageText({
+				totalTokens: 60_000,
+				totalCost: 0,
+				providerId: "chatgpt-web",
+				webSessionStatus: { messagesRemaining: 0, resetsAt },
+				now,
+			}),
+		).toBe(`(limit reached · resets ${time})`);
+	});
+
+	it("still says the limit was reached with no reset time", () => {
+		expect(
+			formatStatusBarUsageText({
+				totalTokens: 60_000,
+				totalCost: 0,
+				providerId: "chatgpt-web",
+				webSessionStatus: { messagesRemaining: 0 },
+			}),
+		).toBe("(limit reached · reset time unknown)");
+	});
+
+	it("shows a placeholder for ChatGPT Web before the first reply", () => {
+		expect(
+			formatStatusBarUsageText({
+				totalTokens: 60_000,
+				totalCost: 0,
+				providerId: "chatgpt-web",
+				maxInputTokens: 1_000_000,
+			}),
+		).toBe("(messages left: —)");
+	});
+
+	it("adds the date to a reset more than a day away", () => {
+		const text = formatResetTime(
+			"2026-09-24T22:00:00Z",
+			new Date("2026-09-17T10:00:00Z"),
+		);
+		expect(text).toContain(
+			new Date("2026-09-24T22:00:00Z").toLocaleDateString([], {
+				month: "short",
+				day: "numeric",
+			}),
+		);
+	});
+});
+
+describe("readWebSessionStatus", () => {
+	it("reads ChatGPT Web's message allowance", () => {
+		expect(
+			readWebSessionStatus({
+				"chatgpt-web": {
+					messagesRemaining: 12,
+					messagesResetAt: "2026-08-26T00:29:00Z",
+				},
+			}),
+		).toEqual({ messagesRemaining: 12, resetsAt: "2026-08-26T00:29:00Z" });
+	});
+
+	it("still reads Claude Web's session percentage", () => {
+		expect(
+			readWebSessionStatus({ "claude-web": { sessionPercent: 42 } }),
+		).toEqual({ percent: 42 });
+		expect(readWebSessionStatus({ openai: {} })).toBeUndefined();
 	});
 });
 

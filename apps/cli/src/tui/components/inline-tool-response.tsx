@@ -2,7 +2,7 @@ import type { ScrollBoxRenderable } from "@opentui/core";
 import { useKeyboard, useTerminalDimensions } from "@opentui/react";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { palette } from "../palette";
-import type { RuntimeToolInteraction } from "../types";
+import type { RuntimeToolInteraction, ToolApprovalOutcome } from "../types";
 import { formatApprovalParams } from "./dialogs/tool-approval";
 
 export interface InlineToolResponseProps {
@@ -11,8 +11,17 @@ export interface InlineToolResponseProps {
 	inputBackground: string;
 	inputForeground: string;
 	inputPlaceholder: string;
-	onResolveToolApproval: (id: number, approved: boolean) => void;
+	onResolveToolApproval: (id: number, outcome: ToolApprovalOutcome) => void;
 	onResolveAskQuestion: (id: number, answer: string | null) => void;
+	/**
+	 * Whether to offer "skip" alongside approve and deny.
+	 *
+	 * Only web providers get it. On those, a turn can end with no tool result at
+	 * all -- the reply is relayed as chat text, so there is no protocol demanding
+	 * one. An API provider that sent a tool call and got no result back is a
+	 * malformed conversation, so there the choice stays approve or deny.
+	 */
+	allowSilentSkip: boolean;
 }
 
 function isPrintableKey(name: string): boolean {
@@ -190,7 +199,11 @@ function ToolApprovalResponse(
 		interaction: Extract<RuntimeToolInteraction, { kind: "tool_approval" }>;
 	},
 ) {
-	const [selected, setSelected] = useState<"approve" | "deny">("approve");
+	const allowSilentSkip = props.allowSilentSkip;
+	const choices: ToolApprovalOutcome[] = allowSilentSkip
+		? ["approve", "deny", "skip"]
+		: ["approve", "deny"];
+	const [selected, setSelected] = useState<ToolApprovalOutcome>("approve");
 	const selectedRef = useRef(selected);
 	selectedRef.current = selected;
 	const request = props.interaction.request;
@@ -199,27 +212,43 @@ function ToolApprovalResponse(
 	const params = formatApprovalParams(request.toolName, request.input);
 
 	const resolve = useCallback(
-		(approved: boolean) => {
-			onResolveToolApproval(interactionId, approved);
+		(outcome: ToolApprovalOutcome) => {
+			onResolveToolApproval(interactionId, outcome);
 		},
 		[interactionId, onResolveToolApproval],
 	);
 
 	useKeyboard((key) => {
 		if (key.name === "y") {
-			resolve(true);
+			resolve("approve");
 			return;
 		}
-		if (key.name === "n" || key.name === "escape") {
-			resolve(false);
+		if (key.name === "n") {
+			resolve("deny");
+			return;
+		}
+		if (key.name === "s" && allowSilentSkip) {
+			resolve("skip");
+			return;
+		}
+		if (key.name === "escape") {
+			// Escape means "make this go away". On a web provider that is a skip,
+			// which is quieter than the denial Escape used to send; everywhere else
+			// a denial is still the only way to make it go away.
+			resolve(allowSilentSkip ? "skip" : "deny");
 			return;
 		}
 		if (key.name === "left" || key.name === "right" || key.name === "tab") {
-			setSelected((current) => (current === "approve" ? "deny" : "approve"));
+			const step = key.name === "left" ? -1 : 1;
+			setSelected((current) => {
+				const index = choices.indexOf(current);
+				const next = (index + step + choices.length) % choices.length;
+				return choices[next] ?? "approve";
+			});
 			return;
 		}
 		if (key.name === "return" || key.name === "enter") {
-			resolve(selectedRef.current === "approve");
+			resolve(selectedRef.current);
 		}
 	});
 
@@ -245,13 +274,20 @@ function ToolApprovalResponse(
 				<ChoiceButton
 					label="[y] Approve"
 					selected={selected === "approve"}
-					onPress={() => resolve(true)}
+					onPress={() => resolve("approve")}
 				/>
 				<ChoiceButton
 					label="[n] Deny"
 					selected={selected === "deny"}
-					onPress={() => resolve(false)}
+					onPress={() => resolve("deny")}
 				/>
+				{allowSilentSkip && (
+					<ChoiceButton
+						label="[s] Skip"
+						selected={selected === "skip"}
+						onPress={() => resolve("skip")}
+					/>
+				)}
 			</box>
 		</Shell>
 	);

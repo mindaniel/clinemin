@@ -38,7 +38,10 @@ import {
 	zeroCliAgentEventCost,
 	zeroCliUsageCost,
 } from "../utils/free-model-cost";
-import { enableManagerForPrompt } from "../utils/manager-command";
+import {
+	disableManagerForPrompt,
+	enableManagerForPrompt,
+} from "../utils/manager-command";
 import {
 	prepareTerminalForPostTuiOutput,
 	writeErr,
@@ -838,6 +841,14 @@ export async function runInteractive(
 			// Rebuilds the system prompt as a manager's and turns teams on, which
 			// is what makes the roster load and the delegation tools exist.
 			await enableManagerForPrompt(config);
+			await sessionRuntime.restartEmpty();
+		},
+		// The mirror image: rebuild the system prompt as a plain session's and
+		// restart. The provider is left where the manager put it -- switching it
+		// back would undo a `/model` choice the user may have made since.
+		onStopManager: async () => {
+			await sessionRuntime.ensureReady();
+			await disableManagerForPrompt(config);
 			await sessionRuntime.restartEmpty();
 		},
 		onAccountChange: async () => {

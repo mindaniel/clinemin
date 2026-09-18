@@ -99,7 +99,7 @@ export function buildKimiPrompt(
 	const alreadyHasSystem = conversation.some((m) => m.role === "system");
 	const promptOptions = {
 		historyWindow: 10,
-		userLabel: "Previous user message",
+		userLabel: "My last message",
 		lastUserLabel: currentUserLabel(conversation),
 		toolResultLabel: "Tool result",
 	};
@@ -233,7 +233,7 @@ export function createKimiWebModel(
 		// The web chat is stateful: everything the user typed is already in it.
 		// The current instruction still goes out — `messagesToPrompt` labels it
 		// `User:` (or `Note:` on an iteration turn) — but every OLDER
-		// `Previous user message:` block is dropped, so an instruction is sent
+		// `My last message:` block is dropped, so an instruction is sent
 		// once and never re-sent on each round of a tool loop. Anything the user
 		// wants restated goes through `/note`.
 		promptText = stripPreviousUserBlock(promptText);

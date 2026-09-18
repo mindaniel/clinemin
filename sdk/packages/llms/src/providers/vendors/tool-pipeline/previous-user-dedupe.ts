@@ -5,7 +5,7 @@ import { isSyntheticUserText } from "./continuation-note";
  * Keeps the user's instruction out of every single web-chat turn.
  *
  * The web providers flatten the conversation into one text prompt, labeling the
- * user's instruction `Previous user message:` so the model reads it as context
+ * user's instruction `My last message:` so the model reads it as context
  * rather than a fresh ask. But a web chat is stateful: it already holds
  * everything sent before. Re-sending the instruction on each iteration of a
  * tool loop teaches the model nothing and grows the chat's context every round
@@ -55,7 +55,7 @@ export function realUserMessageKey(prompt: LanguageModelV2Prompt): string {
 }
 
 /**
- * Remove every `Previous user message:` block from a flattened prompt, leaving
+ * Remove every `My last message:` block from a flattened prompt, leaving
  * the fresh tool results and the continuation note (which change each round and
  * must still be sent).
  *
@@ -65,7 +65,7 @@ export function realUserMessageKey(prompt: LanguageModelV2Prompt): string {
 export function stripPreviousUserBlock(prompt: string): string {
 	return prompt
 		.replace(
-			/(?:^|\n\n)Previous user message:[\s\S]*?(?=\n\n(?:Tool result|Assistant|Note|Previous user message):|$)/g,
+			/(?:^|\n\n)My last message:[\s\S]*?(?=\n\n(?:Tool result|Assistant|Note|My last message):|$)/g,
 			"",
 		)
 		.replace(/\n{3,}/g, "\n\n")

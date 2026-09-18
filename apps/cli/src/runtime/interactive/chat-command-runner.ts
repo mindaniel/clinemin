@@ -6,6 +6,7 @@ import {
 } from "../../utils/chat-commands";
 import {
 	enableManagerForPrompt,
+	isManagerOffRequest,
 	MANAGER_COMMAND_USAGE,
 	rewriteManagerPrompt,
 } from "../../utils/manager-command";
@@ -60,6 +61,20 @@ export async function runInteractiveChatCommand(input: {
 			return {
 				handled: true,
 				turnResult: commandTurnResult(MANAGER_COMMAND_USAGE),
+			};
+		}
+		if (isManagerOffRequest(rewrittenManagerPrompt.prompt)) {
+			// `/manager off` is handled by the TUI, which can ask before throwing
+			// the conversation away. Reaching here means a non-interactive caller
+			// typed it, and enabling manager mode with "off" as the task would be
+			// the exact opposite of what was asked.
+			return {
+				handled: true,
+				turnResult: commandTurnResult(
+					input.config.managerMode
+						? "Manager mode stays on: /manager off needs the interactive TUI, which can confirm the session restart first."
+						: "Manager mode is already off.",
+				),
 			};
 		}
 		if (!input.config.managerMode) {

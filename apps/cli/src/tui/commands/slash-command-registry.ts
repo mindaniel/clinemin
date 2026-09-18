@@ -123,7 +123,7 @@ const TUI_LOCAL_COMMANDS: Array<{
 	{
 		name: "manager",
 		description:
-			"Start manager mode (pick a model), or /manager <task> to go straight in",
+			"Start manager mode (pick a model), /manager <task> to go straight in, /manager off to leave",
 		// Only the bare word is handled here. `/manager fix the build` still has
 		// to reach the chat runner — the one place that can rebuild the system
 		// prompt for a task — so the local action declines it and the input is

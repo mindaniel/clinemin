@@ -26,16 +26,23 @@ export function QueuedPrompts(props: {
 		? props.items.find((item) => item.id === props.selectedId)
 		: undefined;
 	const selectedIsEditing = selected?.id === props.editingId;
-	const escapeHint = session.isRunning ? "Esc cancels turn" : "Esc back";
+	const escapeHint = session.isRunning ? "Ctrl+X halts run" : "Esc back";
+	// Esc no longer halts while a queued message is in play, so every hint shown
+	// during a run has to name Ctrl+X -- including the editing one, which is the
+	// state you are most likely to be in when you decide to stop the agent.
 	const hint = selected
 		? selectedIsEditing
-			? "Enter confirm, Esc cancel"
+			? session.isRunning
+				? "Enter confirm, Esc discards this edit (run keeps going), Ctrl+X halts run"
+				: "Enter confirm, Esc discards this edit"
 			: selected.steer
 				? session.isRunning
-					? "Waiting. ↑/↓ navigate, Tab edit, Esc cancels turn"
-					: `Steered next. ↑/↓ navigate, Tab edit, ${escapeHint}`
-				: `↑/↓ navigate, Enter steer, Tab edit, ${escapeHint}`
-		: "↑ steer or edit messages";
+					? `Waiting. Up/Down navigate, Tab edit, ${escapeHint}`
+					: `Steered next. Up/Down navigate, Tab edit, ${escapeHint}`
+				: `Up/Down navigate, Enter steer, Tab edit, ${escapeHint}`
+		: session.isRunning
+			? "Select a message to steer or edit, Ctrl+X halts run"
+			: "Select a message to steer or edit";
 
 	return (
 		<box
@@ -97,7 +104,7 @@ function QueuedPromptRow(props: {
 				/>
 			) : (
 				<text fg={selected ? palette.textOnSelection : "gray"} flexShrink={0}>
-					{selected ? "❯" : " "}
+					{selected ? ">" : " "}
 				</text>
 			)}
 			{editing ? (

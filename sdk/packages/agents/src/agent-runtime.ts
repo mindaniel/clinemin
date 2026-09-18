@@ -230,6 +230,16 @@ interface PreparedToolExecution {
 	tool?: AgentTool;
 	input: unknown;
 	skipReason?: string;
+	silentSkip?: boolean;
+}
+
+/**
+ * One executed tool call: the tool message it produced, and whether the user
+ * asked for it to be dropped instead of sent.
+ */
+interface ExecutedToolCall {
+	message: AgentMessage;
+	silentSkip: boolean;
 }
 
 interface HookBag {
@@ -747,9 +757,18 @@ export class AgentRuntime {
 					return result;
 				}
 
-				const toolMessages = await this.executeToolCalls(toolCalls);
+				const executed = await this.executeToolCalls(toolCalls);
+				const toolMessages = executed.map((execution) => execution.message);
 				this.state.pendingToolCalls = [];
-				for (const toolMessage of toolMessages) {
+				// A silently skipped call is dropped here and nowhere else: its
+				// message never joins the conversation and is never emitted, so the
+				// model is told nothing -- not that it ran, not that it was refused.
+				// That is the whole difference from a denial, which the model reads
+				// as a tool result and usually argues with.
+				const sentMessages = executed
+					.filter((execution) => !execution.silentSkip)
+					.map((execution) => execution.message);
+				for (const toolMessage of sentMessages) {
 					this.state.messages.push(toolMessage);
 					await this.emit({
 						type: "message-added",
@@ -760,7 +779,12 @@ export class AgentRuntime {
 				// Add a user message after tool execution to prevent the model from hanging.
 				// The text is per project and customisable via the CLI `/note`
 				// command; see llms' `tool-pipeline/continuation-note.ts`.
-				if (toolMessages.length > 0) {
+				//
+				// Keyed off what was actually sent. When every call was skipped there
+				// is nothing for the model to continue from, and a lone continuation
+				// note would be the one thing it did receive -- a nudge to carry on
+				// with work the user just declined to let it do.
+				if (sentMessages.length > 0) {
 					const continuationMessage: AgentMessage = {
 						id: `cont-${Date.now()}`,
 						role: "user",
@@ -782,7 +806,9 @@ export class AgentRuntime {
 				});
 				const terminalToolMessage = this.findCompletingToolMessage(
 					toolCalls,
-					toolMessages,
+					toolMessages.map((message, index) =>
+						executed[index]?.silentSkip ? undefined : message,
+					),
 				);
 				if (terminalToolMessage) {
 					const result = this.finishRun(
@@ -1365,28 +1391,38 @@ export class AgentRuntime {
 
 	private async executeToolCalls(
 		toolCalls: AgentToolCallPart[],
-	): Promise<AgentMessage[]> {
+	): Promise<ExecutedToolCall[]> {
 		const prepared: PreparedToolExecution[] = [];
 		for (const toolCall of toolCalls) {
 			prepared.push(await this.prepareToolExecution(toolCall));
 		}
 
+		// The silent-skip flag rides out with each message instead of the message
+		// being dropped here, because `findCompletingToolMessage` reads this array
+		// positionally against `toolCalls`. Dropping an entry would shift every
+		// later tool call onto the wrong result.
 		if (this.config.toolExecution === "parallel") {
 			return Promise.all(
-				prepared.map((execution) => this.executePreparedTool(execution)),
+				prepared.map(async (execution) => ({
+					message: await this.executePreparedTool(execution),
+					silentSkip: execution.silentSkip === true,
+				})),
 			);
 		}
 
-		const results: AgentMessage[] = [];
+		const results: ExecutedToolCall[] = [];
 		for (const execution of prepared) {
-			results.push(await this.executePreparedTool(execution));
+			results.push({
+				message: await this.executePreparedTool(execution),
+				silentSkip: execution.silentSkip === true,
+			});
 		}
 		return results;
 	}
 
 	private findCompletingToolMessage(
 		toolCalls: AgentToolCallPart[],
-		toolMessages: AgentMessage[],
+		toolMessages: (AgentMessage | undefined)[],
 	): AgentMessage | undefined {
 		for (let index = 0; index < toolCalls.length; index += 1) {
 			const toolCall = toolCalls[index];
@@ -1482,6 +1518,14 @@ export class AgentRuntime {
 					policy,
 				);
 				if (!approval.approved) {
+					if (approval.silentSkip) {
+						return {
+							toolCall: { ...toolCall, input },
+							tool,
+							input,
+							silentSkip: true,
+						};
+					}
 					skipReason =
 						approval.reason ?? `Tool "${toolCall.toolName}" was not approved`;
 				}
@@ -1548,7 +1592,15 @@ export class AgentRuntime {
 		});
 
 		let result: AgentToolResult;
-		if (prepared.skipReason) {
+		// A silent skip runs nothing. `prepareToolExecution` returns the resolved
+		// tool with it (the tool-started event above names a real call), so
+		// without this branch the executor below would happily run the very call
+		// the user just declined. The message it produces is thrown away by the
+		// caller; it exists only to keep this array positional against
+		// `toolCalls`.
+		if (prepared.silentSkip) {
+			result = { output: { skipped: true }, isError: false };
+		} else if (prepared.skipReason) {
 			result = {
 				output: { error: prepared.skipReason },
 				isError: true,

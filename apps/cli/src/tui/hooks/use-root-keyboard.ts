@@ -5,7 +5,10 @@ import { useRef } from "react";
 import type { TranscriptScrollHandle } from "../components/chat-message-list";
 import { useSession } from "../contexts/session-context";
 import type { AppView, QueuedPromptItem } from "../types";
-import { shouldHandleInputHistory } from "./root-keyboard-routing";
+import {
+	resolveEscapeAction,
+	shouldHandleInputHistory,
+} from "./root-keyboard-routing";
 import { matchTranscriptKeybind } from "./transcript-keybinds";
 import type { AutocompleteOption, useAutocomplete } from "./use-autocomplete";
 import type { useInputHistory } from "./use-input-history";
@@ -157,7 +160,11 @@ export function useRootKeyboard(input: {
 			hasQueuedPrompts,
 		});
 
-		if (queuedSelection.editingId && key.name !== "escape") {
+		if (
+			queuedSelection.editingId &&
+			key.name !== "escape" &&
+			!(key.ctrl && key.name === "x")
+		) {
 			return;
 		}
 
@@ -226,18 +233,40 @@ export function useRootKeyboard(input: {
 			return;
 		}
 
-		if (key.name === "escape") {
-			if (queuedSelection.editingId) {
+		// Ctrl+X always halts the active run, regardless of queued-message
+		// state, so halting never depends on (or collides with) Escape.
+		if (key.ctrl && key.name === "x") {
+			if (session.isRunning) {
 				key.preventDefault();
-				queuedSelection.cancelEdit();
-			} else if (session.isRunning) {
 				const abortStarted = input.onAbort();
 				if (abortStarted) {
 					session.setAbortRequested(true);
 					session.setIsStreaming(false);
 					session.closeInlineStream();
 				}
-			} else if (selectedQueuedPromptId) {
+			}
+			return;
+		}
+
+		if (key.name === "escape") {
+			const escapeAction = resolveEscapeAction({
+				editingQueuedPrompt: Boolean(queuedSelection.editingId),
+				hasSelectedQueuedPrompt: Boolean(selectedQueuedPromptId),
+				isRunning: session.isRunning,
+			});
+
+			if (escapeAction === "cancel-queued-edit") {
+				// Discard only the queued-message edit. Never touches the run.
+				key.preventDefault();
+				queuedSelection.cancelEdit();
+			} else if (escapeAction === "halt-run") {
+				const abortStarted = input.onAbort();
+				if (abortStarted) {
+					session.setAbortRequested(true);
+					session.setIsStreaming(false);
+					session.closeInlineStream();
+				}
+			} else if (escapeAction === "clear-queued-selection") {
 				queuedSelection.select(null);
 				input.setInputKey((k) => k + 1);
 			} else {

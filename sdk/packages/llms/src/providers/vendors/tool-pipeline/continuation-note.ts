@@ -6,7 +6,7 @@
  * `continuationMessage` in agents/src/agent-runtime.ts). That note is never
  * something the user typed, so:
  *
- *   - the web providers must not echo it back labeled "Previous user message"
+ *   - the web providers must not echo it back labeled "My last message"
  *     (it would read as a stale instruction to re-answer), and
  *   - the prompt trimmers must recognise it so they don't mistake it for the
  *     real current instruction and drop the turn's actual context.
@@ -103,7 +103,7 @@ export function resetContinuationNote(): void {
  * the turn carries this text — but the model never answers it (the queued reply
  * short-circuits the request), and it is not something the user typed. It lives
  * here beside the continuation note because both are synthetic user messages
- * the web providers must keep out of `Previous user message:`; without that, the
+ * the web providers must keep out of `My last message:`; without that, the
  * next turn of the tool loop sends "Continue with the reply provided above." to
  * the chat in place of the user's real instruction.
  *

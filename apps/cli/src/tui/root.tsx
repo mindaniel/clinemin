@@ -634,6 +634,8 @@ function App(props: TuiProps) {
 		cwd: props.config.cwd,
 		getSessionId: props.getSessionId,
 		onStartManager: props.onStartManager,
+		onStopManager: props.onStopManager,
+		isManagerMode: () => props.config.managerMode === true,
 		submitText: (
 			text: string,
 			delivery?: "queue" | "steer",
@@ -721,7 +723,7 @@ function App(props: TuiProps) {
 		setIsRunning: session.setIsRunning,
 		setIsStreaming: session.setIsStreaming,
 		addUsageDelta: session.addUsageDelta,
-		setClaudeSessionStatus: session.setClaudeSessionStatus,
+		setWebSessionStatus: session.setWebSessionStatus,
 		setLastTtftMs: session.setLastTtftMs,
 		setLastTokensPerSecond: session.setLastTokensPerSecond,
 		onTurnErrorReported: props.onTurnErrorReported,

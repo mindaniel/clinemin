@@ -186,9 +186,6 @@ function createDeepSeekWebModel(
 			const id = `deepseek-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
 			const textChunks: string[] = [];
 			const reasoningChunks: string[] = [];
-			const functionTools = (options.tools ?? []).filter(
-				(tool): tool is LanguageModelV2FunctionTool => tool.type === "function",
-			);
 
 			// The web endpoint has no per-token tool streaming; buffer the reply
 			// so `<tool>` blocks can be parsed and stripped before emitting.
@@ -199,14 +196,13 @@ function createDeepSeekWebModel(
 			);
 
 			const reasoningText = reasoningChunks.join("");
-			const rawText = textChunks.join("");
-			const { cleanedContent, toolCalls } =
-				functionTools.length > 0
-					? parseDeepSeekToolCalls(
-							rawText,
-							functionTools.map((t) => t.name),
-						)
-					: { cleanedContent: rawText, toolCalls: [] };
+			// Use the calls `doCompletion` already resolved through the full
+			// recovery ladder (`<tool>` blocks, loose tags, then the
+			// shell-fence/prose fallback). Re-parsing `rawText` here with only
+			// `parseDeepSeekToolCalls` threw that ladder away, so a reply that
+			// arrived as a ```powershell fence was shown as text and never ran.
+			const cleanedContent = completion.text;
+			const toolCalls = completion.toolCalls;
 
 			const parts: LanguageModelV2StreamPart[] = [
 				{ type: "stream-start", warnings: [] },

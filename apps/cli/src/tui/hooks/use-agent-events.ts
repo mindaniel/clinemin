@@ -12,8 +12,54 @@ import {
 	formatToolOutput,
 	truncate,
 } from "../../utils/helpers";
-import type { ChatEntry, InlineStream, TuiProps } from "../types";
+import type {
+	ChatEntry,
+	InlineStream,
+	TuiProps,
+	WebSessionStatus,
+} from "../types";
 import { parseCompactionNoticeMetadata } from "../utils/compaction-status";
+
+/**
+ * A web provider's own usage limit, from the provider metadata on a usage
+ * event: Claude Web's session percentage under `claude-web`, ChatGPT Web's
+ * remaining message count under `chatgpt-web`.
+ */
+export function readWebSessionStatus(
+	metadata: unknown,
+): WebSessionStatus | undefined {
+	if (!metadata || typeof metadata !== "object") return undefined;
+	const record = metadata as Record<string, unknown>;
+	const claude = record["claude-web"] as
+		| { sessionPercent?: unknown; sessionResetsAt?: unknown }
+		| undefined;
+	if (
+		typeof claude?.sessionPercent === "number" &&
+		Number.isFinite(claude.sessionPercent)
+	) {
+		return {
+			percent: Math.max(0, Math.min(claude.sessionPercent, 100)),
+			...(typeof claude.sessionResetsAt === "string"
+				? { resetsAt: claude.sessionResetsAt }
+				: {}),
+		};
+	}
+	const chatgpt = record["chatgpt-web"] as
+		| { messagesRemaining?: unknown; messagesResetAt?: unknown }
+		| undefined;
+	if (
+		typeof chatgpt?.messagesRemaining === "number" &&
+		Number.isFinite(chatgpt.messagesRemaining)
+	) {
+		return {
+			messagesRemaining: Math.max(0, chatgpt.messagesRemaining),
+			...(typeof chatgpt.messagesResetAt === "string"
+				? { resetsAt: chatgpt.messagesResetAt }
+				: {}),
+		};
+	}
+	return undefined;
+}
 
 interface AgentEventDeps {
 	appendEntry: (entry: ChatEntry) => void;
@@ -28,9 +74,7 @@ interface AgentEventDeps {
 		outputTokens?: number;
 		cost?: number;
 	}) => void;
-	setClaudeSessionStatus: (
-		v: { percent: number; resetsAt?: string } | null,
-	) => void;
+	setWebSessionStatus: (v: WebSessionStatus | null) => void;
 	setLastTtftMs: (v: number | null) => void;
 	setLastTokensPerSecond: (v: number | null) => void;
 	onTurnErrorReported: TuiProps["onTurnErrorReported"];
@@ -49,7 +93,7 @@ export function useAgentEventHandlers(deps: AgentEventDeps) {
 		setIsRunning,
 		setIsStreaming,
 		addUsageDelta,
-		setClaudeSessionStatus,
+		setWebSessionStatus,
 		setLastTtftMs,
 		setLastTokensPerSecond,
 		onTurnErrorReported,
@@ -299,33 +343,9 @@ export function useAgentEventHandlers(deps: AgentEventDeps) {
 					}
 					break;
 				case "usage": {
-					const claudeMetadata =
-						event.metadata &&
-						typeof event.metadata === "object" &&
-						event.metadata !== null &&
-						"claude-web" in event.metadata
-							? (
-									event.metadata as {
-										"claude-web"?: {
-											sessionPercent?: number;
-											sessionResetsAt?: string;
-										};
-									}
-								)["claude-web"]
-							: undefined;
-					if (
-						typeof claudeMetadata?.sessionPercent === "number" &&
-						Number.isFinite(claudeMetadata.sessionPercent)
-					) {
-						setClaudeSessionStatus({
-							percent: Math.max(
-								0,
-								Math.min(claudeMetadata.sessionPercent, 100),
-							),
-							...(typeof claudeMetadata.sessionResetsAt === "string"
-								? { resetsAt: claudeMetadata.sessionResetsAt }
-								: {}),
-						});
+					const webStatus = readWebSessionStatus(event.metadata);
+					if (webStatus) {
+						setWebSessionStatus(webStatus);
 					}
 					addUsageDelta({
 						inputTokens: event.inputTokens,
@@ -351,7 +371,7 @@ export function useAgentEventHandlers(deps: AgentEventDeps) {
 			setIsRunning,
 			setIsStreaming,
 			addUsageDelta,
-			setClaudeSessionStatus,
+			setWebSessionStatus,
 			setLastTtftMs,
 			setLastTokensPerSecond,
 			onTurnErrorReported,

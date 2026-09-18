@@ -146,7 +146,7 @@ export function HomeView(props: {
 								totalTokens={session.lastTotalTokens}
 								totalCost={session.lastTotalCost}
 								maxInputTokens={maxInputTokens}
-								claudeSessionStatus={session.claudeSessionStatus}
+								webSessionStatus={session.webSessionStatus}
 								uiMode={session.uiMode}
 								autoApproveAll={session.autoApproveAll}
 								workspaceName={

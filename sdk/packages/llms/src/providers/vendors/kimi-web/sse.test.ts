@@ -94,6 +94,87 @@ describe("consumeKimiSse", () => {
 		expect(collect(STREAM)).not.toContain("k2d6-chat");
 	});
 
+	it("keeps reading after a frame it cannot parse", () => {
+		// The real failure: the length prefixes between frames are raw bytes, so
+		// Chrome's text decoding turns them into U+FFFD. A mangled byte inside a
+		// frame used to desync the scanner's in-string tracking and every later
+		// frame was swallowed into one unreadable object -- a 500-frame reply came
+		// back as 35 fragments, cut off mid-sentence.
+		const withCorruption = [
+			frame({ heartbeat: {} }),
+			// A frame whose quoting is broken, exactly as a mangled byte leaves it.
+			'\u0000\u0000\u0000\u0000{"op":"set", "mask":"chat.lastRequest", "chat":{"prompt":"unclosed \uFFFD}',
+			frame({
+				op: "set",
+				mask: "block.text",
+				eventOffset: 5,
+				block: { id: "1", text: { content: "<manager>\nTO: deepseek\n" } },
+			}),
+			frame({
+				op: "append",
+				mask: "block.text.content",
+				eventOffset: 6,
+				block: { id: "1", text: { content: "Check the logs.\n" } },
+			}),
+			frame({
+				op: "append",
+				mask: "block.text.content",
+				eventOffset: 7,
+				block: { id: "1", text: { content: "</manager>" } },
+			}),
+		].join("");
+
+		expect(collect(withCorruption)).toBe(
+			"<manager>\nTO: deepseek\nCheck the logs.\n</manager>",
+		);
+	});
+
+	it("replaces on set and adds on append", () => {
+		// Treating every frame as an append doubles a block Kimi re-sends whole;
+		// treating every frame as a replacement leaves only the last token.
+		const stream = [
+			frame({
+				op: "set",
+				mask: "block.text",
+				eventOffset: 4,
+				block: { id: "1", text: { content: "draft" } },
+			}),
+			frame({
+				op: "set",
+				mask: "block.text",
+				eventOffset: 5,
+				block: { id: "1", text: { content: "final" } },
+			}),
+			frame({
+				op: "append",
+				mask: "block.text.content",
+				eventOffset: 6,
+				block: { id: "1", text: { content: " answer" } },
+			}),
+		].join("");
+
+		expect(collect(stream)).toBe("final answer");
+	});
+
+	it("keeps two blocks in the order they arrived", () => {
+		const stream = [
+			frame({
+				op: "set",
+				mask: "block.text",
+				eventOffset: 4,
+				block: { id: "1", text: { content: "first. " } },
+			}),
+			frame({
+				op: "set",
+				mask: "block.text",
+				eventOffset: 5,
+				block: { id: "2", text: { content: "second." } },
+			}),
+		].join("");
+
+		expect(collect(stream)).toBe("first. second.");
+	});
+
 	it("still reads a plain SSE body", () => {
 		// The other Kimi endpoint shape, which this parser also has to handle.
 		const sse = [

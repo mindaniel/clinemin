@@ -54,6 +54,7 @@ import {
 import { writeChatBinding } from "../../utils/chat-binding";
 import { readClipboardText } from "../../utils/clipboard";
 import { writeProjectContinuationNote } from "../../utils/continuation-note";
+import { isManagerOffRequest } from "../../utils/manager-command";
 
 export type WebChatEntry =
 	| DeepSeekWebV2ChatEntry
@@ -143,6 +144,7 @@ import {
 	ManagerDialogContent,
 	type ManagerDialogResult,
 } from "../components/dialogs/manager-dialog";
+import { ManagerOffConfirmContent } from "../components/dialogs/manager-off-confirm";
 import { PasteReplyDialogContent } from "../components/dialogs/paste-reply-dialog";
 import { ProfilePickerContent } from "../components/dialogs/profile-picker";
 import {
@@ -199,6 +201,13 @@ export function useLocalCommandActions(input: {
 	 * chat.
 	 */
 	onStartManager: (providerId: string) => Promise<void>;
+	/**
+	 * Leave manager mode and restart the session as a plain one. Same restart
+	 * cost as starting a manager, so the caller confirms first.
+	 */
+	onStopManager: () => Promise<void>;
+	/** Whether this session is currently running as a manager. */
+	isManagerMode: () => boolean;
 	/** Submit text as if the user typed it (used by `/paste` to start a turn). */
 	submitText: (
 		text: string,
@@ -232,6 +241,8 @@ export function useLocalCommandActions(input: {
 		cwd,
 		getSessionId,
 		onStartManager,
+		onStopManager,
+		isManagerMode,
 		submitText,
 	} = input;
 
@@ -635,6 +646,42 @@ export function useLocalCommandActions(input: {
 	 */
 	const openManager = useCallback(
 		async (taskBody: string): Promise<boolean> => {
+			const offRequested = isManagerOffRequest(taskBody);
+			// Bare `/manager` (and its Opt+J shortcut) is a toggle once the session
+			// is already a manager: re-picking the manager's model would only
+			// restart into the same mode, so the useful thing to offer is the way
+			// out. The confirm is what keeps a stray keypress from clearing the
+			// conversation.
+			if (offRequested || (!taskBody && isManagerMode())) {
+				if (!isManagerMode()) {
+					session.appendEntry({
+						kind: "status",
+						text: "Manager mode is already off.",
+					});
+					return true;
+				}
+				const confirmed = await dialog.choice<boolean>({
+					closeOnEscape: true,
+					content: (ctx: ChoiceContext<boolean>) => (
+						<ManagerOffConfirmContent {...ctx} />
+					),
+				});
+				refocusTextarea();
+				if (!confirmed) return true;
+				try {
+					await onStopManager();
+					session.appendEntry({
+						kind: "status",
+						text: "Manager mode off. This session does the work itself again.",
+					});
+				} catch (error) {
+					session.appendEntry({
+						kind: "error",
+						text: `/manager off: could not leave manager mode: ${error instanceof Error ? error.message : String(error)}`,
+					});
+				}
+				return true;
+			}
 			if (taskBody) {
 				// `/manager <task>` keeps its old path through the chat runner.
 				return false;
@@ -687,7 +734,16 @@ export function useLocalCommandActions(input: {
 			}
 			return true;
 		},
-		[cwd, dialog, onStartManager, providerId, refocusTextarea, session],
+		[
+			cwd,
+			dialog,
+			isManagerMode,
+			onStartManager,
+			onStopManager,
+			providerId,
+			refocusTextarea,
+			session,
+		],
 	);
 
 	const pasteReply = useCallback(async (): Promise<boolean> => {

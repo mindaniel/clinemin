@@ -45,7 +45,13 @@ import { resolveDeepSeekWebV2Config } from "./config";
 function detectMalformedToolTag(text: string): string | null {
 	// Look for `<tool` followed by whitespace and then `{` before any `>`.
 	// This catches the common mistake of missing `>` after `<tool`.
-	const match = /<tool\s+\{/i.exec(text);
+	//
+	// The match must start its own line (optionally indented, optionally
+	// inside a fenced block). A reply that merely DISCUSSES the syntax in
+	// prose — or the assistant echoing an earlier rejection nudge — used to
+	// trip this and reject a perfectly good reply. A real attempt always
+	// begins its own line/block.
+	const match = /(?:^|\n)[ \t]*(?:```[^\n]*\n)?[ \t]*<tool\s+\{/i.exec(text);
 	if (match) {
 		console.log("[deepseek-web-v2] malformed tag detected in:", text);
 		return 'Malformed tool tag: missing \'>\' after \'<tool\'. Expected format: <tool>{"name":"...","arguments":{...}}</tool>.';
@@ -53,12 +59,37 @@ function detectMalformedToolTag(text: string): string | null {
 	return null;
 }
 
+/**
+ * Index of the first genuine `<tool` opening tag, or -1.
+ *
+ * "Genuine" means the tag starts a line (optionally indented / fenced) rather
+ * than appearing mid-sentence. Prose that merely MENTIONS the tag, and the
+ * assistant echoing a prior rejection message, must not be treated as an
+ * attempted call — doing so rejected valid replies and swallowed the real
+ * work (including any ```powershell fence) with it.
+ */
+function firstRealToolTagIndex(text: string): number {
+	const re = /(?:^|\n)[ \t]*(?:```[^\n]*\n)?[ \t]*(<tool\b)/gi;
+	let match: RegExpExecArray | null = re.exec(text);
+	while (match !== null) {
+		const tagIndex = match.index + match[0].lastIndexOf(match[1]);
+		// Skip tags sitting inside an inline code span (an odd number of
+		// backticks earlier on the same line means we are inside one).
+		const lineStart = text.lastIndexOf("\n", tagIndex) + 1;
+		const before = text.slice(lineStart, tagIndex);
+		const backticks = (before.match(/`/g) ?? []).length;
+		if (backticks % 2 === 0) return tagIndex;
+		match = re.exec(text);
+	}
+	return -1;
+}
+
 function detectUnparsedToolBlock(
 	text: string,
 	toolNames: string[],
 ): string | null {
 	const lower = text.toLowerCase();
-	const open = lower.indexOf("<tool");
+	const open = firstRealToolTagIndex(text);
 	if (open === -1) return null;
 	const example = `<tool>${JSON.stringify({ name: "tool_name", arguments: {} })}</tool>`;
 	const close = lower.indexOf("</tool>", open);
@@ -362,7 +393,7 @@ function hasLeadingCompactionSummary(prompt: LanguageModelV2Prompt): boolean {
 // The agent runtime's synthetic "keep going" nudge appended after every round
 // of tool execution (see `agent-runtime.ts`'s `continuationMessage`) is never
 // something the user typed, so it must never be echoed back to the model
-// labeled as "Previous user message". Its text is per project and set at
+// labeled as "My last message". Its text is per project and set at
 // runtime by the CLI `/note` command, so match it through the shared helper
 // rather than against a literal here — see `tool-pipeline/continuation-note.ts`.
 
@@ -441,7 +472,7 @@ export function buildLeanConversation(
 
 	// An iteration turn: the last user message is the runtime's synthetic
 	// "Use tool to continue..." continuation, which directly follows the tool
-	// results. Keep the previous user message (as "Previous user message"
+	// results. Keep the previous user message (as "My last message"
 	// context), every tool result after it, and the continuation message so
 	// the model sees both the tool outputs and the original instruction.
 	const isContinuationTurn =
@@ -466,7 +497,7 @@ export function buildLeanConversation(
 		// On a multi-round tool loop, `prevUserIndex` may itself be an earlier
 		// synthetic continuation placeholder that was already sent to the chat
 		// in a prior real turn — not something the user typed. Re-anchor to
-		// the nearest REAL user message so "Previous user message" never
+		// the nearest REAL user message so "My last message" never
 		// echoes our own placeholder text back at the model. The tool-result
 		// window below still starts right after `prevUserIndex` (unaffected),
 		// so only the CURRENT round's results are included, not the whole
@@ -554,14 +585,14 @@ export function buildPrompt(
 	) {
 		return messagesToPrompt([systemMessage, ...conversation], {
 			historyWindow: 10,
-			userLabel: "Previous user message",
+			userLabel: "My last message",
 			lastUserLabel: currentUserLabel(conversation),
 			toolResultLabel: "Tool result",
 		});
 	}
 	return messagesToPrompt(conversation, {
 		historyWindow: 10,
-		userLabel: "Previous user message",
+		userLabel: "My last message",
 		lastUserLabel: currentUserLabel(conversation),
 		toolResultLabel: "Tool result",
 	});
@@ -571,7 +602,7 @@ export function buildPrompt(
  * Label for the final user message of the lean conversation. On an iteration
  * turn the runtime appends a synthetic "Use tool to continue..." continuation
  * as the LAST user message (directly after the tool results), so it is the
- * current directive — frame it as "Note:" instead of "Previous user message:"
+ * current directive - frame it as "Note:" instead of "My last message:"
  * (stale context). Any other final user message keeps the generic label.
  */
 /**
@@ -580,7 +611,7 @@ export function buildPrompt(
  * `continuationLabel` covers the runtime's synthetic "Use tool to continue..."
  * note. This adds the other case: a turn whose last message is something the
  * user just typed. That is a fresh ask, so it must not be labeled
- * `Previous user message:` — every provider strips those blocks before
+ * `My last message:` - every provider strips those blocks before
  * sending, and stripping the current instruction would send a turn with
  * nothing in it.
  *
@@ -818,7 +849,7 @@ function createDeepSeekWebV2Model(
 			isNewChat,
 		);
 		// The web chat is stateful: everything the user typed is
-		// still in it, so an older `Previous user message:` block teaches the
+		// still in it, so an older `My last message:` block teaches the
 		// model nothing and grows the chat's context every round. The current
 		// instruction still goes out — `messagesToPrompt` labels it `User:`, or
 		// `Note:` on an iteration turn — and fresh tool results are untouched

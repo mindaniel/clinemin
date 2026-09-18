@@ -18,7 +18,7 @@
 /** The nudge sent when a tool call was left behind in the thinking stream. */
 export const THINKING_MODE_NUDGE =
 	"Continue and send your tool call outside of thinking mode. " +
-	'Emit it in your reply as exactly: <tool>{"name": "<tool_name>", "arguments": { ... }}</tool>';
+	'Emit it in your reply as powershell command,, applypatch tool, or using <tool>{"name": "<tool_name>", "arguments": { ... }}</tool>';
 
 /**
  * Whether `text` looks like it contains a tool call: either the `<tool>` tag in

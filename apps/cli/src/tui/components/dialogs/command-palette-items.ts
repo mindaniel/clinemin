@@ -11,6 +11,14 @@ export type CommandPaletteAction =
 	| "undo"
 	| "clear"
 	| "history"
+	| "autocompact"
+	| "manager"
+	| "workers"
+	| "findchat"
+	| "paste"
+	| "note"
+	| "profile"
+	| "telegram"
 	| "help"
 	| "quit";
 
@@ -120,6 +128,62 @@ const ACTION_ITEMS: Array<{
 		shortcut: "Opt+H",
 		description: "Resume a previous session",
 		keywords: ["history", "resume", "sessions"],
+	},
+	{
+		action: "autocompact",
+		label: "Auto-Compaction Limit",
+		shortcut: "Opt+Z",
+		description: "Show how to set the auto-compaction context limit",
+		keywords: ["autocompact", "compact", "context", "limit", "tokens"],
+	},
+	{
+		action: "manager",
+		label: "Start Manager Mode",
+		shortcut: "Opt+J",
+		description: "Pick a manager model and delegate work to workers",
+		keywords: ["manager", "delegate", "team", "orchestrate"],
+	},
+	{
+		action: "workers",
+		label: "Manage Workers",
+		shortcut: "Opt+O",
+		description: "Set up the workers a manager can delegate to",
+		keywords: ["workers", "team", "delegate", "manager"],
+	},
+	{
+		action: "findchat",
+		label: "Find Web Chat",
+		shortcut: "Opt+I",
+		description: "Find and reopen a web provider chat",
+		keywords: ["findchat", "find", "chat", "web", "reopen"],
+	},
+	{
+		action: "paste",
+		label: "Paste Model Reply",
+		shortcut: "Opt+V",
+		description: "Preview the clipboard, then use it as the model reply",
+		keywords: ["paste", "clipboard", "reply", "recovery", "web"],
+	},
+	{
+		action: "note",
+		label: "Continuation Note",
+		shortcut: "Opt+N",
+		description: "Show or set this project's post-tool continuation note",
+		keywords: ["note", "continuation", "project"],
+	},
+	{
+		action: "profile",
+		label: "Switch Browser Profile",
+		shortcut: "Opt+E",
+		description: "Switch the browser profile web providers log in with",
+		keywords: ["profile", "browser", "login", "sign out", "web"],
+	},
+	{
+		action: "telegram",
+		label: "Configure Telegram",
+		shortcut: "Opt+T",
+		description: "Set the Telegram connector token, chat ID, and on/off",
+		keywords: ["telegram", "connector", "bot", "chat id"],
 	},
 	{
 		action: "help",

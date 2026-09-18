@@ -720,6 +720,69 @@ describe("AgentRuntime", () => {
 		});
 	});
 
+	it("silently drops a skipped tool call instead of telling the model", async () => {
+		// The web-provider "skip" action. Unlike a denial, the model must receive
+		// nothing at all: no tool result, no error, and no continuation note --
+		// the note alone would read as "carry on" with the work just declined.
+		const executeTool = vi.fn(async () => ({ echoed: "hi" }));
+		const requestToolApproval = vi.fn(async () => ({
+			approved: false,
+			silentSkip: true,
+		}));
+		const model = new ScriptedModel([
+			() => [
+				{
+					type: "tool-call-delta",
+					toolCallId: "call_skip",
+					toolName: "echo",
+					inputText: '{"text":"hi"}',
+				},
+				{ type: "finish", reason: "tool-calls" },
+			],
+			(request) => {
+				const last = request.messages.at(-1) as AgentMessage;
+				expect(last.role).toBe("assistant");
+				expect(
+					request.messages.some((message) => message.role === "tool"),
+				).toBe(false);
+				return [
+					{ type: "text-delta", text: "moved on" },
+					{ type: "finish", reason: "stop" },
+				];
+			},
+		]);
+		const runtime = new AgentRuntime({
+			sessionId: "session_test",
+			agentId: "agent_test",
+			conversationId: "conversation_test",
+			model,
+			tools: [
+				{
+					name: "echo",
+					description: "Echo input text",
+					inputSchema: { type: "object" },
+					execute: executeTool,
+				},
+			],
+			toolPolicies: { "*": { autoApprove: false } },
+			requestToolApproval,
+		});
+
+		const addedRoles: string[] = [];
+		runtime.subscribe((event) => {
+			if (event.type === "message-added") {
+				addedRoles.push(event.message.role);
+			}
+		});
+
+		const result = await runtime.run("Start");
+
+		expect(result.status).toBe("completed");
+		expect(result.outputText).toBe("moved on");
+		expect(executeTool).not.toHaveBeenCalled();
+		expect(addedRoles).not.toContain("tool");
+	});
+
 	it("applies beforeTool approval policy overrides before executing tools", async () => {
 		const executeTool = vi.fn(async () => ({ echoed: "hi" }));
 		const requestToolApproval = vi.fn(async () => ({

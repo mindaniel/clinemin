@@ -129,6 +129,15 @@ export interface PendingPromptMutationResult {
 export type AppView = "onboarding" | "home" | "chat";
 export type TuiStartupTarget = "chat" | "config" | "history";
 
+/**
+ * What the user chose at a tool-approval prompt.
+ *
+ * "deny" sends the model a tool result saying it was refused; "skip" sends it
+ * nothing at all and is only offered on web providers, where a turn can simply
+ * end without a tool result. See `silentSkip` in the agent runtime.
+ */
+export type ToolApprovalOutcome = "approve" | "deny" | "skip";
+
 export type RuntimeToolInteraction =
 	| {
 			id: number;
@@ -200,6 +209,7 @@ export interface TuiProps {
 	 * for a session's life — so this cannot convert a conversation in flight.
 	 */
 	onStartManager: (providerId: string) => Promise<void>;
+	onStopManager: () => Promise<void>;
 	onAccountChange: () => Promise<void>;
 	onResumeSession: (sessionId: string) => Promise<ResumedSessionResult>;
 	onExportHistorySession: (
@@ -245,6 +255,18 @@ export interface TuiProps {
 }
 
 export type InlineStream = "text" | "reasoning" | undefined;
+
+/**
+ * What a web provider reports about its own usage limit, shown in the status
+ * bar in place of a token count. Claude Web sends a session percentage;
+ * ChatGPT Web sends how many messages are left. `resetsAt` is when either
+ * refills.
+ */
+export interface WebSessionStatus {
+	percent?: number;
+	messagesRemaining?: number;
+	resetsAt?: string;
+}
 
 export const HOME_VIEW_MAX_WIDTH = 68;
 export const MAX_BUFFERED_LINES = 500;

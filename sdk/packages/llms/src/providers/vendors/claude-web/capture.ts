@@ -16,6 +16,8 @@ const PAGE_POLL_MS = 2000;
  * the watchdog stops trusting the network capture and rescues the reply.
  */
 const SETTLED_GRACE_MS = 8000;
+/** Consecutive unreadable page polls before the watchdog gives up on the tab. */
+const MAX_UNREADABLE_POLLS = 30;
 
 /**
  * Reads Claude's newest assistant message. claude.ai marks each reply with
@@ -93,10 +95,37 @@ async function fetchLatestReplyMarkdown(
 	}
 }
 
-interface PageReplyState {
+export interface PageReplyState {
 	count: number;
 	streaming: boolean;
 	text: string;
+}
+
+/**
+ * Whether `state` is a finished reply that this turn produced.
+ *
+ * Node count alone is NOT a usable signal. claude.ai virtualises the
+ * transcript: it keeps roughly the last three `[data-is-streaming]` nodes in
+ * the DOM and drops the older ones as new replies arrive. Once a chat is long
+ * enough for that window to be full, the count stops growing, so a
+ * `count > baseline` gate is never satisfied again -- the watchdog stopped
+ * rescuing replies in exactly the long manager-mode chats that need it, and
+ * the turn hung for the whole `responseTimeoutMs` (20 minutes) with the answer
+ * sitting finished on screen.
+ *
+ * So also accept a changed last-reply text. Only assistant messages carry the
+ * attribute, so the text can only change once this turn's reply has rendered;
+ * before that the last node is still the previous reply, matching the
+ * baseline.
+ */
+export function isFinishedReply(
+	state: PageReplyState | undefined,
+	baseline: { count: number; text: string },
+): boolean {
+	if (!state || state.streaming) return false;
+	const text = state.text.trim();
+	if (!text) return false;
+	return state.count > baseline.count || text !== baseline.text;
 }
 
 async function readPageReplyState(
@@ -240,7 +269,10 @@ export async function sendAndCapture(
 	// Snapshot the page before sending, so the watchdog can tell this turn's
 	// reply apart from the previous one.
 	const before = await readPageReplyState(cdp, cdpSessionId);
-	const baselineCount = before?.count ?? 0;
+	const baseline = {
+		count: before?.count ?? 0,
+		text: (before?.text ?? "").trim(),
+	};
 
 	// Build the send script and inject it.
 	const script = buildSendScript(prompt, sendOptions);
@@ -269,16 +301,29 @@ export async function sendAndCapture(
 	let watchdogDone = false;
 	void (async () => {
 		let settledSince: number | undefined;
+		let unreadablePolls = 0;
 		while (!watchdogDone && !capturedBody) {
 			await new Promise((resolve) => setTimeout(resolve, PAGE_POLL_MS));
 			if (watchdogDone || capturedBody || signal?.aborted) return;
 			const state = await readPageReplyState(cdp, cdpSessionId);
-			const finished =
-				state !== undefined &&
-				state.count > baselineCount &&
-				!state.streaming &&
-				state.text.trim().length > 0;
-			if (!finished) {
+			// A page we cannot read at all is not "still streaming" -- it is a
+			// dead CDP session, and waiting on it burns the full timeout. Give
+			// it a minute, then fail the turn so `/paste` can recover the reply.
+			if (state === undefined) {
+				unreadablePolls += 1;
+				if (unreadablePolls >= MAX_UNREADABLE_POLLS) {
+					rescueError = `the page stopped responding to CDP for ${
+						(MAX_UNREADABLE_POLLS * PAGE_POLL_MS) / 1000
+					}s`;
+					logger?.log?.(`[claude-web] ${rescueError}`, { severity: "warn" });
+					bodyResolve?.();
+					return;
+				}
+				settledSince = undefined;
+				continue;
+			}
+			unreadablePolls = 0;
+			if (!isFinishedReply(state, baseline)) {
 				settledSince = undefined;
 				continue;
 			}

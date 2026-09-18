@@ -41,19 +41,17 @@ function summarizeInvalidInput(message: string): string | undefined {
 	const rejected = message.match(
 		/^Tool call\s+([A-Za-z0-9_-]+)\s+was rejected before execution:\s+Invalid input for tool\s+([A-Za-z0-9_-]+):\s*([^.\n]+)(?:\.|\n|$)/,
 	);
+	// UI-only summary: keep it one short line. The full rejection stays in
+	// `detail`, and the model gets the raw tool error, not this text.
 	if (rejected) {
-		const toolName = rejected[2];
-		const detail = rejected[3];
-		return `Invalid ${toolName} input: ${detail}. Expected format: <tool>{"name":"${toolName}","arguments":{...}}</tool>. Please correct and retry.`;
+		return `Invalid ${rejected[2]} input; tool call skipped.`;
 	}
 
 	const invalid = message.match(
 		/^Invalid input for tool\s+([A-Za-z0-9_-]+):\s*([^.\n]+)(?:\.|\n|$)/,
 	);
 	if (invalid) {
-		const toolName = invalid[1];
-		const detail = invalid[2];
-		return `Invalid ${toolName} input: ${detail}. Expected format: <tool>{"name":"${toolName}","arguments":{...}}</tool>. Please correct and retry.`;
+		return `Invalid ${invalid[1]} input; tool call skipped.`;
 	}
 
 	return undefined;

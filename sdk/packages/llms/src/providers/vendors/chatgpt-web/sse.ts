@@ -2,6 +2,7 @@
  * SSE parser for ChatGPT Web responses.
  */
 
+import type { ChatGPTQuotaSnapshot } from "./quota";
 import type { ChatGPTSSEEvent } from "./types";
 
 export function consumeChatGPTSse(
@@ -14,9 +15,7 @@ export function consumeChatGPTSse(
 		outputTokens: number;
 		totalTokens: number;
 	}) => void,
-	onQuota?: (
-		quota: { featureName: string; remaining: number; resetAfter: string }[],
-	) => void,
+	onQuota?: (snapshot: ChatGPTQuotaSnapshot) => void,
 ): void {
 	try {
 		let fullText = "";
@@ -36,7 +35,13 @@ export function consumeChatGPTSse(
 			if (!parsed || typeof parsed !== "object") continue;
 
 			// 1. Handle JSON patch operations: { o: "patch", v: [{ p: "/message/content/parts/0", o: "append", v: "text" }] }
-			if (parsed.o === "patch" && Array.isArray(parsed.v)) {
+			// Delta encoding v1 only names `o: "patch"` on the first batch; every
+			// later batch is a bare `{ v: [...] }` that inherits it. Requiring the
+			// `o` kept the first chunk ("Yes.") and dropped the rest of the reply.
+			if (
+				Array.isArray(parsed.v) &&
+				(parsed.o === "patch" || parsed.o === undefined)
+			) {
 				for (const patch of parsed.v) {
 					if (
 						patch &&
@@ -112,13 +117,55 @@ export function consumeChatGPTSse(
 				});
 			}
 
-			// ChatGPT web SSE includes a `conversation_detail_metadata` event with quota info.
-			if (
-				parsed.type === "conversation_detail_metadata" &&
-				Array.isArray(parsed.limits_progress) &&
-				onQuota
-			) {
-				onQuota(parsed.limits_progress);
+			// ChatGPT web SSE includes a `conversation_detail_metadata` event with
+			// quota info. The wire fields are snake_case (`feature_name`,
+			// `reset_after`); handing them over unmapped left every lookup by
+			// `featureName` empty, so the quota was never actually read.
+			//
+			// The event is forwarded whenever it appears, not only when
+			// `limits_progress` is a non-empty array. Once the cap is hit ChatGPT
+			// drops that field entirely and the reset time survives only in
+			// `model_limits` / `blocked_features`, so gating on it blanked the
+			// status bar for exactly the stretch where the reset time matters.
+			if (parsed.type === "conversation_detail_metadata" && onQuota) {
+				onQuota({
+					entries: (parsed.limits_progress ?? []).flatMap((entry) =>
+						typeof entry?.feature_name === "string" &&
+						typeof entry.remaining === "number" &&
+						Number.isFinite(entry.remaining)
+							? [
+									{
+										featureName: entry.feature_name,
+										remaining: entry.remaining,
+										resetAfter:
+											typeof entry.reset_after === "string"
+												? entry.reset_after
+												: "",
+									},
+								]
+							: [],
+					),
+					modelLimits: (parsed.model_limits ?? []).map((limit) => ({
+						...(typeof limit?.model_slug === "string"
+							? { modelSlug: limit.model_slug }
+							: {}),
+						...(typeof limit?.resets_after === "string"
+							? { resetsAfter: limit.resets_after }
+							: {}),
+					})),
+					blockedFeatures: (parsed.blocked_features ?? []).flatMap((feature) =>
+						typeof feature?.name === "string"
+							? [
+									{
+										name: feature.name,
+										...(typeof feature.resets_after === "string"
+											? { resetsAfter: feature.resets_after }
+											: {}),
+									},
+								]
+							: [],
+					),
+				});
 			}
 		}
 

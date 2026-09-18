@@ -90,6 +90,32 @@ bun install
 bun run build:sdk
 ```
 
+## Manager mode
+
+`/manager` runs the session as a manager: it delegates every step to the workers in `.cline/team.json` and does no work itself. `/manager <task>` goes straight in, and `/manager off` leaves again.
+
+Both directions rebuild the system prompt, and a system prompt is fixed for the life of a session — so each switch restarts the session and clears the conversation. `/manager off` asks first. Start a manager at the top of a chat, not halfway through one.
+
+## Keyboard shortcuts
+
+No need to memorize these: `Ctrl+P` opens the command palette, which lists every command with its shortcut, and `Alt+K` opens help. On Windows and Linux, `Opt` means `Alt`.
+
+While the agent is running, `Esc` aborts it — except when you have a queued message selected or are editing one, where `Esc` belongs to the queue. Use `Ctrl+X` to halt the run at any time; the queued-message hint line says so too.
+
+| Shortcut | Action | Shortcut | Action |
+|---|---|---|---|
+| `Opt+S` | Settings | `Opt+Z` | Auto-compaction limit (`/autocompact`) |
+| `Opt+M` | Change model | `Opt+J` | Manager mode (`/manager`) |
+| `Opt+P` | Change provider | `Opt+O` | Workers (`/workers`) |
+| `Opt+C` | MCP servers | `Opt+I` | Find web chat (`/findchat`) |
+| `Opt+G` | Plugins | `Opt+V` | Paste model reply (`/paste`) |
+| `Opt+A` | Account | `Opt+N` | Continuation note (`/note`) |
+| `Opt+X` | Compact context | `Opt+E` | Browser profile (`/profile`) |
+| `Opt+W` | Skills | `Opt+T` | Telegram (`/telegram`) |
+| `Opt+R` | Fork session | `Opt+H` | Session history |
+| `Opt+U` | Restore checkpoint | `Opt+K` | Help |
+| `Opt+L` | New session | `Opt+Q` | Exit |
+
 ## Using llama.cpp
 
 Open the provider picker (`Ctrl+P` → Change Provider), select **llama.cpp**. First prompt triggers the download (binary + a small default model, one-time). To point it at your own models: `Ctrl+P` → Change Provider, then set `LLAMACPP_MODEL_PATH`.

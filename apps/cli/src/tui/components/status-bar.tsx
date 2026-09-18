@@ -13,7 +13,7 @@ import {
 	getModeAccent,
 	getSuccessColor,
 } from "../palette";
-import { HOME_VIEW_MAX_WIDTH } from "../types";
+import { HOME_VIEW_MAX_WIDTH, type WebSessionStatus } from "../types";
 import { formatTokenCount } from "../utils/compaction-status";
 
 export function createContextBar(
@@ -79,31 +79,73 @@ function formatCostText(providerId: string, totalCost: number): string {
 	return formatCost(totalCost);
 }
 
+/**
+ * When a web limit refills: the clock time when that is within a day, the date
+ * and time when it is further out — a bare "00:29" for a reset a week away
+ * reads as tonight.
+ */
+export function formatResetTime(resetsAt: string, now = new Date()): string {
+	const at = new Date(resetsAt);
+	if (Number.isNaN(at.getTime())) return "";
+	const time = at.toLocaleTimeString([], {
+		hour: "2-digit",
+		minute: "2-digit",
+	});
+	if (at.getTime() - now.getTime() < 24 * 60 * 60 * 1000) return time;
+	const date = at.toLocaleDateString([], { month: "short", day: "numeric" });
+	return `${date} ${time}`;
+}
+
+function chatgptMessagesRemaining(
+	providerId: string,
+	status: WebSessionStatus | null | undefined,
+): number | undefined {
+	return providerId === "chatgpt-web" &&
+		typeof status?.messagesRemaining === "number" &&
+		Number.isFinite(status.messagesRemaining)
+		? Math.max(0, status.messagesRemaining)
+		: undefined;
+}
+
 export function formatStatusBarUsageText(input: {
 	totalTokens: number;
 	totalCost: number;
 	providerId: string;
 	maxInputTokens?: number;
-	claudeSessionStatus?: {
-		percent: number;
-		resetsAt?: string;
-	} | null;
+	webSessionStatus?: WebSessionStatus | null;
+	now?: Date;
 }): string {
+	const status = input.webSessionStatus;
+	const resetText = status?.resetsAt
+		? formatResetTime(status.resetsAt, input.now)
+		: "";
+	const resetSuffix = resetText ? ` · resets ${resetText}` : "";
+
 	if (
 		input.providerId === "claude-web" &&
-		input.claudeSessionStatus &&
-		Number.isFinite(input.claudeSessionStatus.percent)
+		typeof status?.percent === "number" &&
+		Number.isFinite(status.percent)
 	) {
-		const percent = Math.max(
-			0,
-			Math.min(input.claudeSessionStatus.percent, 100),
-		);
-		const resetText = input.claudeSessionStatus.resetsAt
-			? ` · resets ${new Date(
-					input.claudeSessionStatus.resetsAt,
-				).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}`
-			: "";
-		return `(${Number.isInteger(percent) ? percent : percent.toFixed(1)}/100%${resetText})`;
+		const percent = Math.max(0, Math.min(status.percent, 100));
+		return `(${Number.isInteger(percent) ? percent : percent.toFixed(1)}/100%${resetSuffix})`;
+	}
+
+	// ChatGPT Web: a token estimate against a nominal window says nothing about
+	// when the session stops. Its message cap does, so show that — the count
+	// ChatGPT reports after each reply, and when it refills.
+	if (input.providerId === "chatgpt-web") {
+		const remaining = chatgptMessagesRemaining(input.providerId, status);
+		if (remaining === undefined) {
+			return "(messages left: —)";
+		}
+		// At zero the account is not stopped, it is demoted: ChatGPT keeps
+		// answering on the fallback model, which has no allowance to count. So
+		// say the limit was reached rather than "0 messages left", which reads
+		// like the session is over.
+		if (remaining === 0) {
+			return `(limit reached${resetSuffix || " · reset time unknown"})`;
+		}
+		return `(${remaining} message${remaining === 1 ? "" : "s"} left${resetSuffix})`;
 	}
 
 	// When the effective context limit is known, show usage as "used/total"
@@ -185,10 +227,7 @@ export interface StatusBarProps {
 	totalTokens: number;
 	totalCost: number;
 	maxInputTokens?: number;
-	claudeSessionStatus?: {
-		percent: number;
-		resetsAt?: string;
-	} | null;
+	webSessionStatus?: WebSessionStatus | null;
 	ttftMs?: number | null;
 	tokensPerSecond?: number | null;
 	uiMode: AgentMode;
@@ -210,7 +249,7 @@ export function StatusBar(props: StatusBarProps) {
 		totalTokens,
 		totalCost,
 		maxInputTokens,
-		claudeSessionStatus,
+		webSessionStatus,
 		ttftMs,
 		tokensPerSecond,
 		uiMode,
@@ -238,16 +277,20 @@ export function StatusBar(props: StatusBarProps) {
 	// read ~0% off a nominal 1M window while the text beside it said 42%.
 	const claudePercent =
 		props.providerId === "claude-web" &&
-		claudeSessionStatus &&
-		Number.isFinite(claudeSessionStatus.percent)
-			? Math.max(0, Math.min(claudeSessionStatus.percent, 100))
+		typeof webSessionStatus?.percent === "number" &&
+		Number.isFinite(webSessionStatus.percent)
+			? Math.max(0, Math.min(webSessionStatus.percent, 100))
 			: undefined;
+	// ChatGPT Web reports a count with no total to fill a bar against, so it
+	// gets no bar at all rather than one tracking the meaningless token estimate.
 	const bar =
 		claudePercent !== undefined
 			? createContextBar(claudePercent, 100)
-			: hasMaxInputTokens
-				? createContextBar(totalTokens, maxInputTokens)
-				: undefined;
+			: props.providerId === "chatgpt-web"
+				? undefined
+				: hasMaxInputTokens
+					? createContextBar(totalTokens, maxInputTokens)
+					: undefined;
 
 	// Available content width after accounting for padding.
 	// Home view: parent box is capped at 60 wide, status bar adds paddingX=1 (-2).
@@ -266,7 +309,7 @@ export function StatusBar(props: StatusBarProps) {
 		totalCost,
 		providerId: props.providerId,
 		maxInputTokens,
-		claudeSessionStatus,
+		webSessionStatus,
 	});
 	const contextText = bar
 		? ` ${bar.filled}${bar.empty} ${usageText}`

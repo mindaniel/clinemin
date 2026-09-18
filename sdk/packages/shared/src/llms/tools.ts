@@ -82,6 +82,7 @@ export interface ToolApprovalRequest {
 export interface ToolApprovalResult {
 	approved: boolean;
 	reason?: string;
+	silentSkip?: boolean;
 }
 
 export const ToolCallRecordSchema = z.object({

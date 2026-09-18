@@ -14,6 +14,7 @@ import {
 	type ChatGPTWebV2RuntimeConfig,
 	requestChatGPTThrottleRecoveryReload,
 } from "./config";
+import { type ChatGPTQuotaSnapshot, pickChatGPTMessageQuota } from "./quota";
 import { buildSendScript } from "./send-script";
 import { consumeChatGPTSse } from "./sse";
 
@@ -47,7 +48,7 @@ export async function sendAndCapture(
 	finishReason: LanguageModelV2FinishReason;
 	usage: { inputTokens: number; outputTokens: number; totalTokens: number };
 	rateLimited?: boolean;
-	quota?: { featureName: string; remaining: number; resetAfter: string }[];
+	quota?: ChatGPTQuotaSnapshot;
 	rawBody: string;
 }> {
 	const debugLog = (msg: string) => {
@@ -176,9 +177,7 @@ export async function sendAndCapture(
 		let fullText = "";
 		const finishReason: LanguageModelV2FinishReason = "stop";
 		let usage = { inputTokens: 0, outputTokens: 0, totalTokens: 0 };
-		let quota:
-			| { featureName: string; remaining: number; resetAfter: string }[]
-			| undefined;
+		let quota: ChatGPTQuotaSnapshot | undefined;
 		consumeChatGPTSse(
 			capturedBody,
 			(chunk) => {
@@ -196,13 +195,15 @@ export async function sendAndCapture(
 			},
 		);
 
-		if (quota) {
-			const reasonQuota = quota.find((q) => q.featureName === "reason");
-			if (reasonQuota) {
-				logger?.log?.(
-					`[chatgpt-web] Token quota: ${reasonQuota.remaining} remaining, resets at ${reasonQuota.resetAfter}`,
-				);
-			}
+		const messageQuota = pickChatGPTMessageQuota(quota);
+		if (messageQuota) {
+			logger?.log?.(
+				`[chatgpt-web] Message quota: ${messageQuota.remaining} remaining` +
+					(messageQuota.limitedModel
+						? ` on ${messageQuota.limitedModel}`
+						: "") +
+					(messageQuota.resetsAt ? `, resets at ${messageQuota.resetsAt}` : ""),
+			);
 		}
 
 		// ChatGPT's web SSE stream often omits a `usage` payload, leaving the

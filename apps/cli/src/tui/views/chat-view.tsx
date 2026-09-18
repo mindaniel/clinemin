@@ -1,3 +1,4 @@
+import { isWebChatProvider } from "@cline/shared";
 import {
 	AutocompleteDropdown,
 	type AutocompleteDropdownProps,
@@ -29,6 +30,7 @@ import {
 import type {
 	QueuedPromptItem,
 	RuntimeToolInteraction,
+	ToolApprovalOutcome,
 	TuiProps,
 } from "../types";
 
@@ -59,7 +61,7 @@ export function ChatView(props: {
 	onQueuedPromptEditConfirm: (id: string, prompt: string) => void;
 	onToggleMode: () => void;
 	runtimeInteraction?: RuntimeToolInteraction | null;
-	onResolveToolApproval: (id: number, approved: boolean) => void;
+	onResolveToolApproval: (id: number, outcome: ToolApprovalOutcome) => void;
 	onResolveAskQuestion: (id: number, answer: string | null) => void;
 }) {
 	const {
@@ -108,6 +110,7 @@ export function ChatView(props: {
 							inputPlaceholder={inputPlaceholder}
 							onResolveToolApproval={props.onResolveToolApproval}
 							onResolveAskQuestion={props.onResolveAskQuestion}
+							allowSilentSkip={isWebChatProvider(config.providerId ?? "")}
 						/>
 					</box>
 				) : (
@@ -151,7 +154,7 @@ export function ChatView(props: {
 					totalTokens={session.lastTotalTokens}
 					totalCost={session.lastTotalCost}
 					maxInputTokens={maxInputTokens}
-					claudeSessionStatus={session.claudeSessionStatus}
+					webSessionStatus={session.webSessionStatus}
 					ttftMs={session.lastTtftMs}
 					tokensPerSecond={session.lastTokensPerSecond}
 					uiMode={session.uiMode}

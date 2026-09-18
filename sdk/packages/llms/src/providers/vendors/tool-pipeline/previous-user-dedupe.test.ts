@@ -47,7 +47,7 @@ describe("realUserMessageKey", () => {
 describe("stripPreviousUserBlock", () => {
 	it("drops the block but keeps tool results and the note", () => {
 		const prompt = [
-			"Previous user message: do the thing",
+			"My last message: do the thing",
 			"Tool result: 42",
 			`Note: ${DEFAULT_CONTINUATION_NOTE}`,
 		].join("\n\n");
@@ -59,7 +59,7 @@ describe("stripPreviousUserBlock", () => {
 	it("strips it even when a re-injected system prompt comes first", () => {
 		const prompt = [
 			"You are a helpful agent.",
-			"Previous user message: do the thing",
+			"My last message: do the thing",
 			"Tool result: 42",
 		].join("\n\n");
 		expect(stripPreviousUserBlock(prompt)).toBe(
@@ -68,16 +68,16 @@ describe("stripPreviousUserBlock", () => {
 	});
 
 	it("handles a multi-line instruction with no trailing blocks", () => {
-		const prompt = "Previous user message: line one\nline two";
+		const prompt = "My last message: line one\nline two";
 		expect(stripPreviousUserBlock(prompt)).toBe("");
 	});
 
 	it("keeps the current instruction, which carries its own label", () => {
 		// Providers strip unconditionally now, so the turn the user just typed
 		// has to survive: `messagesToPrompt` labels it `User:`, never
-		// `Previous user message:`.
+		// `My last message:`.
 		const prompt = [
-			"Previous user message: an older ask",
+			"My last message: an older ask",
 			"Assistant: sure",
 			"User: the new ask",
 		].join("\n\n");
