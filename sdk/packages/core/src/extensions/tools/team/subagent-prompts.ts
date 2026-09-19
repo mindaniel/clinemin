@@ -53,21 +53,52 @@ reads, so it has to stand on its own.
   as text in your report — text is a report, not a call, and nothing will run it.`;
 
 /**
- * A marker that appears in every prompt this function builds.
+ * The heading this function stamps around a worker's role prompt.
  *
- * A spawned teammate's built system prompt is what gets persisted as its
- * `rolePrompt`, and restoring replays that back through here. Without a check,
- * a restored worker gets the whole tool protocol wrapped around itself once per
- * restart.
+ * Doubles as the idempotency marker, because it is the one thing present in
+ * every prompt this function builds — see `isBuiltTeammatePrompt`.
+ */
+const TEAMMATE_ROLE_HEADING = "# Team Teammate Role";
+
+/**
+ * A marker that appears in every prompt built from the tool-calling contract.
+ *
+ * Kept because worker prompts persisted before the web providers moved off that
+ * contract still carry it, and a restored worker must still be recognised as
+ * already built.
  */
 const BUILT_PROMPT_MARKER = "# CRITICAL TOOL CALLING PROTOCOL";
+
+/**
+ * Has this prompt already been through here?
+ *
+ * A spawned teammate's built system prompt is what gets persisted as its
+ * `rolePrompt`, and restoring replays that back through this function. Without
+ * a check, a restored worker gets the whole provider prompt wrapped around
+ * itself once per restart — and it compounds, because each restart persists the
+ * larger prompt for the next one to grow again.
+ *
+ * Testing only for the tool-calling contract was enough while every built
+ * prompt contained it. It stopped being enough when the web providers moved
+ * their `worker` slot to `SIMPLE_WEB_SYSTEM_PROMPT`, which has no such heading:
+ * a DeepSeek worker's prompt went 3.2k → 5.1k characters on its first restart,
+ * carrying two copies of the patch grammar and two copies of its own role. The
+ * role heading is the reliable marker because this function stamps it on every
+ * branch that builds anything.
+ */
+function isBuiltTeammatePrompt(prompt: string): boolean {
+	return (
+		prompt.includes(BUILT_PROMPT_MARKER) ||
+		prompt.includes(TEAMMATE_ROLE_HEADING)
+	);
+}
 
 export function buildTeammateSystemPrompt(
 	prompt: string,
 	config: DelegatedAgentRuntimeConfig,
 ): string {
 	const basePrompt = prompt.trim();
-	if (basePrompt.includes(BUILT_PROMPT_MARKER)) {
+	if (isBuiltTeammatePrompt(basePrompt)) {
 		return basePrompt;
 	}
 	// Appending unconditionally would stack another copy of the contract on
@@ -110,7 +141,7 @@ export function buildTeammateSystemPrompt(
 				role: "worker",
 				prompts: getWebProviderPrompts(config.providerId),
 			}),
-			`# Team Teammate Role\n${trimmedPrompt}`,
+			`${TEAMMATE_ROLE_HEADING}\n${trimmedPrompt}`,
 		]
 			.filter(Boolean)
 			.join("\n\n");
@@ -124,7 +155,7 @@ export function buildTeammateSystemPrompt(
 		ide: config.clineIdeName?.trim() || "Terminal",
 		workspaceRoot: config.cwd?.trim() || "/",
 		providerId: config.providerId,
-		rules: `# Team Teammate Role\n${trimmedPrompt}`,
+		rules: `${TEAMMATE_ROLE_HEADING}\n${trimmedPrompt}`,
 		tools: config.tools,
 		platform: config.clinePlatform,
 		metadata: config.workspaceMetadata,

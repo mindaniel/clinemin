@@ -14,6 +14,7 @@ export type CommandPaletteAction =
 	| "autocompact"
 	| "manager"
 	| "workers"
+	| "profiles"
 	| "findchat"
 	| "paste"
 	| "note"
@@ -149,6 +150,25 @@ const ACTION_ITEMS: Array<{
 		shortcut: "Opt+O",
 		description: "Set up the workers a manager can delegate to",
 		keywords: ["workers", "team", "delegate", "manager"],
+	},
+	{
+		action: "profiles",
+		label: "Manage Profiles",
+		// Not Opt+F, which terminals use for forward-word navigation and which
+		// `command-palette.test.ts` keeps deliberately unbound. Opt+B is the
+		// backward-word twin, so of what is left this is the readable one.
+		shortcut: "Opt+D",
+		description:
+			"Named connections, so two workers can share a provider on separate accounts",
+		keywords: [
+			"profiles",
+			"profile",
+			"account",
+			"credentials",
+			"connection",
+			"provider",
+			"worker",
+		],
 	},
 	{
 		action: "findchat",

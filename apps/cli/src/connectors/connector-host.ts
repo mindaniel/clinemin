@@ -28,6 +28,11 @@ import {
 	truncateConnectorText,
 } from "./runtime-turn";
 import {
+	isSessionMirrored,
+	startSessionMirror,
+	stopSessionMirror,
+} from "./session-mirror";
+import {
 	buildThreadStartRequest,
 	clearSession,
 	forgetThreadSession,
@@ -893,9 +898,23 @@ export async function handleConnectorUserTurn<
 						{ ...state, attachedSessionId: sessionId } as TState,
 						input.errorLabel,
 					);
+					startSessionMirror({
+						thread: input.thread,
+						sessionId,
+						client: input.client,
+						clientId: input.clientId,
+						transport: input.transport,
+						logger: input.logger,
+						pendingApprovals: input.pendingApprovals,
+						post: async (text) => {
+							await postConnectorText(input.thread, input.transport, text);
+						},
+					});
 					return [
 						`Attached to ${sessionId.slice(0, 8)}.`,
-						"Messages here now go to that session. /detach to stop.",
+						"Messages here now go to that session, and everything it does —",
+						"replies, tool calls, approval requests — shows up here, including",
+						"turns started somewhere else. /detach to stop.",
 					].join("\n");
 				},
 				detach: async () => {
@@ -908,6 +927,11 @@ export async function handleConnectorUserTurn<
 						return "Not attached to anything.";
 					}
 					const was = state.attachedSessionId;
+					stopSessionMirror(input.thread.id);
+					// A request this thread will never answer now must not stay in the
+					// slot: the next plain message would be eaten as a Y/N reply to a
+					// session the thread has already let go of.
+					input.pendingApprovals.delete(input.thread.id);
 					await persistMergedThreadState(
 						input.thread,
 						input.bindingsPath,
@@ -1166,12 +1190,37 @@ async function forwardToAttachedSession<
 			"Attachments are not forwarded to an attached session — sending the text only.",
 		);
 	}
+	// `attachedSessionId` is persisted in the bindings file but a mirror is a
+	// live subscription, so a connector restart leaves a thread attached with
+	// nothing watching. Re-establish it here rather than only in `/attach`: the
+	// alternative is a thread that looks attached and silently stopped
+	// mirroring, which is the failure this whole feature exists to remove.
+	startSessionMirror({
+		thread: input.thread,
+		sessionId,
+		client: input.client,
+		clientId: input.clientId,
+		transport: input.transport,
+		logger: input.logger,
+		pendingApprovals: input.pendingApprovals,
+		post: async (text) => {
+			await postConnectorText(input.thread, input.transport, text);
+		},
+	});
+
+	// While a mirror is running it posts every reply this session produces, so
+	// printing the RPC result here too would show each answer twice. The mirror
+	// is the better source: it also covers turns this thread did not start.
+	const mirrored = isSessionMirrored(input.thread.id);
 	try {
 		const { result } = await input.client.sendSessionInput(
 			sessionId,
 			{ prompt, delivery: "queue" },
 			{ timeoutMs: null },
 		);
+		if (mirrored) {
+			return;
+		}
 		await postConnectorText(
 			input.thread,
 			input.transport,

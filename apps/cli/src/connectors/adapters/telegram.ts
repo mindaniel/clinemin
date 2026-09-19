@@ -31,6 +31,7 @@ import {
 	type PendingConnectorApproval,
 	truncateConnectorText,
 } from "../runtime-turn";
+import { stopAllSessionMirrors } from "../session-mirror";
 import {
 	buildConnectorStartRequest,
 	readSessionReplyText,
@@ -1137,6 +1138,10 @@ class TelegramConnector extends ConnectorBase<
 		);
 		await telegram.stopPolling().catch(() => undefined);
 		await bot.shutdown().catch(() => undefined);
+		// Before `client.close()`: a mirror holds a subscription on this client,
+		// and closing the transport out from under it is how you get an unhandled
+		// error on the way down.
+		stopAllSessionMirrors();
 		client.close();
 		this.removeStateFile(statePath);
 		loggerAdapter.core.log("Telegram connector stopped", {

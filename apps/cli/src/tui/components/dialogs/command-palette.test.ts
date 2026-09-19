@@ -40,8 +40,15 @@ describe("command palette", () => {
 		const registry = buildSlashCommandRegistry({
 			canFork: true,
 		});
+		// Local commands only. The palette dispatches its action straight into
+		// `handleSlashCommand`, so a command that is not handled there has
+		// nothing to dispatch — `/guide-ai` rewrites the prompt instead of
+		// opening anything, and belongs in autocomplete but not here.
 		const slashCommands = getVisibleSystemSlashCommands(registry).filter(
-			(command) => command.source === "tui" && command.name !== "config",
+			(command) =>
+				command.source === "tui" &&
+				command.execution === "local" &&
+				command.name !== "config",
 		);
 		const items = buildCommandPaletteItems({
 			canForkSession: true,
