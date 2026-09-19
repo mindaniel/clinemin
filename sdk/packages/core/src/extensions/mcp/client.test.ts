@@ -8,7 +8,10 @@ import {
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
-import { createDefaultMcpServerClientFactory } from "./client";
+import {
+	createDefaultMcpServerClientFactory,
+	quoteForWindowsShell,
+} from "./client";
 import { resolveMcpServerRegistrations } from "./config-loader";
 import type { McpServerRegistration } from "./types";
 
@@ -421,4 +424,36 @@ describe("mcp client request timeout", () => {
 			await client.disconnect();
 		}
 	}, 30_000);
+});
+
+describe("quoteForWindowsShell", () => {
+	it("quotes a path with a space, which is where node and python install", () => {
+		// Unquoted, cmd.exe splits this at the space and reports
+		// "'C:\Program' is not recognized as an internal or external command",
+		// which is what stopped every stdio MCP server under Program Files.
+		expect(
+			quoteForWindowsShell(String.raw`C:\Program Files\nodejs\node.exe`),
+		).toBe(String.raw`"C:\Program Files\nodejs\node.exe"`);
+	});
+
+	it("leaves a token that needs no quoting alone", () => {
+		expect(quoteForWindowsShell("npx")).toBe("npx");
+		expect(quoteForWindowsShell(String.raw`C:\tools\node.exe`)).toBe(
+			String.raw`C:\tools\node.exe`,
+		);
+	});
+
+	it("does not re-quote something the settings file already quoted", () => {
+		const already = String.raw`"C:\Program Files\nodejs\node.exe"`;
+		expect(quoteForWindowsShell(already)).toBe(already);
+	});
+
+	it("doubles an embedded quote, which is how cmd.exe escapes one", () => {
+		expect(quoteForWindowsShell('say "hi"')).toBe('"say ""hi"""');
+	});
+
+	it("turns an empty token into an empty argument, not nothing", () => {
+		// Dropping it would shift every argument after it one position left.
+		expect(quoteForWindowsShell("")).toBe('""');
+	});
 });

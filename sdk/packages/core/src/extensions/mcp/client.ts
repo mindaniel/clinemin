@@ -49,6 +49,35 @@ const MCP_CONNECT_PROBE_TIMEOUT_MS = 1_500;
 const DEFAULT_HTTP_MCP_REDIRECT_URL =
 	"http://127.0.0.1:1456/mcp/oauth/callback";
 
+/**
+ * Quote one token of a `cmd.exe` command line.
+ *
+ * Only used on Windows, and only because `shell: true` is unavoidable there for
+ * the `.cmd` shims that `npx` and `npm` are. Node builds the command line by
+ * joining the command and its arguments with spaces and quotes nothing, so
+ * every token that contains a space has to arrive already quoted.
+ *
+ * A token that is already wrapped in quotes is left alone: MCP settings files
+ * are written by hand, and quoting `"C:\Program Files
+ode.exe"` a second time
+ * produces a path that exists even less than the unquoted one did.
+ *
+ * An embedded quote is doubled, which is how `cmd.exe` escapes one inside a
+ * quoted string.
+ */
+export function quoteForWindowsShell(value: string): string {
+	if (value === "") {
+		return '""';
+	}
+	if (!/[\s"]/.test(value)) {
+		return value;
+	}
+	if (value.length > 1 && value.startsWith('"') && value.endsWith('"')) {
+		return value;
+	}
+	return `"${value.replace(/"/g, '""')}"`;
+}
+
 function toErrorMessage(error: unknown): string {
 	return error instanceof Error ? error.message : String(error);
 }
@@ -301,14 +330,26 @@ class StdioMcpClient implements McpServerClient {
 		this.stderrBuffer = "";
 		this.protocolMode = protocolMode;
 
-		const platformOptions =
-			process.platform === "win32"
-				? {
-						windowsHide: true,
-						shell: true,
-					}
-				: {};
-		const child = spawn(transport.command, transport.args ?? [], {
+		// Windows needs `shell: true` because most MCP servers are launched
+		// through `npx` or `npm`, which are `.cmd` shims that `CreateProcess`
+		// cannot execute. The cost is that Node then joins the command and its
+		// arguments with spaces and hands the string to `cmd.exe`, doing no
+		// quoting of its own — so a command living under `C:\Program Files`
+		// gets split at the space and the server dies with "'C:\Program' is not
+		// recognized as an internal or external command". That is the normal
+		// install location for node, python and git, so quoting here is what
+		// makes stdio MCP servers work on Windows at all.
+		const useWindowsShell = process.platform === "win32";
+		const platformOptions = useWindowsShell
+			? { windowsHide: true, shell: true }
+			: {};
+		const command = useWindowsShell
+			? quoteForWindowsShell(transport.command)
+			: transport.command;
+		const args = useWindowsShell
+			? (transport.args ?? []).map(quoteForWindowsShell)
+			: (transport.args ?? []);
+		const child = spawn(command, args, {
 			cwd: transport.cwd,
 			env: {
 				...process.env,

@@ -5,7 +5,14 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 
 const spawn = vi.hoisted(() => vi.fn());
 
-vi.mock("node:child_process", () => ({ spawn }));
+// Spread the real module rather than listing exports. Vitest makes a factory
+// mock exhaustive, so naming only `spawn` broke the whole file the moment
+// something under test imported `exec` — an error about the mock, pointing
+// nowhere near the import that caused it.
+vi.mock("node:child_process", async (importOriginal) => ({
+	...(await importOriginal<typeof import("node:child_process")>()),
+	spawn,
+}));
 
 import { createBuiltinTools } from "./index";
 

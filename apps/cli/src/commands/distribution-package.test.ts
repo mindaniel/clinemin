@@ -10,6 +10,7 @@ import {
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
+import { resolveBunExecutable } from "@cline/shared/node";
 import { describe, expect, it } from "vitest";
 import {
 	DIRECT_PUBLISH_GUARD_MESSAGE,
@@ -30,7 +31,12 @@ describe("CLI distribution package shape", () => {
 	it("rejects direct source package packing by default", () => {
 		const cliRoot = fileURLToPath(new URL("../..", import.meta.url));
 
-		const result = spawnSync("bun", ["pm", "pack", "--dry-run"], {
+		const bun = resolveBunExecutable();
+		if (!bun) {
+			console.warn("skipping: no spawnable bun executable found");
+			return;
+		}
+		const result = spawnSync(bun, ["pm", "pack", "--dry-run"], {
 			cwd: cliRoot,
 			encoding: "utf8",
 		});
@@ -79,7 +85,12 @@ describe("CLI distribution package shape", () => {
 				"process.exit(0);\n",
 			);
 
-			const result = spawnSync("bun", ["pm", "pack"], {
+			const bun = resolveBunExecutable();
+			if (!bun) {
+				console.warn("skipping: no spawnable bun executable found");
+				return;
+			}
+			const result = spawnSync(bun, ["pm", "pack"], {
 				cwd: packageDir,
 				encoding: "utf8",
 			});

@@ -1,6 +1,7 @@
 import { spawnSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
 import type { ProviderSettingsManager } from "@cline/core";
+import { resolveBunExecutable } from "@cline/shared/node";
 import { describe, expect, it, vi } from "vitest";
 import {
 	getPersistedProviderApiKey,
@@ -118,14 +119,17 @@ if (typeof runtime.createRoot !== "function") throw new Error("missing createRoo
 if (typeof runtime.OnboardingView !== "function") throw new Error("missing OnboardingView");
 `;
 
-		const result = spawnSync(
-			"bun",
-			["--conditions=development", "-e", script],
-			{
-				cwd: cliRoot,
-				encoding: "utf8",
-			},
-		);
+		const bun = resolveBunExecutable();
+		if (!bun) {
+			// No spawnable bun: report it rather than failing, which would look
+			// like the runtime it is probing is broken.
+			console.warn("skipping: no spawnable bun executable found");
+			return;
+		}
+		const result = spawnSync(bun, ["--conditions=development", "-e", script], {
+			cwd: cliRoot,
+			encoding: "utf8",
+		});
 
 		expect(result.error).toBeUndefined();
 		expect(result.stderr).toBe("");

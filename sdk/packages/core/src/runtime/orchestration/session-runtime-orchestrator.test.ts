@@ -1547,15 +1547,27 @@ describe("SessionRuntime real AgentRuntime smoke", () => {
 		expect(result.finishReason).toBe("error");
 		expect(result.text).toBe("upstream failed after tool result");
 		expect(result.text).not.toContain("one more cleanup");
-		expect(session.getMessages().map((message) => message.role)).toEqual([
+		// The tool result is recorded, and the assistant text that preceded the
+		// failed call is not replayed as a reply -- that is what this test is
+		// about, and it is asserted on `result.text` above.
+		const messages = session.getMessages();
+		expect(messages.map((message) => message.role)).toEqual([
 			"user",
 			"assistant",
 			"user",
+			"user",
 		]);
-		const lastContent = session.getMessages().at(-1)?.content[0];
-		expect(typeof lastContent === "object" ? lastContent.type : undefined).toBe(
+		const toolResult = messages[2]?.content[0];
+		expect(typeof toolResult === "object" ? toolResult.type : undefined).toBe(
 			"tool_result",
 		);
+		// The fourth message is the continuation note, appended after a tool
+		// result to keep the model going. It lands before the next model call,
+		// so a turn that fails on that call leaves it in the transcript. Recorded
+		// rather than asserted away: it is arguably untidy for a failed turn to
+		// persist a nudge with no reply after it, but a retry does want the nudge,
+		// and removing it on error would take it away from the retry too.
+		expect(messages.at(-1)?.id?.startsWith("cont-")).toBe(true);
 	});
 });
 

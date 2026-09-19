@@ -25,6 +25,19 @@ function createWrapperCopy(): string {
 	return wrapperPath;
 }
 
+/**
+ * A target the wrapper can actually spawn, on any platform.
+ *
+ * The wrapper calls `spawnSync(target, argv)` with no shell, so on Windows the
+ * target must be a real executable: `CreateProcess` will not run a `.js` with
+ * a shebang, and will not run a `.cmd` either. `process.execPath` is a genuine
+ * binary everywhere, and `-e` lets each test say what the child should do — so
+ * these cases cover Windows instead of only looking like they do.
+ */
+function runtimeTarget(script: string): { target: string; args: string[] } {
+	return { target: process.execPath, args: ["-e", script] };
+}
+
 function createExecutableScript(contents: string): string {
 	const dir = mkdtempSync(join(tmpdir(), "cline-bin-wrapper-"));
 	const scriptPath = join(dir, "child.js");
@@ -46,11 +59,9 @@ function runWrapper(target: string, args: string[] = []) {
 
 describe("bin/cline wrapper", () => {
 	it("preserves the child process exit status", () => {
-		const target = createExecutableScript(`
-process.exit(Number(process.argv[2] ?? "0"));
-`);
+		const { target, args } = runtimeTarget("process.exit(7);");
 
-		const result = runWrapper(target, ["7"]);
+		const result = runWrapper(target, args);
 
 		expect(result.error).toBeUndefined();
 		expect(result.status).toBe(7);
@@ -58,11 +69,11 @@ process.exit(Number(process.argv[2] ?? "0"));
 	});
 
 	it("passes the wrapper path to the compiled binary", () => {
-		const target = createExecutableScript(`
-console.log(process.env.CLINE_WRAPPER_PATH ?? "");
-`);
+		const { target, args } = runtimeTarget(
+			'console.log(process.env.CLINE_WRAPPER_PATH ?? "");',
+		);
 
-		const result = runWrapper(target);
+		const result = runWrapper(target, args);
 
 		expect(result.error).toBeUndefined();
 		expect(result.status).toBe(0);
