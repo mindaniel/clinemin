@@ -8,7 +8,11 @@ import {
 	mergeRulesForSystemPrompt,
 	type UserInstructionConfigService,
 } from "@cline/core";
-import { type AgentMode, buildClineSystemPrompt } from "@cline/shared";
+import {
+	type AgentMode,
+	buildClineSystemPrompt,
+	expandGuideAiPrompt,
+} from "@cline/shared";
 import { isImagePath, loadImageAsDataUrl } from "../utils/image-attachments";
 
 export async function resolveSystemPrompt(input: {
@@ -100,6 +104,16 @@ function resolveMentionPath(filePath: string): string {
 export async function buildUserInputMessage(
 	rawPrompt: string,
 	userInstructionService?: UserInstructionConfigService,
+	guide?: {
+		/**
+		 * The session's current system prompt, used to tell which contract
+		 * `/guide-ai` should re-send. Omitting it falls back to the tool-calling
+		 * contract, which is what every provider but the simple web prompt runs.
+		 */
+		systemPrompt?: string;
+		/** The session's tool scope, when it is a restricted one. */
+		tools?: string[];
+	},
 ): Promise<{
 	prompt: string;
 	userImages: string[];
@@ -110,6 +124,16 @@ export async function buildUserInputMessage(
 	if (userInstructionService) {
 		prompt = userInstructionService.resolveRuntimeSlashCommand(rawPrompt);
 	}
+
+	// `/guide-ai` is expanded here rather than in the TUI so every entry point
+	// gets it — the chat box, `--prompt`, a Telegram message, a delegated run.
+	// It runs before file mentions are resolved so `/guide-ai look at @C:\x.ts`
+	// still attaches the file.
+	prompt = expandGuideAiPrompt({
+		input: prompt,
+		systemPrompt: guide?.systemPrompt,
+		tools: guide?.tools,
+	});
 
 	if (!hasFileMentions(prompt)) {
 		return {

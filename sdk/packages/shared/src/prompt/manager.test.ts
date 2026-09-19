@@ -19,6 +19,23 @@ describe("buildManagerSystemPrompt", () => {
 		expect(prompt).not.toContain("-web");
 	});
 
+	it("prints the user's note beside the worker it belongs to", () => {
+		const prompt = buildManagerSystemPrompt({
+			workers: [
+				{ agentId: "deepseek", notes: "fast, good at code" },
+				{ agentId: "gemini", notes: "web search and reading,\n  not coding" },
+				{ agentId: "qwen" },
+			],
+		});
+
+		expect(prompt).toContain("- deepseek — fast, good at code");
+		// Collapsed to one line, so a multi-line note cannot become the bulk of
+		// the roster.
+		expect(prompt).toContain("- gemini — web search and reading, not coding");
+		// A worker with no note keeps the bare line it had before.
+		expect(prompt).toContain("- qwen\n");
+	});
+
 	it("does not print a fixed tool scope, which is the manager's call", () => {
 		const prompt = buildManagerSystemPrompt({
 			workers: [

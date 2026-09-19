@@ -89,10 +89,12 @@ export function mergeRosterIntoTeammateSpecs(
 		merged.set(worker.agentId, {
 			agentId: worker.agentId,
 			rolePrompt: worker.rolePrompt,
+			profile: worker.profile,
 			providerId: worker.providerId,
 			modelId: worker.modelId,
 			maxIterations: worker.maxIterations,
 			tools: worker.tools,
+			notes: worker.notes,
 		});
 	}
 	return Array.from(merged.values());
@@ -116,9 +118,11 @@ export function listManagerWorkers(options: {
 	return mergeRosterIntoTeammateSpecs(options.restored ?? [], roster).map(
 		(spec) => ({
 			agentId: spec.agentId,
+			profile: spec.profile,
 			providerId: spec.providerId,
 			modelId: spec.modelId,
 			tools: spec.tools,
+			notes: spec.notes,
 			description: spec.rolePrompt
 				.split("\n")
 				.map((line) => line.trim())
@@ -143,8 +147,10 @@ export function writeTeamRoster(options: {
 		workers: options.workers.map((worker) => ({
 			agentId: worker.agentId,
 			rolePrompt: worker.rolePrompt,
+			...(worker.profile ? { profile: worker.profile } : {}),
 			...(worker.providerId ? { providerId: worker.providerId } : {}),
 			...(worker.modelId ? { modelId: worker.modelId } : {}),
+			...(worker.notes ? { notes: worker.notes } : {}),
 			// An empty array is a real scope ("nothing but reporting back"), so it
 			// is written; only `undefined` means unscoped.
 			...(worker.tools ? { tools: worker.tools } : {}),

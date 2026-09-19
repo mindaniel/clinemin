@@ -26,10 +26,25 @@
 
 export interface ManagerWorkerSummary {
 	agentId: string;
+	/**
+	 * Named connection profile this worker runs on.
+	 *
+	 * The manager never sees credentials, but it does need to know that two
+	 * workers on one provider are two accounts and not a duplicate — otherwise
+	 * it reads `deepseek-work` and `deepseek-personal` as one worker listed
+	 * twice and stops using the second.
+	 */
+	profile?: string;
 	providerId?: string;
 	modelId?: string;
 	/** First line of the worker's role prompt, as a hint about what it is for. */
 	description?: string;
+	/**
+	 * A one-line hint the user wrote about this worker — "fast, good at code",
+	 * "web search only, not coding". Printed next to the name in the roster so
+	 * the manager picks on something better than a bare name.
+	 */
+	notes?: string;
 	/** Tool names this worker may use, or undefined when it is unrestricted. */
 	tools?: string[];
 }
@@ -70,7 +85,32 @@ function formatWorkerLine(worker: ManagerWorkerSummary): string {
 	// No tool scope here on purpose. What a worker may do is the manager's call,
 	// made per job on a TOOLS: line — printing a fixed set from the roster reads
 	// as a permanent fact and stops it from asking for more.
-	return `- ${workerName(worker)}`;
+	//
+	// The note is the one exception, because it is the opposite kind of fact:
+	// the user wrote it precisely so the manager would route jobs by it, and it
+	// is collapsed to a single line so a long note cannot turn the roster into
+	// the bulk of the prompt.
+	const note = worker.notes?.replace(/\s+/g, " ").trim();
+	return note ? `- ${workerName(worker)} — ${note}` : `- ${workerName(worker)}`;
+}
+
+/**
+ * Do two workers run on the same model behind different accounts?
+ *
+ * Worth telling the manager, because the roster then contains names that look
+ * like near-duplicates — `deepseek-work`, `deepseek-personal` — and a model
+ * that reads them as one worker listed twice will only ever use the first,
+ * which throws away exactly the concurrency the second profile was created for.
+ */
+function hasSharedProviders(workers: ManagerWorkerSummary[]): boolean {
+	const seen = new Set<string>();
+	for (const worker of workers) {
+		const provider = worker.providerId;
+		if (!provider) continue;
+		if (seen.has(provider)) return true;
+		seen.add(provider);
+	}
+	return false;
 }
 
 export const MANAGER_DONE_TOKEN = "TEAM DONE";
@@ -110,7 +150,15 @@ ${roster}
 
 They can't see this conversation and they can't see each other. Spell each job
 out in full: the goal, what they're working from, and what the answer should
-look like.`,
+look like.${
+			hasSharedProviders(workers)
+				? `
+
+Some of them run the same model on separate accounts. Those are different
+assistants with their own conversations, not one listed twice — give them
+different jobs and they work at the same time.`
+				: ""
+		}`,
 		`Send a message like this. I copy what's inside straight to the assistant,
 so anything outside the block is for me:
 

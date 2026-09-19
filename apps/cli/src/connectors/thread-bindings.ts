@@ -13,6 +13,17 @@ export type ConnectorThreadState = {
 	welcomeSentAt?: string;
 	provider?: string;
 	model?: string;
+	/**
+	 * A session this thread drives but did not create.
+	 *
+	 * Set by `/attach`. It is kept apart from `sessionId` on purpose: that field
+	 * is the session the connector owns and may clear, restart or reconfigure,
+	 * and doing any of that to someone's running work because a thread said
+	 * `/new` would be the worst kind of surprise. While this is set the thread is
+	 * a remote control and nothing more — messages are forwarded, and the
+	 * thread's own session is left untouched underneath, waiting for `/detach`.
+	 */
+	attachedSessionId?: string;
 };
 
 export type ConnectorThreadBinding<TState extends ConnectorThreadState> = {

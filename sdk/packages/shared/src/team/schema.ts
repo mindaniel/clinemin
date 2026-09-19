@@ -48,9 +48,24 @@ const TeamMemberSnapshotSchema = z.object({
 export const TeamTeammateSpecSchema = z.object({
 	agentId: z.string(),
 	rolePrompt: z.string(),
+	/**
+	 * Named connection profile this worker runs on, when it has one.
+	 *
+	 * Carried on the spec so a worker restored from persistence comes back on
+	 * the same account. Without it a restart silently moves every worker onto
+	 * the lead's credential, which for two workers on one web provider means
+	 * both land in the same chat.
+	 */
+	profile: z.string().optional(),
 	providerId: z.string().optional(),
 	modelId: z.string().optional(),
 	maxIterations: z.number().optional(),
+	/**
+	 * User-written hint about what this worker is good for, shown to the manager
+	 * in its roster. Carried on the spec so a worker restored from persistence
+	 * keeps the note the roster gave it.
+	 */
+	notes: z.string().optional(),
 	/**
 	 * Tool names this worker may use, or undefined for "everything the session
 	 * has". A role prompt saying "do not edit anything" is advice; this is the

@@ -23,6 +23,14 @@ export interface LocalSlashCommandActionInput {
 	 * Web v2). Provider-specific; no-ops / returns false for non-web providers.
 	 */
 	findChat: () => Promise<boolean>;
+	/**
+	 * `/profiles` — the named connections workers run on.
+	 *
+	 * Separate from `switchProfile` (`/profile`), which picks the Chrome login
+	 * THIS session drives. A connection profile is a provider plus the
+	 * credential that authenticates it, and it belongs to a worker.
+	 */
+	openProfiles: () => Promise<boolean>;
 	openWorkers: () => Promise<boolean>;
 	/**
 	 * Bare `/manager`: pick the manager's model, then start manager mode.
@@ -147,6 +155,9 @@ export function runLocalSlashCommandAction(
 	}
 	if (normalized === "findchat") {
 		return input.findChat();
+	}
+	if (normalized === "profiles") {
+		return input.openProfiles();
 	}
 	if (normalized === "workers") {
 		return input.openWorkers();

@@ -14,6 +14,15 @@ export {
 	createConfiguredAgentTools,
 } from "./configured-agent-tool";
 export {
+	findProfile,
+	loadProfiles,
+	type ProfileLoadResult,
+	type ResolvedWorkerConnection,
+	resolveProfileStorePath,
+	resolveWorkerConnection,
+	writeProfiles,
+} from "./profile-config";
+export {
 	buildTeamProgressSummary,
 	toTeamProgressLifecycleEvent,
 } from "./projections";

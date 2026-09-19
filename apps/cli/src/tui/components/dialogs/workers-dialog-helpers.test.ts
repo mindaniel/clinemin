@@ -62,9 +62,41 @@ describe("row keys", () => {
 		const rows = buildActionRows(worker({ modelId: "deepseek-reasoner" })).map(
 			(row) => row.label,
 		);
-		expect(rows[0]).toBe("Provider: deepseek-web-v2");
-		expect(rows[1]).toBe("Model: deepseek-reasoner");
-		expect(rows[2]).toBe("Tools: read-only");
+		// The profile comes first: it is what decides the worker's account, and
+		// the provider rows below are the pre-profile way of saying the same
+		// thing.
+		expect(rows[0]).toBe("Profile: (none)");
+		expect(rows[1]).toBe("Provider: deepseek-web-v2");
+		expect(rows[2]).toBe("Model: deepseek-reasoner");
+		expect(rows[3]).toBe("Tools: read-only");
+	});
+
+	it("hides provider and model once the worker is on a profile", () => {
+		// They would do nothing: the profile supersedes them at spawn time, and a
+		// row that silently has no effect is worse than one not offered.
+		const rows = buildActionRows(
+			worker({ profile: "deepseek-work", modelId: undefined }),
+			[
+				{
+					name: "deepseek-work",
+					providerId: "deepseek-web-v2",
+					browserProfile: "work",
+				},
+			],
+		).map((row) => row.label);
+		expect(rows[0]).toContain("Profile: deepseek-work");
+		expect(rows[0]).toContain("chrome:work");
+		expect(rows.some((label) => label.startsWith("Provider:"))).toBe(false);
+		expect(rows.some((label) => label.startsWith("Model:"))).toBe(false);
+	});
+
+	it("calls out a profile that is no longer in the store", () => {
+		// At spawn time a dangling name falls back to the lead's account, and two
+		// workers doing that land in one chat — so it cannot look fine here.
+		const rows = buildActionRows(worker({ profile: "deleted" }), []).map(
+			(row) => row.label,
+		);
+		expect(rows[0]).toContain("missing from profiles.json");
 	});
 
 	it("offers inheriting the lead's model ahead of the real models", () => {

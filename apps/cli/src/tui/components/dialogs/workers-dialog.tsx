@@ -1,4 +1,4 @@
-import type { TeamRosterWorker } from "@cline/shared";
+import type { Profile, TeamRosterWorker } from "@cline/shared";
 import type { ChoiceContext } from "@opentui-ui/dialog";
 import { useDialogKeyboard } from "@opentui-ui/dialog/react";
 import { useMemo, useState } from "react";
@@ -11,21 +11,29 @@ import {
 import {
 	ACTION_DELETE,
 	ACTION_MODEL,
+	ACTION_NOTES,
+	ACTION_PROFILE,
 	ACTION_PROVIDER,
 	ACTION_RENAME,
 	ACTION_TOOLS,
 	applyModel,
+	applyNotes,
+	applyProfile,
 	applyProvider,
 	applyToolPreset,
 	buildActionRows,
 	buildModelRows,
+	buildProfileChoiceRows,
 	buildProviderRows,
 	buildToolRows,
 	buildWorker,
+	buildWorkerFromProfile,
 	buildWorkerRows,
+	clearProfile,
 	ROW_ADD,
 	ROW_BACK,
 	ROW_INHERIT,
+	ROW_NO_PROFILE,
 	ROW_SAVE,
 	renameWorker,
 	type WorkersStep,
@@ -59,6 +67,8 @@ export function WorkersDialogContent(
 		initialWorkers: TeamRosterWorker[];
 		providerIds: string[];
 		modelsByProvider: Record<string, string[]>;
+		/** The named connections a worker can be pointed at. */
+		profiles: Profile[];
 		rosterPath: string;
 	},
 ) {
@@ -69,12 +79,14 @@ export function WorkersDialogContent(
 		initialWorkers,
 		providerIds,
 		modelsByProvider,
+		profiles,
 		rosterPath,
 	} = props;
 	const [workers, setWorkers] = useState<TeamRosterWorker[]>(initialWorkers);
 	const [step, setStep] = useState<WorkersStep>({ kind: "list" });
 	const [dirty, setDirty] = useState(false);
 	const [nameDraft, setNameDraft] = useState("");
+	const [notesDraft, setNotesDraft] = useState("");
 	const [error, setError] = useState<string | undefined>();
 
 	const focusedWorker =
@@ -85,9 +97,11 @@ export function WorkersDialogContent(
 	const items: SearchableItem[] = useMemo(() => {
 		switch (step.kind) {
 			case "list":
-				return buildWorkerRows(workers, dirty);
+				return buildWorkerRows(workers, dirty, profiles);
 			case "actions":
-				return focusedWorker ? buildActionRows(focusedWorker) : [];
+				return focusedWorker ? buildActionRows(focusedWorker, profiles) : [];
+			case "profile":
+				return buildProfileChoiceRows(profiles, focusedWorker?.profile);
 			case "provider":
 				return buildProviderRows(providerIds, focusedWorker?.providerId);
 			case "model":
@@ -103,9 +117,18 @@ export function WorkersDialogContent(
 					{ key: YES, label: `Yes, remove ${step.agentId}` },
 				];
 			case "rename":
+			case "notes":
 				return [];
 		}
-	}, [step, workers, dirty, focusedWorker, providerIds, modelsByProvider]);
+	}, [
+		step,
+		workers,
+		dirty,
+		focusedWorker,
+		providerIds,
+		modelsByProvider,
+		profiles,
+	]);
 
 	const list = useSearchableList(items);
 
@@ -135,7 +158,14 @@ export function WorkersDialogContent(
 					return;
 				}
 				if (key === ROW_ADD) {
-					goTo({ kind: "provider", agentId: null });
+					// Straight to the profile list when there is one. A profile is what
+					// gives a worker its own account, so it is the choice that matters
+					// most; picking a bare provider is still offered inside that step.
+					goTo(
+						profiles.length > 0
+							? { kind: "profile", agentId: null }
+							: { kind: "provider", agentId: null },
+					);
 					return;
 				}
 				goTo({ kind: "actions", agentId: key });
@@ -144,6 +174,16 @@ export function WorkersDialogContent(
 			case "actions": {
 				if (key === ROW_BACK) {
 					goTo({ kind: "list" });
+					return;
+				}
+				if (key === ACTION_PROFILE) {
+					if (profiles.length === 0) {
+						setError(
+							"No profiles yet — run /profiles to make one, then come back.",
+						);
+						return;
+					}
+					goTo({ kind: "profile", agentId: step.agentId });
 					return;
 				}
 				if (key === ACTION_PROVIDER) {
@@ -172,6 +212,14 @@ export function WorkersDialogContent(
 					});
 					return;
 				}
+				if (key === ACTION_NOTES) {
+					// Start empty rather than pre-filled with the current note: an empty
+					// box has to mean "clear it", and the note it would replace is shown
+					// above the field anyway.
+					setNotesDraft("");
+					goTo({ kind: "notes", agentId: step.agentId });
+					return;
+				}
 				if (key === ACTION_RENAME) {
 					setNameDraft(step.agentId);
 					goTo({ kind: "rename", agentId: step.agentId });
@@ -180,6 +228,40 @@ export function WorkersDialogContent(
 				if (key === ACTION_DELETE) {
 					goTo({ kind: "delete", agentId: step.agentId });
 				}
+				return;
+			}
+			case "profile": {
+				if (key === ROW_NO_PROFILE) {
+					if (step.agentId === null) {
+						goTo({ kind: "provider", agentId: null });
+						return;
+					}
+					editWorker(step.agentId, clearProfile);
+					goTo({ kind: "actions", agentId: step.agentId });
+					return;
+				}
+				const profile = profiles.find((candidate) => candidate.name === key);
+				if (!profile) {
+					goTo({ kind: "list" });
+					return;
+				}
+				if (step.agentId === null) {
+					// The tool preset is still the worker's own choice: two workers on
+					// one profile may well be scoped differently, and the profile says
+					// nothing about what a worker is allowed to do.
+					goTo({
+						kind: "tools",
+						agentId: null,
+						providerId: profile.providerId,
+						modelId: profile.modelId,
+						profileName: profile.name,
+					});
+					return;
+				}
+				editWorker(step.agentId, (worker) =>
+					applyProfile(worker, profile.name),
+				);
+				goTo({ kind: "actions", agentId: step.agentId });
 				return;
 			}
 			case "provider": {
@@ -220,15 +302,28 @@ export function WorkersDialogContent(
 			}
 			case "tools": {
 				if (step.agentId === null) {
-					const created = buildWorker({
-						providerId: step.providerId,
-						modelId: step.modelId,
-						presetId: key,
-						taken: workers.map((worker) => worker.agentId),
-					});
+					const pendingProfile = step.profileName
+						? profiles.find((candidate) => candidate.name === step.profileName)
+						: undefined;
+					const created = pendingProfile
+						? buildWorkerFromProfile({
+								profile: pendingProfile,
+								presetId: key,
+								taken: workers.map((worker) => worker.agentId),
+							})
+						: buildWorker({
+								providerId: step.providerId,
+								modelId: step.modelId,
+								presetId: key,
+								taken: workers.map((worker) => worker.agentId),
+							});
 					setDirty(true);
 					setWorkers((current) => [...current, created]);
-					goTo({ kind: "actions", agentId: created.agentId });
+					// Straight on to the note, because that is the one thing only the
+					// user can supply and the manager routes jobs by it. Enter on an
+					// empty box skips it.
+					setNotesDraft("");
+					goTo({ kind: "notes", agentId: created.agentId });
 					return;
 				}
 				editWorker(step.agentId, (worker) => applyToolPreset(worker, key));
@@ -248,6 +343,7 @@ export function WorkersDialogContent(
 				return;
 			}
 			case "rename":
+			case "notes":
 				return;
 		}
 	};
@@ -270,6 +366,11 @@ export function WorkersDialogContent(
 		}
 
 		if (key.name === "return" || key.name === "enter") {
+			if (step.kind === "notes") {
+				editWorker(step.agentId, (worker) => applyNotes(worker, notesDraft));
+				goTo({ kind: "actions", agentId: step.agentId });
+				return;
+			}
 			if (step.kind === "rename") {
 				const result = renameWorker(workers, step.agentId, nameDraft);
 				if (!result.ok) {
@@ -309,6 +410,10 @@ export function WorkersDialogContent(
 				return `Workers (${workers.length})${dirty ? " — unsaved" : ""}`;
 			case "actions":
 				return `${step.agentId}`;
+			case "profile":
+				return step.agentId === null
+					? "New worker — which profile?"
+					: `${step.agentId} — which profile?`;
 			case "provider":
 				return step.agentId === null
 					? "New worker — pick a provider"
@@ -317,6 +422,8 @@ export function WorkersDialogContent(
 				return `${step.agentId ?? "New worker"} — pick a model on ${step.providerId}`;
 			case "tools":
 				return `${step.agentId ?? "New worker"} — what may it do?`;
+			case "notes":
+				return `${step.agentId} — note for the manager`;
 			case "rename":
 				return `Rename ${step.agentId}`;
 			case "delete":
@@ -328,6 +435,8 @@ export function WorkersDialogContent(
 		switch (step.kind) {
 			case "list":
 				return "Enter opens · Esc discards unsaved changes";
+			case "notes":
+				return "Enter saves (empty clears it) · Esc goes back";
 			case "rename":
 				return "Enter renames · Esc goes back";
 			default:
@@ -346,14 +455,39 @@ export function WorkersDialogContent(
 					// Remounting per step clears the box, so a filter typed on one screen
 					// does not silently hide rows on the next one.
 					key={`${step.kind}-${"agentId" in step ? step.agentId : ""}`}
-					onInput={step.kind === "rename" ? setNameDraft : list.setSearch}
-					placeholder={step.kind === "rename" ? "New name..." : "Filter..."}
+					onInput={
+						step.kind === "rename"
+							? setNameDraft
+							: step.kind === "notes"
+								? setNotesDraft
+								: list.setSearch
+					}
+					placeholder={
+						step.kind === "rename"
+							? "New name..."
+							: step.kind === "notes"
+								? "fast, good at code..."
+								: "Filter..."
+					}
 					flexGrow={1}
 					focused
 				/>
 			</box>
 
-			{step.kind === "rename" ? (
+			{step.kind === "notes" ? (
+				<box flexDirection="column">
+					<text fg="gray">
+						{focusedWorker?.notes
+							? `Now: ${focusedWorker.notes}`
+							: "No note yet."}
+					</text>
+					<text fg="gray">
+						One line, shown to the manager beside this worker's name when it
+						decides who to send a job to. What it is good at, what to keep it
+						away from — "fast, good at code", "web search only, not coding".
+					</text>
+				</box>
+			) : step.kind === "rename" ? (
 				<text fg="gray">
 					Letters, digits, dot, underscore and hyphen. The manager addresses
 					this worker by this name.

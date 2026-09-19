@@ -634,7 +634,12 @@ export async function runInteractive(
 					prompt: userInput,
 					userImages,
 					userFiles,
-				} = await buildUserInputMessage(input, userInstructionService);
+				} = await buildUserInputMessage(input, userInstructionService, {
+					// Read off `config` rather than captured once: `/manager` and a
+					// plan/act switch both rebuild this mid-session, and a reminder
+					// that quotes the previous contract is worse than none.
+					systemPrompt: config.systemPrompt,
+				});
 				const mergedUserImages = [
 					...(attachments?.userImages ?? []),
 					...userImages,

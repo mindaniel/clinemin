@@ -415,6 +415,15 @@ export interface AgentRuntimeConfig {
 	 */
 	conversationId?: string;
 	parentAgentId?: string | null;
+	/**
+	 * Which Chrome login the web providers drive for this runtime.
+	 *
+	 * Narrower than the session's own profile and wins over it — see
+	 * `AgentConfig.browserProfile`, and `inSessionProfile` in
+	 * `@cline/agents`. Unset for everything but a team worker whose connection
+	 * profile names one.
+	 */
+	browserProfile?: string;
 	agentRole?: AgentRole;
 	systemPrompt?: string;
 	messageModelInfo?: AgentMessage["modelInfo"];

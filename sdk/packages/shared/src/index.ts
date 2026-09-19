@@ -275,6 +275,8 @@ export {
 	MODE_TAG_INSTRUCTIONS,
 	PLAN_MODE_INSTRUCTIONS,
 	processWorkspaceInfo,
+	renderWebProviderToolDocs,
+	TOOL_CALL_PROTOCOL_RULES,
 } from "./prompt/cline";
 export type {
 	ModeSwitchNotice,
@@ -293,6 +295,14 @@ export {
 	stripModeNotices,
 	xmlTagsRemoval,
 } from "./prompt/format";
+export type { GuideAiStyle, ParsedGuideAiCommand } from "./prompt/guide";
+export {
+	buildGuideAiReminder,
+	detectGuideAiStyle,
+	expandGuideAiPrompt,
+	GUIDE_AI_COMMAND,
+	parseGuideAiCommand,
+} from "./prompt/guide";
 export type {
 	ManagerSystemPromptOptions,
 	ManagerWorkerSummary,
@@ -304,6 +314,7 @@ export {
 	MANAGER_EXAMPLE_COMMAND,
 	shortProviderName,
 } from "./prompt/manager";
+export { SIMPLE_WEB_SYSTEM_PROMPT } from "./prompt/simple-web";
 export { CLINE_DEFAULT_MODEL_ID } from "./providers/defaults";
 export { isClineProvider } from "./providers/utils";
 export {
@@ -536,6 +547,22 @@ export {
 	isChatWorkspacePath,
 } from "./storage/chat-workspace-paths";
 export * from "./team";
+export type {
+	ParseProfileStoreResult,
+	Profile,
+	ProfileConnection,
+	ProfileStore,
+} from "./team/profile";
+export {
+	describeProfile,
+	isValidProfileName,
+	PROFILE_NAME_PATTERN,
+	PROFILES_FILENAME,
+	ProfileSchema,
+	ProfileStoreSchema,
+	parseProfileStore,
+	profileConnection,
+} from "./team/profile";
 export { createTool } from "./tools/create";
 export * from "./types";
 export { AUTH_ERROR_PATTERNS, isLikelyAuthError } from "./types/auth";

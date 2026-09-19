@@ -1,6 +1,8 @@
 import {
+	loadProfiles,
 	loadTeamRoster,
 	resolveTeamRosterSearchPaths,
+	writeProfiles,
 	writeTeamRoster,
 } from "@cline/core";
 import * as Llms from "@cline/llms";
@@ -147,6 +149,10 @@ import {
 import { ManagerOffConfirmContent } from "../components/dialogs/manager-off-confirm";
 import { PasteReplyDialogContent } from "../components/dialogs/paste-reply-dialog";
 import { ProfilePickerContent } from "../components/dialogs/profile-picker";
+import {
+	ProfilesDialogContent,
+	type ProfilesDialogResult,
+} from "../components/dialogs/profiles-dialog";
 import {
 	TelegramConfigDialogContent,
 	type TelegramConfigDialogResult,
@@ -563,6 +569,96 @@ export function useLocalCommandActions(input: {
 	 * parses `<tool>` calls, runs approvals, and feeds tool results back exactly
 	 * as if we had captured the reply ourselves.
 	 */
+	/**
+	 * Every provider and its models, for the dialogs that pick one.
+	 *
+	 * Resolved up front rather than per keystroke inside a dialog: the model
+	 * registry is a local cache, so this is cheap, and it keeps the dialogs
+	 * synchronous — no half-drawn model list to select the wrong row in.
+	 */
+	const loadProviderCatalog = useCallback(async (): Promise<{
+		providerIds: string[];
+		modelsByProvider: Record<string, string[]>;
+	}> => {
+		const providerIds = Llms.getProviderIds().sort((a, b) =>
+			a.localeCompare(b),
+		);
+		const modelsByProvider: Record<string, string[]> = {};
+		await Promise.all(
+			providerIds.map(async (id) => {
+				try {
+					modelsByProvider[id] = Object.keys(
+						await Llms.getModelsForProvider(id),
+					).sort((a, b) => a.localeCompare(b));
+				} catch {
+					modelsByProvider[id] = [];
+				}
+			}),
+		);
+		return { providerIds, modelsByProvider };
+	}, []);
+
+	/**
+	 * `/profiles` — the named connections workers run on.
+	 *
+	 * A profile is a provider plus the credential that authenticates it, which
+	 * is what lets two workers share a provider without sharing an account. The
+	 * Chrome logins a profile can name are created here too, on save rather than
+	 * on selection: creating one eagerly would leave a user-data-dir behind for
+	 * a profile the user then abandoned with Escape.
+	 */
+	const openProfiles = useCallback(async (): Promise<boolean> => {
+		const loaded = loadProfiles();
+		if (loaded.error) {
+			// A store that exists but does not parse must not be silently replaced
+			// with whatever the dialog builds — that would discard the user's file,
+			// API keys included.
+			session.appendEntry({
+				kind: "error",
+				text: `/profiles: ${loaded.error}. Fix the file before editing it here.`,
+			});
+			return true;
+		}
+		const { providerIds, modelsByProvider } = await loadProviderCatalog();
+		const chosen = await dialog.choice<ProfilesDialogResult>({
+			size: "large",
+			content: (ctx: ChoiceContext<ProfilesDialogResult>) => (
+				<ProfilesDialogContent
+					{...ctx}
+					initialProfiles={loaded.profiles}
+					providerIds={providerIds}
+					modelsByProvider={modelsByProvider}
+					browserProfiles={listBrowserProfiles().map((profile) => profile.name)}
+					storePath={loaded.path}
+				/>
+			),
+		});
+		refocusTextarea();
+		if (!chosen) {
+			return true;
+		}
+		try {
+			const existing = new Set(
+				listBrowserProfiles().map((profile) => profile.name),
+			);
+			for (const name of chosen.newBrowserProfiles) {
+				if (existing.has(name)) continue;
+				createBrowserProfile(name);
+			}
+			writeProfiles({ path: loaded.path, profiles: chosen.profiles });
+			session.appendEntry({
+				kind: "status",
+				text: `Saved ${chosen.profiles.length} profile${chosen.profiles.length === 1 ? "" : "s"} to ${loaded.path}.`,
+			});
+		} catch (error) {
+			session.appendEntry({
+				kind: "error",
+				text: `/profiles: could not save: ${error instanceof Error ? error.message : String(error)}`,
+			});
+		}
+		return true;
+	}, [dialog, loadProviderCatalog, refocusTextarea, session]);
+
 	// `/workers` — edit the roster a manager delegates to.
 	const openWorkers = useCallback(async (): Promise<boolean> => {
 		const rosterPath = resolveTeamRosterSearchPaths(cwd)[0];
@@ -584,24 +680,12 @@ export function useLocalCommandActions(input: {
 			return true;
 		}
 
-		const providerIds = Llms.getProviderIds().sort((a, b) =>
-			a.localeCompare(b),
-		);
-		// Resolved up front rather than per keystroke inside the dialog: the model
-		// registry is a local cache, so this is cheap, and it keeps the dialog
-		// itself synchronous — no half-drawn model list to select the wrong row in.
-		const modelsByProvider: Record<string, string[]> = {};
-		await Promise.all(
-			providerIds.map(async (id) => {
-				try {
-					modelsByProvider[id] = Object.keys(
-						await Llms.getModelsForProvider(id),
-					).sort((a, b) => a.localeCompare(b));
-				} catch {
-					modelsByProvider[id] = [];
-				}
-			}),
-		);
+		const { providerIds, modelsByProvider } = await loadProviderCatalog();
+		// A store that does not parse is reported by `/profiles`, not here: this
+		// dialog only needs the list to show what each worker is pointed at, and
+		// refusing to edit the roster over an unrelated broken file would be worse
+		// than showing "(missing from profiles.json)" next to the names.
+		const profiles = loadProfiles().profiles;
 		const chosen = await dialog.choice<WorkersDialogResult>({
 			size: "large",
 			content: (ctx: ChoiceContext<WorkersDialogResult>) => (
@@ -610,6 +694,7 @@ export function useLocalCommandActions(input: {
 					initialWorkers={loaded.roster?.workers ?? []}
 					providerIds={providerIds}
 					modelsByProvider={modelsByProvider}
+					profiles={profiles}
 					rosterPath={loaded.path ?? rosterPath}
 				/>
 			),
@@ -634,7 +719,7 @@ export function useLocalCommandActions(input: {
 			});
 		}
 		return true;
-	}, [cwd, dialog, refocusTextarea, session]);
+	}, [cwd, dialog, loadProviderCatalog, refocusTextarea, session]);
 
 	/**
 	 * Bare `/manager` — choose which model manages, then start.
@@ -1084,6 +1169,7 @@ export function useLocalCommandActions(input: {
 				openHistory,
 				exitCline: onExit,
 				findChat,
+				openProfiles,
 				openWorkers,
 				openManager,
 				pasteReply,
@@ -1103,6 +1189,7 @@ export function useLocalCommandActions(input: {
 			openHistory,
 			openModelSelector,
 			openSkills,
+			openProfiles,
 			openWorkers,
 			openManager,
 			runCompact,

@@ -242,7 +242,15 @@ function renderWorkflow(tools: string[] | undefined): string {
 	return lines.join("\n");
 }
 
-function renderWebProviderToolDocs(tools: string[] | undefined): string {
+/**
+ * The per-tool documentation block for a given tool scope.
+ *
+ * Exported because `/guide-ai` re-sends it mid-conversation (see `./guide`).
+ * Rebuilding it from the same table is the point: a reminder that lists a tool
+ * the session does not have is worse than no reminder, and a second
+ * hand-written copy would drift the first time a tool's schema changed.
+ */
+export function renderWebProviderToolDocs(tools: string[] | undefined): string {
 	const allowed = tools ? new Set(tools) : undefined;
 	const rendered = WEB_PROVIDER_TOOL_ORDER.filter((name) =>
 		allowed
@@ -269,18 +277,30 @@ const WEB_PROVIDER_TOOL_ORDER = [
 	"ask_question",
 ];
 
-export const WEB_PROVIDERS_SYSTEM_PROMPT = `# ROLE & OBJECTIVE
-Your will help me complete coding tasks by gathering context, planning, executing precise edits, and validating the results. Finish the task meaning you completely resolve the user's request, including running tests or commands to verify correctness. When the task is complete, explain what you have done.
-
-You must use the exact following syntax tool to help me read files, search the codebase, run commands, edit files, or ask me a question. I will use copy these tools, run it, and send you the output.
-- **Syntax**: Output ONLY this exact block (NO space after <tool>, NO markdown fences):
+/**
+ * The `<tool>` calling contract, on its own.
+ *
+ * Split out of the prompt template because `/guide-ai` re-sends exactly these
+ * rules mid-conversation (see `./guide`), and the whole point of that command
+ * is that the model is reminded of the contract it was actually given. A second
+ * copy typed out in the reminder would drift the first time a rule changed
+ * here, and the symptom — a model emitting a shape the parser rejects — reads
+ * as a model problem rather than a stale constant.
+ */
+export const TOOL_CALL_PROTOCOL_RULES = `- **Syntax**: Output ONLY this exact block (NO space after <tool>, NO markdown fences):
 <tool>{"name": "<tool_name>", "arguments": { ... }}</tool>
 - **Rules**: 
   1. "name" must exactly match an available tool below. "arguments" must be valid JSON.
   2. Emit one <tool> block per call. You may place multiple blocks back-to-back in a single response.
   3. **State Machine**: A response WITHOUT any <tool> block signals that the task is 100% complete and you are providing the final answer. Never say you "will" do something; just do it.
   4. - **Escaping Rule**: When embedding code (like Python or Bash) inside JSON arguments, you MUST escape all inner double quotes as \`\\"\` or use single quotes \`'\` for the inner code's strings. Never output unescaped double quotes inside a JSON string value.
-  5. - **Code Validation**: Before emitting code in tool calls, mentally validate syntax. Ensure loop structures are complete, variable names match exactly, and all JSON string newlines are escaped as \\n. Never output partial or syntactically invalid code.
+  5. - **Code Validation**: Before emitting code in tool calls, mentally validate syntax. Ensure loop structures are complete, variable names match exactly, and all JSON string newlines are escaped as \\n. Never output partial or syntactically invalid code.`;
+
+export const WEB_PROVIDERS_SYSTEM_PROMPT = `# ROLE & OBJECTIVE
+Your will help me complete coding tasks by gathering context, planning, executing precise edits, and validating the results. Finish the task meaning you completely resolve the user's request, including running tests or commands to verify correctness. When the task is complete, explain what you have done.
+
+You must use the exact following syntax tool to help me read files, search the codebase, run commands, edit files, or ask me a question. I will use copy these tools, run it, and send you the output.
+${TOOL_CALL_PROTOCOL_RULES}
 {{WORKFLOW}}
 
 # ENVIRONMENT

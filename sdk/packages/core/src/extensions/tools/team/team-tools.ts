@@ -78,6 +78,7 @@ import {
 	type DelegatedAgentRuntimeConfig,
 } from "./delegated-agent";
 import type { AgentTeamsRuntime } from "./multi-agent";
+import { resolveWorkerConnection } from "./profile-config";
 import { appendWorkerToolGuide } from "./worker-tool-guide";
 
 function truncateText(value: string, maxLength: number): string {
@@ -612,11 +613,16 @@ function spawnTeamTeammate(
 			toolScope: options.spec.tools
 				? teammateTools.map((tool) => tool.name)
 				: undefined,
+			// The worker's own account, resolved from its connection profile. This
+			// is what lets two workers share a provider: the profile carries the
+			// credential — an API key, or the Chrome login a web provider drives —
+			// so `deepseek-work` and `deepseek-personal` are two logins rather than
+			// two names for one. A worker with no profile resolves to its legacy
+			// provider/model fields and behaves exactly as before.
 			connectionOverrides: Object.fromEntries(
-				Object.entries({
-					providerId: options.spec.providerId,
-					modelId: options.spec.modelId,
-				}).filter(([, value]) => value !== undefined),
+				Object.entries(resolveWorkerConnection(options.spec)).filter(
+					([key, value]) => key !== "warning" && value !== undefined,
+				),
 			),
 		}),
 	});

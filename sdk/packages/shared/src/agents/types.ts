@@ -694,6 +694,19 @@ export interface AgentConfig {
 	/** Additional headers for API requests */
 	headers?: Record<string, string>;
 	/**
+	 * Which Chrome login the web providers drive for this agent.
+	 *
+	 * A web provider's credential is its `--user-data-dir`, and that used to be
+	 * resolved per session: every agent in a session shared one browser, one
+	 * account and one chat. That is correct for a lead and its sub-agents, and
+	 * wrong for a team — two workers on the same web provider then write into
+	 * the same conversation.
+	 *
+	 * Set from the worker's connection profile, and unset everywhere else, where
+	 * the session's own profile remains the right answer.
+	 */
+	browserProfile?: string;
+	/**
 	 * Called when a run fails with an auth-like provider error (e.g. an OAuth
 	 * access token that expired mid-run). Hosts refresh credentials and push
 	 * the new key into the runtime via `updateConnection`; returning `true`

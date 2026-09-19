@@ -29,6 +29,25 @@ export type MuteCommandInput = {
 	target?: string;
 };
 
+/**
+ * One row of the hub's session list, as a chat surface needs it.
+ *
+ * `unattended` is the field that decides whether sending is safe: a session
+ * started with `--zen` approves its own tool calls, while one started from a
+ * TUI waits for a client that this thread is not. Sending to the latter parks
+ * the turn on the first approval, so the list has to say which is which rather
+ * than leaving the user to find out by hanging.
+ */
+export type ConnectorSessionSummary = {
+	sessionId: string;
+	title?: string;
+	provider?: string;
+	model?: string;
+	cwd?: string;
+	updatedAt?: string;
+	unattended: boolean;
+};
+
 export type ChatCommandContext = {
 	enabled: boolean;
 	botUserName?: string;
@@ -52,6 +71,26 @@ export type ChatCommandContext = {
 		| Promise<ForkSessionResult | undefined>
 		| ForkSessionResult
 		| undefined;
+	/**
+	 * Drive a session this thread did not start.
+	 *
+	 * A connector normally owns the sessions it creates, which makes it a second
+	 * place work happens rather than a way into the work already running. These
+	 * hand the thread the hub's session list and let it point at one: the same
+	 * thing `cline send` does from a terminal, addressed by session id, so a task
+	 * dispatched on a laptop can be steered from a phone and picked back up in
+	 * the TUI afterwards.
+	 */
+	sessions?: {
+		/** Recent sessions the hub knows about, newest first. */
+		list?: (limit: number) => Promise<ConnectorSessionSummary[]>;
+		/** Point this thread at `sessionId`; returns a line for the user. */
+		attach?: (sessionId: string) => Promise<string> | string;
+		/** Stop driving the attached session and go back to the thread's own. */
+		detach?: () => Promise<string> | string;
+		/** The session this thread is currently driving, if it was attached. */
+		attached?: () => Promise<string | undefined> | string | undefined;
+	};
 	schedule?: {
 		create?: (input: {
 			name: string;
@@ -274,6 +313,73 @@ function usage(text: string): string {
 	return `Usage: ${text}`;
 }
 
+/**
+ * Enough of a session id to type back, and no more.
+ *
+ * Hub ids are ULIDs — 26 characters, unreadable on a phone. A prefix is what
+ * the user actually retypes, and `/attach` resolves prefixes, so the list shows
+ * the prefix and nothing else.
+ */
+const SESSION_ID_PREFIX_LENGTH = 8;
+
+function formatSessionLine(session: ConnectorSessionSummary): string {
+	const parts = [
+		session.sessionId.slice(0, SESSION_ID_PREFIX_LENGTH),
+		session.unattended ? "unattended" : "has a client",
+	];
+	if (session.model) parts.push(session.model);
+	else if (session.provider) parts.push(session.provider);
+	// Basename only: the full path is the least useful thing on a phone screen,
+	// and both separators appear because a Windows hub serves POSIX-style cwds
+	// from the workspace root.
+	if (session.cwd) {
+		parts.push(session.cwd.split(/[\\/]/).filter(Boolean).pop() ?? session.cwd);
+	}
+	const head = parts.join(" · ");
+	return session.title ? `${head}\n  ${session.title}` : head;
+}
+
+/**
+ * Resolve what the user typed to exactly one session.
+ *
+ * A prefix that matches several is refused rather than guessed: the whole point
+ * of attaching is to drive a specific piece of work, and silently picking the
+ * newest of two matches would send a message into the wrong job.
+ */
+export function resolveSessionReference(
+	sessions: readonly ConnectorSessionSummary[],
+	reference: string,
+):
+	| { ok: true; session: ConnectorSessionSummary }
+	| { ok: false; error: string } {
+	const wanted = reference.trim().toLowerCase();
+	if (!wanted) {
+		return { ok: false, error: usage("/attach <session-id>") };
+	}
+	const exact = sessions.find(
+		(session) => session.sessionId.toLowerCase() === wanted,
+	);
+	if (exact) {
+		return { ok: true, session: exact };
+	}
+	const matches = sessions.filter((session) =>
+		session.sessionId.toLowerCase().startsWith(wanted),
+	);
+	if (matches.length === 1 && matches[0]) {
+		return { ok: true, session: matches[0] };
+	}
+	if (matches.length > 1) {
+		return {
+			ok: false,
+			error: `${reference} matches ${matches.length} sessions. Use more characters.`,
+		};
+	}
+	return {
+		ok: false,
+		error: `No session starts with ${reference}. Try /sessions.`,
+	};
+}
+
 function formatHelp(state: ChatCommandState): string {
 	return [
 		"Cline connector commands:",
@@ -283,6 +389,9 @@ function formatHelp(state: ChatCommandState): string {
 		"/tools [on|off|toggle] - allow repo/file/shell tools",
 		"/yolo [on|off|toggle] - auto-approve tool use",
 		"/cwd <path> - change working directory",
+		"/sessions - list sessions running on this machine",
+		"/attach <id> - drive one of them from this thread",
+		"/detach - go back to this thread's own session",
 		"/schedule create/list/trigger/delete - manage scheduled workflows",
 		"/abort - stop the current task",
 		"/mute [target] - ignore this thread or target until /unmute",
@@ -318,6 +427,78 @@ function createDefaultChatCommandHost(): ChatCommandHost {
 			run: async (_parsed, context) => {
 				await context.reset?.();
 				await context.reply("Started a fresh session.");
+			},
+		})
+		.register("command", {
+			names: ["/sessions"],
+			isAvailable: (context) => typeof context.sessions?.list === "function",
+			run: async (_parsed, context) => {
+				const sessions = (await context.sessions?.list?.(15)) ?? [];
+				if (sessions.length === 0) {
+					await context.reply(
+						'No sessions on the hub yet. Start one with `cline --zen "<task>"`.',
+					);
+					return;
+				}
+				const attached = await context.sessions?.attached?.();
+				await context.reply(
+					[
+						"Sessions (newest first):",
+						...sessions.map((session) => {
+							const marker =
+								attached && session.sessionId === attached ? "▶ " : "  ";
+							return `${marker}${formatSessionLine(session)}`;
+						}),
+						"",
+						"/attach <id> to drive one · /detach to stop",
+					].join("\n"),
+				);
+			},
+		})
+		.register("command", {
+			names: ["/attach"],
+			isAvailable: (context) => typeof context.sessions?.attach === "function",
+			run: async ({ args }, context) => {
+				const reference = args[0];
+				if (!reference) {
+					await context.reply(usage("/attach <session-id> — see /sessions"));
+					return;
+				}
+				const sessions = (await context.sessions?.list?.(200)) ?? [];
+				const resolved = resolveSessionReference(sessions, reference);
+				if (!resolved.ok) {
+					await context.reply(resolved.error);
+					return;
+				}
+				const attached =
+					(await context.sessions?.attach?.(resolved.session.sessionId)) ??
+					`Attached to ${resolved.session.sessionId}.`;
+				// Say it up front rather than letting the first tool call hang. A
+				// session started from a TUI answers approvals through the client
+				// attached to it, and this thread is not that client: forwarding a
+				// message parks the turn on the first tool call that needs one, and
+				// from here that looks like the session simply stopped replying.
+				await context.reply(
+					resolved.session.unattended
+						? attached
+						: [
+								attached,
+								"",
+								"Heads up: this session was not started with --zen, so it asks",
+								"its own client for tool approvals. Messages from here will",
+								"stall on the first tool call that needs one. Answer it where",
+								"the session is attached, or use a session started with --zen.",
+							].join("\n"),
+				);
+			},
+		})
+		.register("command", {
+			names: ["/detach"],
+			isAvailable: (context) => typeof context.sessions?.detach === "function",
+			run: async (_parsed, context) => {
+				await context.reply(
+					(await context.sessions?.detach?.()) ?? "Detached.",
+				);
 			},
 		})
 		.register("command", {

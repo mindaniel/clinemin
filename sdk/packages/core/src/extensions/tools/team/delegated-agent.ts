@@ -25,6 +25,10 @@ export type DelegatedAgentConnectionConfig = Pick<
 	| "apiKey"
 	| "baseUrl"
 	| "headers"
+	// Part of the connection, not a behaviour flag: on a web provider the Chrome
+	// user-data-dir IS the credential, the way `apiKey` is on an API provider.
+	// Two workers that share it share an account and a chat.
+	| "browserProfile"
 	| "onAuthError"
 	| "providerConfig"
 	| "knownModels"
@@ -110,6 +114,7 @@ export function createDelegatedAgentConfigProvider(
 			apiKey: runtimeConfig.apiKey,
 			baseUrl: runtimeConfig.baseUrl,
 			headers: runtimeConfig.headers,
+			browserProfile: runtimeConfig.browserProfile,
 			onAuthError: runtimeConfig.onAuthError,
 			providerConfig: runtimeConfig.providerConfig,
 			knownModels: runtimeConfig.knownModels,

@@ -37,6 +37,42 @@ export const TeamRosterWorkerSchema = z
 			.string()
 			.min(1)
 			.describe("System prompt describing what this worker is for"),
+		/**
+		 * A one-line hint for the manager, written by the user.
+		 *
+		 * This is not the role prompt. The role prompt is what the *worker* is
+		 * told; this is what the *manager* is told when it picks who to send a
+		 * job to — "fast, good at code", "only for web search, not coding". The
+		 * manager cannot see a worker's role prompt, so without this it is
+		 * choosing between bare names.
+		 */
+		notes: z
+			.string()
+			.min(1)
+			.optional()
+			.describe(
+				"Short hint shown to the manager about what this worker is good for.",
+			),
+		/**
+		 * The named connection profile this worker runs on.
+		 *
+		 * This is what makes two workers on one provider possible: a profile
+		 * carries its own credential (an API key, or a Chrome login for a web
+		 * provider), so `deepseek-work` and `deepseek-personal` are two accounts
+		 * rather than two names for one. See `./profile`.
+		 *
+		 * It supersedes `providerId`/`modelId` rather than merging with them. A
+		 * worker that names a profile AND a provider would otherwise have two
+		 * answers for which account it uses, and the wrong one is invisible until
+		 * two workers land in the same chat. Those two fields stay for rosters
+		 * written before profiles existed, and are used when no profile is named
+		 * or the named one has been deleted.
+		 */
+		profile: z
+			.string()
+			.min(1)
+			.optional()
+			.describe("Named connection profile from profiles.json."),
 		providerId: z
 			.string()
 			.min(1)

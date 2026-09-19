@@ -13,6 +13,7 @@ import { buildUserInputMessage, resolveSystemPrompt } from "../runtime/prompt";
 import {
 	type ChatCommandHost,
 	type ChatCommandState,
+	type ConnectorSessionSummary,
 	isCommandAddressedToBot,
 	type MuteCommandInput,
 	maybeHandleChatCommand,
@@ -206,6 +207,48 @@ function applyForcedToolDisable<TState extends ConnectorThreadState>(
 
 export function isConnectorIdleReply(text: string): boolean {
 	return text.trim().toLowerCase() === "/idle";
+}
+
+/**
+ * Does this session approve its own tool calls?
+ *
+ * The same test `cline send` makes, and for the same reason: a session started
+ * with `--zen` runs unattended, while one started from a TUI waits for a client
+ * to answer approvals. A chat thread is not that client, so sending to the
+ * latter parks the turn on the first tool call. `session.list` only carries
+ * `source` and `interactive` — `autoApproveTools` lives in runtime options the
+ * row does not have — so this is as much as can be known before sending.
+ */
+export function looksUnattendedSession(
+	metadata: Record<string, unknown> | undefined,
+): boolean {
+	if (!metadata) return false;
+	if (metadata.interactive === false) return true;
+	return typeof metadata.source === "string" && metadata.source.includes("zen");
+}
+
+function metadataString(
+	metadata: Record<string, unknown> | undefined,
+	key: string,
+): string | undefined {
+	const value = metadata?.[key];
+	return typeof value === "string" && value.trim() ? value.trim() : undefined;
+}
+
+/** A hub row, reduced to what a phone screen can use. */
+export function toConnectorSessionSummary(row: {
+	sessionId: string;
+	metadata?: Record<string, unknown>;
+}): ConnectorSessionSummary {
+	return {
+		sessionId: row.sessionId,
+		title: metadataString(row.metadata, "title"),
+		provider: metadataString(row.metadata, "provider"),
+		model: metadataString(row.metadata, "model"),
+		cwd: metadataString(row.metadata, "cwd"),
+		updatedAt: metadataString(row.metadata, "updatedAt"),
+		unattended: looksUnattendedSession(row.metadata),
+	};
 }
 
 function resolveConnectorCommandName(
@@ -823,6 +866,57 @@ export async function handleConnectorUserTurn<
 					`workspaceRoot=${effectiveCurrent.workspaceRoot || input.baseStartRequest.workspaceRoot}`,
 				].join("\n");
 			},
+			sessions: {
+				list: async (limit) => {
+					const rows = await input.client.listSessions({ limit });
+					return rows
+						.filter((row) => row.sessionId !== currentState.sessionId)
+						.map((row) => toConnectorSessionSummary(row));
+				},
+				attached: async () =>
+					(
+						await loadThreadState(
+							input.thread,
+							input.bindingsPath,
+							input.baseStartRequest,
+						)
+					).attachedSessionId,
+				attach: async (sessionId) => {
+					const state = await loadThreadState(
+						input.thread,
+						input.bindingsPath,
+						input.baseStartRequest,
+					);
+					await persistMergedThreadState(
+						input.thread,
+						input.bindingsPath,
+						{ ...state, attachedSessionId: sessionId } as TState,
+						input.errorLabel,
+					);
+					return [
+						`Attached to ${sessionId.slice(0, 8)}.`,
+						"Messages here now go to that session. /detach to stop.",
+					].join("\n");
+				},
+				detach: async () => {
+					const state = await loadThreadState(
+						input.thread,
+						input.bindingsPath,
+						input.baseStartRequest,
+					);
+					if (!state.attachedSessionId) {
+						return "Not attached to anything.";
+					}
+					const was = state.attachedSessionId;
+					await persistMergedThreadState(
+						input.thread,
+						input.bindingsPath,
+						{ ...state, attachedSessionId: undefined } as TState,
+						input.errorLabel,
+					);
+					return `Detached from ${was.slice(0, 8)}. Back to this thread's own session.`;
+				},
+			},
 			schedule: {
 				create: async ({ name, cronPattern, prompt }) => {
 					const current = await loadThreadState(
@@ -939,6 +1033,21 @@ export async function handleConnectorUserTurn<
 		input.bindingsPath,
 		input.baseStartRequest,
 	);
+
+	// An attached thread is a remote control, not a second place work happens.
+	// It forwards the message to a session someone else started and prints what
+	// comes back, touching none of the start-request machinery below: that
+	// session already has its own provider, model, cwd and tool policy, and
+	// re-sending this thread's would quietly reconfigure somebody's running job.
+	if (currentState.attachedSessionId?.trim()) {
+		await forwardToAttachedSession({
+			input,
+			runtimeInput,
+			sessionId: currentState.attachedSessionId.trim(),
+		});
+		return;
+	}
+
 	const effectiveCurrentState = applyForcedToolDisable(
 		currentState,
 		input.forceDisableTools,
@@ -962,6 +1071,7 @@ export async function handleConnectorUserTurn<
 		const { prompt, userImages, userFiles } = await buildUserInputMessage(
 			runtimeInput,
 			input.userInstructionService,
+			{ systemPrompt: startRequest.systemPrompt },
 		);
 		try {
 			await input.client.sendRuntimeSession(
@@ -1022,6 +1132,72 @@ export async function handleConnectorUserTurn<
  * Runs a queued connector turn, replacing a stale session mapping at most once
  * before replaying the user's input.
  */
+/**
+ * Send this thread's message to a session it attached to.
+ *
+ * `session.send_input` is the same command `cline send` drives, so a task
+ * dispatched on a laptop can be steered from a phone and then picked back up in
+ * the TUI with `cline --resume <id>`: one session id, one persisted transcript,
+ * three ways in.
+ *
+ * `queue` rather than `steer`: a message typed on a phone is the next thing to
+ * do, not an interruption of the thing running. Steering mid-turn from a device
+ * that cannot see the turn is how you cut off work you asked for thirty seconds
+ * earlier.
+ */
+async function forwardToAttachedSession<
+	TState extends ConnectorThreadState,
+>(options: {
+	input: ConnectorUserTurnInput<TState>;
+	runtimeInput: string;
+	sessionId: string;
+}): Promise<void> {
+	const { input, runtimeInput, sessionId } = options;
+	const { prompt, userImages, userFiles } = await buildUserInputMessage(
+		runtimeInput,
+		input.userInstructionService,
+	);
+	if (userImages.length > 0 || userFiles.length > 0) {
+		// `session.send_input` carries a prompt and nothing else. Silently
+		// dropping the attachment would look like the model ignored it.
+		await postConnectorText(
+			input.thread,
+			input.transport,
+			"Attachments are not forwarded to an attached session — sending the text only.",
+		);
+	}
+	try {
+		const { result } = await input.client.sendSessionInput(
+			sessionId,
+			{ prompt, delivery: "queue" },
+			{ timeoutMs: null },
+		);
+		await postConnectorText(
+			input.thread,
+			input.transport,
+			result?.text?.trim() ||
+				// A queued prompt the session has not reached yet answers with no
+				// result. It is delivered, not lost, and saying so beats silence.
+				`Delivered to ${sessionId.slice(0, 8)}; no reply yet.`,
+		);
+	} catch (error) {
+		const detail = error instanceof Error ? error.message : String(error);
+		if (isSessionNotFoundError(error)) {
+			await postConnectorText(
+				input.thread,
+				input.transport,
+				`Session ${sessionId.slice(0, 8)} is gone. /detach, then /sessions to pick another.`,
+			);
+			return;
+		}
+		await postConnectorText(
+			input.thread,
+			input.transport,
+			`Could not reach ${sessionId.slice(0, 8)}: ${detail}`,
+		);
+	}
+}
+
 async function runConnectorRuntimeTurnWithRecovery<
 	TState extends ConnectorThreadState,
 >(params: {
@@ -1050,6 +1226,7 @@ async function runConnectorRuntimeTurnWithRecovery<
 	const { prompt, userImages, userFiles } = await buildUserInputMessage(
 		runtimeInput,
 		input.userInstructionService,
+		{ systemPrompt: startRequest.systemPrompt },
 	);
 	const request: ChatRunTurnRequest = {
 		config: startRequest,

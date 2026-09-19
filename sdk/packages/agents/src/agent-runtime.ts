@@ -469,10 +469,17 @@ export class AgentRuntime {
 	 * The profile belongs to the session, so scope the whole turn to the one the
 	 * CLI recorded for this session. A session with no record (a local runtime, a
 	 * sub-agent) runs unscoped and keeps the old per-process behaviour.
+	 *
+	 * A team worker is the one case narrower than a session: its connection
+	 * profile names the Chrome login it owns, and two workers on one web
+	 * provider must not share a browser. That name wins over the session's,
+	 * because it is the more specific answer and the only one that can tell two
+	 * workers apart.
 	 */
 	private inSessionProfile<T>(fn: () => Promise<T>): Promise<T> {
 		return runWithBrowserProfile(
-			getSessionBrowserProfile(this.config.sessionId),
+			this.config.browserProfile?.trim() ||
+				getSessionBrowserProfile(this.config.sessionId),
 			fn,
 		);
 	}

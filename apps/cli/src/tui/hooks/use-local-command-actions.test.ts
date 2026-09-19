@@ -24,6 +24,7 @@ function makeActions(
 		openHistory: vi.fn(),
 		exitCline: vi.fn(),
 		findChat: vi.fn(async () => true),
+		openProfiles: vi.fn(async () => true),
 		openWorkers: vi.fn(async () => true),
 		openManager: vi.fn(async () => true),
 		pasteReply: vi.fn(async () => true),
@@ -120,6 +121,18 @@ describe("runLocalSlashCommandAction", () => {
 
 		expect(handled).toBe(true);
 		expect(runCompact).toHaveBeenCalledOnce();
+	});
+
+	it("invokes openProfiles for the /profiles command", async () => {
+		const openProfiles = vi.fn(async () => true);
+		const actions = makeActions({ openProfiles });
+		await expect(
+			runLocalSlashCommandAction({ name: "profiles", ...actions }),
+		).resolves.toBe(true);
+		expect(openProfiles).toHaveBeenCalledOnce();
+		// `/profile` (singular) is a different command — the session's Chrome
+		// login, not the named connections a worker runs on.
+		expect(actions.switchProfile).not.toHaveBeenCalled();
 	});
 
 	it("invokes openWorkers for the /workers command", async () => {

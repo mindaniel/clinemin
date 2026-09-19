@@ -95,6 +95,10 @@ export function createAgentRuntimeConfig(
 		agentId: input.agentId,
 		conversationId: input.conversationId,
 		parentAgentId: input.parentAgentId,
+		// A team worker's connection profile can name the Chrome login it owns;
+		// without this the runtime falls back to the session's, and two workers on
+		// one web provider share a browser and a chat.
+		browserProfile: agentConfig.browserProfile,
 		agentRole: input.agentRole,
 		systemPrompt: input.systemPrompt ?? agentConfig.systemPrompt,
 		messageModelInfo,

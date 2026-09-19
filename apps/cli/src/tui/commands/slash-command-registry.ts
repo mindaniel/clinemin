@@ -1,4 +1,4 @@
-import { formatUserCommandBlock } from "@cline/shared";
+import { formatUserCommandBlock, GUIDE_AI_COMMAND } from "@cline/shared";
 import type { InteractiveSlashCommand } from "../interactive-welcome";
 
 export type SlashCommandSource =
@@ -26,6 +26,7 @@ export type LocalSlashCommandName =
 	| "history"
 	| "findchat"
 	| "workers"
+	| "profiles"
 	| "manager"
 	| "paste"
 	| "note"
@@ -121,6 +122,11 @@ const TUI_LOCAL_COMMANDS: Array<{
 		description: "Set up the workers a manager can delegate to",
 	},
 	{
+		name: "profiles",
+		description:
+			"Set up named connections (provider + account) so two workers can share a provider",
+	},
+	{
 		name: "manager",
 		description:
 			"Start manager mode (pick a model), /manager <task> to go straight in, /manager off to leave",
@@ -157,6 +163,25 @@ const TUI_LOCAL_COMMANDS: Array<{
 	},
 ];
 
+/**
+ * Commands the TUI lists but does not handle — they are prompt rewrites.
+ *
+ * `/guide-ai` is expanded in `buildUserInputMessage`, so that every entry point
+ * gets it and not just the chat box. It still belongs in this registry: without
+ * an entry it never appears in autocomplete or `/help`, and a command nobody
+ * can discover is a command nobody uses. `execution: "runtime"` is what keeps
+ * the TUI's hands off it — a "local" entry would be offered to
+ * `runLocalSlashCommandAction`, which has no case for it and would decline, and
+ * the input would have been cleared by then.
+ */
+const TUI_PROMPT_COMMANDS: Array<{ name: string; description: string }> = [
+	{
+		name: GUIDE_AI_COMMAND,
+		description:
+			"Re-send the session's tool contract with your message, for a web chat that has drifted (/guide-ai patch|tools <message> to force which one)",
+	},
+];
+
 const SYSTEM_COMMAND_ORDER = [
 	"settings",
 	"model",
@@ -172,15 +197,17 @@ const SYSTEM_COMMAND_ORDER = [
 	"team",
 	"manager",
 	"workers",
+	"profiles",
 	"history",
 	"findchat",
 	"paste",
 	"note",
 	"profile",
 	"telegram",
+	GUIDE_AI_COMMAND,
 	"help",
 	"quit",
-] satisfies ReadonlyArray<LocalSlashCommandName | "team">;
+] satisfies ReadonlyArray<LocalSlashCommandName | "team" | "guide-ai">;
 
 const SYSTEM_COMMAND_PRIORITY = new Map<string, number>(
 	SYSTEM_COMMAND_ORDER.map((name, index) => [name, index]),
@@ -253,6 +280,18 @@ export function buildSlashCommandRegistry(input: {
 			visible,
 			selectable: visible,
 			preserveInput: command.preserveInput,
+		});
+	}
+
+	for (const command of TUI_PROMPT_COMMANDS) {
+		addEntry(byName, {
+			name: command.name,
+			description: command.description,
+			instructions: "",
+			source: "tui",
+			execution: "runtime",
+			visible: true,
+			selectable: true,
 		});
 	}
 
