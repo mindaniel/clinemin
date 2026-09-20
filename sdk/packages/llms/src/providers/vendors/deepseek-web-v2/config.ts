@@ -48,6 +48,14 @@ const DEFAULT_MAX_SEND_DELAY_MS = 2_800;
 const DEFAULT_TOOL_TURN_EXTRA_MIN_MS = 1_500;
 const DEFAULT_TOOL_TURN_EXTRA_MAX_MS = 4_500;
 
+/**
+ * A throttle ("Messages too frequent") is a server-side cooldown, not a bad
+ * request: the same prompt succeeds once the window passes. Wait this long,
+ * reload the blocked page, and resend, rather than failing the task.
+ */
+const DEFAULT_RATE_LIMIT_RETRY_DELAY_MS = 60_000;
+const DEFAULT_RATE_LIMIT_MAX_RETRIES = 3;
+
 /** Whether the full `<tool>` contract + tool list is sent on every turn. */
 export type ToolPromptMode = "lean" | "always";
 
@@ -90,6 +98,10 @@ export interface DeepSeekWebV2RuntimeConfig {
 	toolTurnExtraMinMs: number;
 	/** Upper bound of the EXTRA random sleep added on tool-request turns. */
 	toolTurnExtraMaxMs: number;
+	/** How long to wait after a throttle before resending the same prompt. */
+	rateLimitRetryDelayMs: number;
+	/** Extra sends attempted after a throttle before the error is surfaced. */
+	rateLimitMaxRetries: number;
 }
 
 function readConfigFile(): Partial<DeepSeekWebV2RuntimeConfig> {
@@ -181,11 +193,30 @@ export function resolveDeepSeekWebV2Config(): DeepSeekWebV2RuntimeConfig {
 				process.env.DEEPSEEK_WEB_V2_TOOL_TURN_EXTRA_MAX_MS ??
 					fileConfig.toolTurnExtraMaxMs,
 			) || DEFAULT_TOOL_TURN_EXTRA_MAX_MS,
+		rateLimitRetryDelayMs:
+			Number(
+				process.env.DEEPSEEK_WEB_V2_RATE_LIMIT_RETRY_DELAY_MS ??
+					fileConfig.rateLimitRetryDelayMs,
+			) || DEFAULT_RATE_LIMIT_RETRY_DELAY_MS,
+		// Unlike the delays, 0 is meaningful here — it turns automatic retry
+		// off — so it is read with an explicit finite check instead of `||`.
+		rateLimitMaxRetries: readRetryCount(
+			process.env.DEEPSEEK_WEB_V2_RATE_LIMIT_MAX_RETRIES ??
+				fileConfig.rateLimitMaxRetries,
+			DEFAULT_RATE_LIMIT_MAX_RETRIES,
+		),
 		chatsFile:
 			process.env.DEEPSEEK_WEB_V2_CHATS_FILE ||
 			fileConfig.chatsFile ||
 			profile.chatsFile,
 	};
+}
+
+function readRetryCount(raw: unknown, fallback: number): number {
+	if (raw === undefined || raw === null || raw === "") return fallback;
+	const parsed = Number(raw);
+	if (!Number.isFinite(parsed) || parsed < 0) return fallback;
+	return Math.floor(parsed);
 }
 
 /**

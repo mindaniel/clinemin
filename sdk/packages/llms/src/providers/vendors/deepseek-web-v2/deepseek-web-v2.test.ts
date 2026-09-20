@@ -275,6 +275,19 @@ describe("deepseek-web-v2 resolveDeepSeekWebV2Config", () => {
 		expect(overridden.minSendDelayMs).toBe(500);
 		expect(overridden.maxSendDelayMs).toBe(1500);
 	});
+
+	it("retries a throttle after a minute by default, and 0 turns it off", () => {
+		const config = resolveDeepSeekWebV2Config();
+		expect(config.rateLimitRetryDelayMs).toBe(60_000);
+		expect(config.rateLimitMaxRetries).toBe(3);
+
+		vi.stubEnv("DEEPSEEK_WEB_V2_RATE_LIMIT_MAX_RETRIES", "0");
+		vi.stubEnv("DEEPSEEK_WEB_V2_RATE_LIMIT_RETRY_DELAY_MS", "30000");
+		const overridden = resolveDeepSeekWebV2Config();
+		// 0 is a real setting here, not a missing one — it must not fall back.
+		expect(overridden.rateLimitMaxRetries).toBe(0);
+		expect(overridden.rateLimitRetryDelayMs).toBe(30_000);
+	});
 });
 
 describe("deepseek-web-v2 pacing (computeSendDelay / randomInRange)", () => {

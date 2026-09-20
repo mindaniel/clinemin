@@ -783,7 +783,8 @@ export function useModelSelector(opts: {
 				// nothing to set there.
 				if (
 					!selectedModel?.supportsReasoning ||
-					config.providerId === "deepseek-web-v2"
+					config.providerId === "deepseek-web-v2" ||
+					config.providerId === "deepseek-web"
 				) {
 					clearReasoningConfig(config);
 					pickingModel = false;

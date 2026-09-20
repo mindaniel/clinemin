@@ -3,6 +3,7 @@ import type {
 	LanguageModelV2Message,
 	LanguageModelV2Prompt,
 } from "@ai-sdk/provider";
+import { isSyntheticUserText } from "../tool-pipeline/continuation-note";
 
 // ── Prompt building (the web endpoint only accepts a flat `prompt` string) ──
 
@@ -128,6 +129,61 @@ export interface MessagesToPromptOptions {
 	lastUserLabel?: string;
 	/** Label prefix for trailing tool results. Defaults to "Tool result". */
 	toolResultLabel?: string;
+	/**
+	 * Cap each tool result at this many lines. The whole flattened prompt goes
+	 * to the web endpoint in a single request, so one `read_files` of a large
+	 * file can push it past what the chat backend will answer — it returns an
+	 * empty stream rather than an error. Unset means no cap, which is what
+	 * every caller but DeepSeek Web wants (`claude-web` truncates on its own
+	 * after this formatter runs, and capping here would truncate twice).
+	 */
+	toolResultMaxLines?: number;
+	/**
+	 * Keep the task the model is working on visible in every turn. Off by
+	 * default; DeepSeek Web turns it on.
+	 *
+	 * Two things went wrong without it, both from the same source — the runtime
+	 * appends a synthetic "use a tool to continue" note after every tool round,
+	 * and the flat prompt has no way to tell that note apart from something the
+	 * user typed:
+	 *
+	 * 1. Each round costs three turns (assistant, tool result, note), so a
+	 *    `historyWindow` of 20 holds barely six rounds. The message stating the
+	 *    task scrolls out and never comes back.
+	 * 2. What is left repeats that same note once per round, so the last thing
+	 *    the model reads — the strongest position in the prompt — is a generic
+	 *    "continue" with no subject.
+	 *
+	 * So the model receives a wall of tool output and seven identical nudges,
+	 * and correctly answers that it was never told the problem.
+	 *
+	 * With this on: repeated notes collapse to the final one, that note carries
+	 * the task, and if the task scrolled out entirely it is restated above the
+	 * window. "Real" excludes the note and the paste carrier prompt
+	 * (`isSyntheticUserText`) so the turn never re-anchors to our own
+	 * placeholder text.
+	 */
+	keepTaskVisible?: boolean;
+}
+
+/**
+ * How the live task is appended to the trailing continuation note. Kept as a
+ * labelled line rather than folded into the note's prose: the note is
+ * user-editable (`/note`), so it cannot be relied on to end in a way that
+ * reads well with a sentence glued to it.
+ */
+function noteWithTask(note: string, task: string): string {
+	return `${note}\n\nThe task you are working on: ${task}`;
+}
+
+function truncateToolResultLines(text: string, maxLines: number): string {
+	const lines = text.split("\n");
+	if (lines.length <= maxLines) return text;
+	const dropped = lines.length - maxLines;
+	return [
+		...lines.slice(0, maxLines),
+		`... [output truncated: ${dropped} more lines]`,
+	].join("\n");
 }
 
 export function messagesToPrompt(
@@ -144,10 +200,17 @@ export function messagesToPrompt(
 	const userLabel = options.userLabel ?? "User";
 	const lastUserLabel = options.lastUserLabel;
 	const toolResultLabel = options.toolResultLabel ?? "Tool result";
+	const toolResultMaxLines = options.toolResultMaxLines;
 	const systemParts: string[] = [];
-	const conversation: Array<{ role: string; text: string }> = [];
+	let conversation: Array<{
+		role: string;
+		text: string;
+		/** A runtime-generated user turn (continuation note / paste carrier). */
+		synthetic?: boolean;
+	}> = [];
 	let lastUserContent = "";
 	let lastUserIndex = -1;
+	let lastRealUserIndex = -1;
 
 	for (const message of messages) {
 		const parts = toPromptParts(message);
@@ -166,8 +229,13 @@ export function messagesToPrompt(
 			if (text) systemParts.push(text);
 		} else if (message.role === "user" || message.role === "assistant") {
 			if (text) {
-				conversation.push({ role: message.role, text });
-				if (message.role === "user") lastUserIndex = conversation.length - 1;
+				const synthetic =
+					message.role === "user" ? isSyntheticUserText(text) : false;
+				conversation.push({ role: message.role, text, synthetic });
+				if (message.role === "user") {
+					lastUserIndex = conversation.length - 1;
+					if (!synthetic) lastRealUserIndex = conversation.length - 1;
+				}
 			}
 			if (message.role === "user") lastUserContent = text;
 		} else if (message.role === "tool") {
@@ -181,10 +249,45 @@ export function messagesToPrompt(
 					typeof toolResult?.toolName === "string"
 						? toolResult.toolName
 						: "tool";
-				conversation.push({ role: "tool", text: `(${toolName}) ${text}` });
+				const body =
+					toolResultMaxLines !== undefined
+						? truncateToolResultLines(text, toolResultMaxLines)
+						: text;
+				conversation.push({ role: "tool", text: `(${toolName}) ${body}` });
 			}
 		}
 	}
+
+	// Every tool round leaves an identical continuation note behind. Only the
+	// trailing one is an instruction; the earlier copies are spent turns that
+	// push the task out of the window. Drop them and re-derive the indexes.
+	if (options.keepTaskVisible) {
+		const lastIndex = conversation.length - 1;
+		conversation = conversation.filter(
+			(turn, index) => !turn.synthetic || index === lastIndex,
+		);
+		lastUserIndex = -1;
+		lastRealUserIndex = -1;
+		conversation.forEach((turn, index) => {
+			if (turn.role !== "user") return;
+			lastUserIndex = index;
+			if (!turn.synthetic) lastRealUserIndex = index;
+		});
+	}
+
+	const taskText =
+		options.keepTaskVisible && lastRealUserIndex >= 0
+			? (conversation[lastRealUserIndex]?.text ?? "")
+			: "";
+	// The trailing note is the last thing the model reads. Left generic it says
+	// "continue" with no subject, which is what produced replies asking to be
+	// told the problem. Carry the task there instead.
+	const trailingNoteIndex =
+		taskText &&
+		conversation.length > 0 &&
+		conversation[conversation.length - 1]?.synthetic
+			? conversation.length - 1
+			: -1;
 
 	const outputParts: string[] = [];
 	if (systemParts.length > 0) outputParts.push(systemParts.join("\n\n"));
@@ -192,6 +295,20 @@ export function messagesToPrompt(
 	const effectiveWindow = conversation.length > 1 ? historyWindow : 0;
 	if (effectiveWindow > 0 && conversation.length > 1) {
 		const recent = conversation.slice(-effectiveWindow);
+		// Re-state the task above the window when the window no longer holds
+		// it. Rendered as its own part rather than spliced into `recent`, whose
+		// `isLastUser` check below indexes back into `conversation` by position.
+		const windowStart = conversation.length - recent.length;
+		// Only needed when the trailing note is not already carrying the task —
+		// otherwise this would state it twice in one prompt.
+		if (
+			taskText &&
+			trailingNoteIndex === -1 &&
+			lastRealUserIndex >= 0 &&
+			lastRealUserIndex < windowStart
+		) {
+			outputParts.push(`${userLabel}: ${taskText}`);
+		}
 		outputParts.push(
 			recent
 				.map((turn, index) => {
@@ -201,15 +318,19 @@ export function messagesToPrompt(
 					if (turn.role === "tool") {
 						return `${toolResultLabel}: ${turn.text}`;
 					}
+					const absoluteIndex = windowStart + index;
+					const body =
+						absoluteIndex === trailingNoteIndex
+							? noteWithTask(turn.text, taskText)
+							: turn.text;
 					// The final user message (e.g. the runtime's synthetic
 					// "Use tool to continue..." continuation) may carry its own
 					// label instead of the generic prior-user label.
 					const isLastUser =
-						lastUserIndex >= 0 &&
-						conversation.length - recent.length + index === lastUserIndex;
+						lastUserIndex >= 0 && absoluteIndex === lastUserIndex;
 					return isLastUser && lastUserLabel
-						? `${lastUserLabel}: ${turn.text}`
-						: `${userLabel}: ${turn.text}`;
+						? `${lastUserLabel}: ${body}`
+						: `${userLabel}: ${body}`;
 				})
 				.join("\n\n"),
 		);
@@ -252,9 +373,24 @@ export function serializeDeepSeekToolPrompt(
 	].join("\n");
 }
 
+/**
+ * Maximum lines of a single tool result sent back to DeepSeek Web.
+ *
+ * The whole conversation is flattened into one `prompt` string per request, so
+ * a `read_files` or `Get-Content` of a few-hundred-line file can push the
+ * request past what chat.deepseek.com will answer. It does not reject it — it
+ * streams an empty completion, which reaches the runtime as "Model returned
+ * empty response". Same failure mode and same cap as
+ * `CLAUDE_WEB_TOOL_RESULT_MAX_LINES`.
+ */
+export const DEEPSEEK_WEB_TOOL_RESULT_MAX_LINES = 200;
+
 export function buildPrompt(
 	prompt: LanguageModelV2Prompt,
 	_tools: LanguageModelV2FunctionTool[] | undefined,
 ): string {
-	return messagesToPrompt(prompt);
+	return messagesToPrompt(prompt, {
+		toolResultMaxLines: DEEPSEEK_WEB_TOOL_RESULT_MAX_LINES,
+		keepTaskVisible: true,
+	});
 }

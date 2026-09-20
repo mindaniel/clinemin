@@ -1,5 +1,11 @@
 import type { BasicLogger } from "@cline/shared";
-import { consumeDeepSeekSse } from "../deepseek-web";
+import {
+	consumeDeepSeekSse,
+	type DeepSeekSseDiagnostics,
+	describeEmptyDeepSeekStream,
+	isRateLimitDiagnostic,
+	waitWithAbort,
+} from "../deepseek-web";
 import { isAbortError } from "../tool-pipeline/abort";
 import {
 	type CdpClient,
@@ -61,6 +67,7 @@ export async function streamCompletionFromPage(input: {
 	accumulatedTokenUsage?: number;
 	rateLimited?: boolean;
 	rawBody: string;
+	diagnostics?: DeepSeekSseDiagnostics;
 }> {
 	const {
 		cdp,
@@ -96,6 +103,7 @@ export async function streamCompletionFromPage(input: {
 		accumulatedTokenUsage?: number;
 		rateLimited?: boolean;
 		rawBody: string;
+		diagnostics?: DeepSeekSseDiagnostics;
 	} = { text: "", reasoning: "", rawBody: "" };
 	// Request id of the chat/completion response, set when headers arrive.
 	let completionRequestId: string | undefined;
@@ -236,6 +244,7 @@ export async function streamCompletionFromPage(input: {
 		result.text = parsedResult.text;
 		result.reasoning = parsedResult.reasoning;
 		result.accumulatedTokenUsage = parsedResult.accumulatedTokenUsage;
+		result.diagnostics = parsedResult.diagnostics;
 		// Flag a throttled reply so the caller can back off / report it instead
 		// of treating a shorter-context completion as a real context reset. Also
 		// arm a one-shot recovery reload so the next turn forces a page refresh
@@ -469,6 +478,7 @@ export async function runCompletion(input: {
 	accumulatedTokenUsage?: number;
 	rateLimited?: boolean;
 	rawBody: string;
+	diagnostics?: DeepSeekSseDiagnostics;
 }> {
 	const {
 		modelId,
@@ -511,6 +521,10 @@ export async function runCompletion(input: {
 	let attempt = 0;
 	const maxAttempts = 2;
 	let lastError: Error | null = null;
+	// Throttle retries are counted separately from the empty-response attempts
+	// above: waiting out a server-side cooldown is not a failed attempt, and
+	// spending the retry budget on it would leave none for a real empty reply.
+	let rateLimitRetries = 0;
 	let result: Awaited<ReturnType<typeof streamCompletionFromPage>> | null =
 		null;
 
@@ -531,6 +545,37 @@ export async function runCompletion(input: {
 				signal,
 				logger,
 			});
+
+			// "Messages too frequent" is a cooldown, not a bad request — the
+			// same prompt works once the window passes. Wait it out, reload the
+			// (temporarily blocked) page, and send again.
+			const throttled =
+				result.rateLimited === true ||
+				(!result.text.trim() &&
+					!result.reasoning.trim() &&
+					result.diagnostics !== undefined &&
+					isRateLimitDiagnostic(result.diagnostics));
+			if (throttled && rateLimitRetries < config.rateLimitMaxRetries) {
+				rateLimitRetries++;
+				logger?.log(
+					`[deepseek-web-v2] throttled ("Messages too frequent") — waiting ${Math.round(
+						config.rateLimitRetryDelayMs / 1000,
+					)}s, then resending (retry ${rateLimitRetries}/${config.rateLimitMaxRetries})`,
+					{ severity: "warn" },
+				);
+				await waitWithAbort(config.rateLimitRetryDelayMs, signal);
+				// The reload the throttle armed is ours to perform now, so clear
+				// the flag rather than leaving it to fire again next turn.
+				consumeThrottleRecoveryReload();
+				await navigateDeepSeekChat(cdp, sessionId, chatTarget, logger, true);
+				await waitForComposerReady(cdp, sessionId, config, logger);
+				// Edit the throttled turn in place when possible so the chat does
+				// not accumulate a duplicate of the same prompt.
+				await editLastUserMessage(cdp, sessionId, logger);
+				// A cooldown is not one of the two content attempts.
+				attempt--;
+				continue;
+			}
 
 			// Check if the response is empty (no text and no reasoning)
 			if (!result.text && !result.reasoning) {
@@ -596,6 +641,28 @@ export async function runCompletion(input: {
 
 	if (!result) {
 		throw new Error("Failed to get completion after retries");
+	}
+
+	// Both attempts came back silent. Returning the empty result hands the
+	// runtime a message with no content parts, which it reports as the opaque
+	// "Model returned empty response" — with the server's own stated reason
+	// sitting unused in the stream diagnostics. Say it instead.
+	if (!result.text.trim() && !result.reasoning.trim()) {
+		if (result.diagnostics && isRateLimitDiagnostic(result.diagnostics)) {
+			throw new Error(
+				'DeepSeek throttled the request: "Messages too frequent. Try again later." ' +
+					`Still throttled after ${rateLimitRetries} retr${
+						rateLimitRetries === 1 ? "y" : "ies"
+					} ${Math.round(config.rateLimitRetryDelayMs / 1000)}s apart. Raise ` +
+					"DEEPSEEK_WEB_V2_MIN_SEND_DELAY_MS / DEEPSEEK_WEB_V2_MAX_SEND_DELAY_MS " +
+					"to slow sending further.",
+			);
+		}
+		throw new Error(
+			result.diagnostics
+				? describeEmptyDeepSeekStream(result.diagnostics)
+				: "DeepSeek returned no content and the completion stream was never captured.",
+		);
 	}
 
 	// After sending, the SPA routes to `/a/chat/s/<session_id>`; capture it so

@@ -1,19 +1,6 @@
-================================================================================
-# PENDING FIXES — noted 2026-09-05
 
+, kimi, and grok web calculate accumulate token usage.
 
-#. 2fix how claude web (%/1M, without session), kimi, and grok web calculate accumulate token usage.
-
-2# telegram bridge
-
-3. deepseek web vs v2
-
-
-7. replace current gpt token count (token/1M context) with decreasing message left and session reset time. in the end of the raw json response from chatgpt, there is this part that can be collected and parsed: data: {"type":"conversation_detail_metadata","banner_info":null,"blocked_features":[],"model_limits":[],"limits_progress":[{"feature_name":"deep_research","remaining":5,"reset_after":"2026-09-24T22:00:15.372094+00:00"},{"feature_name":"file_upload","remaining":80,"reset_after":"2026-08-26T01:00:15.372111+00:00"},{"feature_name":"paste_text_to_file","remaining":3,"reset_after":"2026-08-26T22:00:15.372116+00:00"},{"feature_name":"image_gen","remaining":25,"reset_after":"2026-08-26T22:00:15.372120+00:00"},{"feature_name":"reason","remaining":148,"reset_after":"2026-08-26T00:29:49.924685+00:00"}],"default_model_slug":"auto","atlas_mode_enabled":null,"conversation_id":"6a8e0f6f-075c-83eb-9442-914df3c4e526"}
-
-data: [DONE]
-
-4. kimi token.
 gemini token.
 
 

@@ -7,6 +7,7 @@ import type {
 	LanguageModelV2StreamPart,
 } from "@ai-sdk/provider";
 import type {
+	BasicLogger,
 	GatewayProviderContext,
 	GatewayResolvedProviderConfig,
 } from "@cline/shared";
@@ -53,6 +54,7 @@ function createDeepSeekWebModel(
 	modelId: string,
 	config: GatewayResolvedProviderConfig,
 	fetchImpl: typeof fetch,
+	logger?: BasicLogger,
 ): LanguageModelV2 {
 	const userToken = extractUserToken(config.apiKey);
 
@@ -83,6 +85,17 @@ function createDeepSeekWebModel(
 			signal: options.abortSignal,
 			onText,
 			onReasoning,
+			isToolTurn: functionTools.length > 0,
+			// A throttle makes the turn sit idle for a minute at a time. Say so,
+			// or the CLI looks hung.
+			onRateLimitRetry: ({ attempt, maxRetries, waitMs }) => {
+				logger?.log?.(
+					`[deepseek-web] throttled ("Messages too frequent") — waiting ${Math.round(
+						waitMs / 1000,
+					)}s, then resending (retry ${attempt}/${maxRetries})`,
+					{ severity: "warn" },
+				);
+			},
 		});
 		// Prefer DeepSeek's cumulative context-token count when reported;
 		// otherwise fall back to the chars/3 estimate.
@@ -265,10 +278,11 @@ function createDeepSeekWebModel(
 
 export function createDeepSeekWebProviderModule(
 	config: GatewayResolvedProviderConfig,
-	_context: GatewayProviderContext,
+	context: GatewayProviderContext,
 ): ProviderFactoryResult {
 	const fetchImpl = ensureFetch(config.fetch);
 	return {
-		model: (modelId) => createDeepSeekWebModel(modelId, config, fetchImpl),
+		model: (modelId) =>
+			createDeepSeekWebModel(modelId, config, fetchImpl, context.logger),
 	};
 }

@@ -1,12 +1,21 @@
 import {
 	COMPLETION_URL,
+	computeSendDelay,
 	DEEPSEEK_API_BASE,
+	DeepSeekRateLimitError,
 	FAKE_HEADERS,
 	type PowChallenge,
+	resolveDeepSeekWebPacing,
 	resolveModelOptions,
+	sleep,
+	waitWithAbort,
 } from "./config";
 import { generateFakeCookie, solveDeepSeekPow } from "./crypto";
-import { consumeDeepSeekSse } from "./sse";
+import {
+	consumeDeepSeekSse,
+	describeEmptyDeepSeekStream,
+	isRateLimitDiagnostic,
+} from "./sse";
 
 // ── Token exchange & session management ────────────────────────────────────
 
@@ -144,7 +153,11 @@ async function getPowChallenge(
 	return challenge;
 }
 
-export async function runCompletion(input: {
+/**
+ * One paced send. A throttle raises `DeepSeekRateLimitError`, which
+ * `runCompletion` catches and retries after a wait — see below.
+ */
+async function attemptCompletion(input: {
 	userToken: string;
 	modelId: string;
 	prompt: string;
@@ -152,12 +165,31 @@ export async function runCompletion(input: {
 	signal?: AbortSignal;
 	onText?: (text: string) => void;
 	onReasoning?: (text: string) => void;
+	/**
+	 * `true` when this turn carries tools — the fastest back-to-back pattern in
+	 * an agent run, and the one DeepSeek throttles. Adds the extra pacing delay.
+	 */
+	isToolTurn?: boolean;
+	/** Injectable for tests; defaults to the real timer. */
+	sleepImpl?: (ms: number) => Promise<void>;
 }): Promise<{
 	text: string;
 	reasoning: string;
 	accumulatedTokenUsage?: number;
 }> {
 	const { modelType, thinkingEnabled } = resolveModelOptions(input.modelId);
+
+	// Before anything reaches the network, not just before the completion POST:
+	// the token exchange, session create and PoW fetch are three more requests
+	// to the same origin, so pacing after them still machine-guns chat.deepseek.
+	const delay = computeSendDelay(resolveDeepSeekWebPacing(), {
+		isToolTurn: input.isToolTurn === true,
+	});
+	await (input.sleepImpl ?? sleep)(delay);
+	if (input.signal?.aborted) {
+		throw new DOMException("Aborted", "AbortError");
+	}
+
 	const accessToken = await acquireAccessToken(
 		input.userToken,
 		input.fetchImpl,
@@ -212,15 +244,100 @@ export async function runCompletion(input: {
 			throw new Error(message);
 		}
 
-		return await consumeDeepSeekSse(
+		const result = await consumeDeepSeekSse(
 			resp.body,
 			input.onText,
 			input.onReasoning,
 			thinkingEnabled,
 		);
+		// A stream that carried a server-side error but no fragments reaches the
+		// runtime as a message with zero content parts, which it reports as the
+		// opaque "Model returned empty response". Say what the stream actually
+		// contained instead.
+		if (!result.text.trim() && !result.reasoning.trim()) {
+			// A throttle is the one empty-stream cause with a specific remedy, so
+			// say what to turn up rather than printing the raw hint JSON.
+			if (isRateLimitDiagnostic(result.diagnostics)) {
+				throw new DeepSeekRateLimitError(
+					'DeepSeek throttled the request: "Messages too frequent. Try again later."',
+				);
+			}
+			throw new Error(describeEmptyDeepSeekStream(result.diagnostics));
+		}
+		return result;
 	} finally {
 		await deleteSession(accessToken, sessionId, input.fetchImpl).catch(
 			() => {},
 		);
+	}
+}
+
+/**
+ * Send, and if DeepSeek throttles ("Messages too frequent"), wait and send the
+ * identical prompt again instead of failing the task. The throttle window is a
+ * server-side cooldown, so waiting it out is the whole remedy — there is
+ * nothing about the request to change. Each retry is itself paced, and the
+ * wait is abort-aware so Escape still ends the turn immediately.
+ *
+ * Defaults: 3 retries, 60s apart. `DEEPSEEK_WEB_RATE_LIMIT_MAX_RETRIES=0`
+ * restores the old fail-fast behavior.
+ */
+export async function runCompletion(input: {
+	userToken: string;
+	modelId: string;
+	prompt: string;
+	fetchImpl: typeof fetch;
+	signal?: AbortSignal;
+	onText?: (text: string) => void;
+	onReasoning?: (text: string) => void;
+	isToolTurn?: boolean;
+	sleepImpl?: (ms: number) => Promise<void>;
+	/** Called before each throttle wait, so the UI can say why it is idle. */
+	onRateLimitRetry?: (info: {
+		attempt: number;
+		maxRetries: number;
+		waitMs: number;
+	}) => void;
+}): Promise<{
+	text: string;
+	reasoning: string;
+	accumulatedTokenUsage?: number;
+}> {
+	const { rateLimitRetryDelayMs, rateLimitMaxRetries } =
+		resolveDeepSeekWebPacing();
+
+	for (let attempt = 0; ; attempt++) {
+		try {
+			return await attemptCompletion(input);
+		} catch (error) {
+			if (
+				!(error instanceof DeepSeekRateLimitError) ||
+				attempt >= rateLimitMaxRetries
+			) {
+				// Out of retries: restate the error with what to turn up, since
+				// waiting alone was not enough for this account's send rate.
+				if (error instanceof DeepSeekRateLimitError) {
+					throw new DeepSeekRateLimitError(
+						`${error.message} Still throttled after ${attempt} retr${
+							attempt === 1 ? "y" : "ies"
+						} ${Math.round(rateLimitRetryDelayMs / 1000)}s apart. Raise ` +
+							"DEEPSEEK_WEB_MIN_SEND_DELAY_MS / DEEPSEEK_WEB_MAX_SEND_DELAY_MS " +
+							"(or minSendDelayMs / maxSendDelayMs in " +
+							"~/.cline/deepseek-web/config.json) to slow sending further.",
+					);
+				}
+				throw error;
+			}
+			input.onRateLimitRetry?.({
+				attempt: attempt + 1,
+				maxRetries: rateLimitMaxRetries,
+				waitMs: rateLimitRetryDelayMs,
+			});
+			await waitWithAbort(
+				rateLimitRetryDelayMs,
+				input.signal,
+				input.sleepImpl ?? sleep,
+			);
+		}
 	}
 }
