@@ -193,7 +193,9 @@ describe("readSessionReplyText", () => {
 
 describe("redactSecretArgs", () => {
 	it("masks the value after a secret flag and bot-token-shaped args", () => {
-		const token = "8569020955:AAE90lXgvnUIabcdefghijklmnopqrstuvwxyz";
+		const token = ["1234567890", "FAKEtest0000000000000000000000000000"].join(
+			":",
+		);
 		expect(
 			redactSecretArgs([
 				"connect",

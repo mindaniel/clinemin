@@ -1,4 +1,10 @@
 import { describe, expect, it, vi } from "vitest";
+
+// Built at runtime and obviously fake, so no literal bot token ever sits in
+// the source for a secret scanner to flag.
+const BOT_ID = "1234567890";
+const tok = (secret: string) => `${BOT_ID}:${secret}`;
+
 import {
 	buildTelegramConnectArgs,
 	looksLikeBotToken,
@@ -9,7 +15,7 @@ import {
 
 describe("telegramBotIdFromToken", () => {
 	it("reads the bot id out of a token", () => {
-		expect(telegramBotIdFromToken("8569020955:AAH-abc")).toBe("8569020955");
+		expect(telegramBotIdFromToken(tok("FAKE-abc"))).toBe("1234567890");
 	});
 
 	it("returns nothing for a malformed token", () => {
@@ -24,23 +30,23 @@ describe("verifyTelegramBotToken", () => {
 			new Response(
 				JSON.stringify({
 					ok: true,
-					result: { id: 8569020955, username: "Minhcline_bot" },
+					result: { id: 1234567890, username: "example_bot" },
 				}),
 			),
 		);
 
 		const result = await verifyTelegramBotToken(
-			"8569020955:AAH-abc",
+			tok("FAKE-abc"),
 			fetchImpl as unknown as typeof fetch,
 		);
 
 		expect(result).toEqual({
 			ok: true,
-			botId: "8569020955",
-			username: "Minhcline_bot",
+			botId: "1234567890",
+			username: "example_bot",
 		});
 		expect(fetchImpl.mock.calls[0][0]).toBe(
-			"https://api.telegram.org/bot8569020955:AAH-abc/getMe",
+			`https://api.telegram.org/bot${tok("FAKE-abc")}/getMe`,
 		);
 	});
 
@@ -88,43 +94,43 @@ describe("whitespace in a pasted token", () => {
 		// as-is it produces a 404 that looks nothing like a paste problem.
 		expect(
 			buildTelegramConnectArgs({
-				botToken: " 8569020955: AAH-abc\n",
-				chatId: " 8524560136 ",
+				botToken: ` ${BOT_ID}: FAKE-abc\n`,
+				chatId: " 987654321 ",
 			}),
-		).toEqual(["-k", "8569020955:AAH-abc", "--allowed-user-id", "8524560136"]);
+		).toEqual(["-k", tok("FAKE-abc"), "--allowed-user-id", "987654321"]);
 	});
 });
 
 describe("buildTelegramConnectArgs", () => {
 	it("passes the chat id as the allow-list id, which is also the announce target", () => {
 		expect(
-			buildTelegramConnectArgs({ botToken: "1:abc", chatId: "8524560136" }),
-		).toEqual(["-k", "1:abc", "--allowed-user-id", "8524560136"]);
+			buildTelegramConnectArgs({ botToken: "1:abc", chatId: "987654321" }),
+		).toEqual(["-k", "1:abc", "--allowed-user-id", "987654321"]);
 	});
 });
 
 describe("looksLikeBotToken", () => {
 	it("accepts a real token shape and rejects mangled pastes", () => {
-		expect(
-			looksLikeBotToken("8569020955:AAH1234567890abcdefghijklmnopqrstuv"),
-		).toBe(true);
+		expect(looksLikeBotToken(tok("FAKEtest0000000000000000000000000000"))).toBe(
+			true,
+		);
 		// A space mid-token is what a terminal paste actually produced.
 		expect(
-			looksLikeBotToken("8569020955: AAH1234567890abcdefghijklmnopqrstuv"),
+			looksLikeBotToken(`${BOT_ID}: FAKEtest0000000000000000000000000000`),
 		).toBe(true);
 		// Half-pasted secret, no colon, or nothing at all.
-		expect(looksLikeBotToken("8569020955:AAH")).toBe(false);
-		expect(looksLikeBotToken("8569020955")).toBe(false);
+		expect(looksLikeBotToken(tok("FAKE"))).toBe(false);
+		expect(looksLikeBotToken("1234567890")).toBe(false);
 		expect(looksLikeBotToken("")).toBe(false);
 	});
 });
 
 describe("maskBotToken", () => {
 	it("shows enough to tell two tokens apart without printing the secret", () => {
-		const masked = maskBotToken("8569020955:AAH1234567890abcdefghijklmnopqrs");
-		expect(masked).toContain("8569020955");
+		const masked = maskBotToken(tok("FAKEtest00000000000000000000000pqrs"));
+		expect(masked).toContain("1234567890");
 		expect(masked).toContain("pqrs");
-		expect(masked).not.toContain("AAH1234567890");
+		expect(masked).not.toContain("FAKEtest0000");
 		expect(masked).toContain("chars");
 		expect(maskBotToken("")).toBe("(none)");
 	});
