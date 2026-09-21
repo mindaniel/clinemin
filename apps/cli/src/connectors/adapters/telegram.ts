@@ -10,6 +10,7 @@ import type {
 } from "@cline/shared";
 import { Chat, ConsoleLogger, type Thread } from "chat";
 import type { Command } from "commander";
+import { version as cliVersion } from "../../../package.json";
 import type { CliLoggerAdapter } from "../../logging/adapter";
 import { createCliLoggerAdapter } from "../../logging/adapter";
 import {
@@ -61,6 +62,10 @@ import {
 	getConnectorSystemRules,
 } from "./prompts";
 import { postTelegramFormattedReply } from "./telegram-format";
+import {
+	buildTelegramStartupNotice,
+	sendTelegramStartupNotice,
+} from "./telegram-startup-notice";
 
 const TELEGRAM_SYSTEM_RULES = getConnectorSystemRules("Telegram");
 
@@ -101,8 +106,29 @@ function normalizeAllowedTelegramUserId(value: string): string {
 	return userId;
 }
 
-function buildTelegramAllowedUserHookCommand(userId: string): string {
-	return `jq -r ".payload.actor.participantKey" | grep -qx "telegram:id:${userId}" && echo '{"action":"allow"}' || echo '{"action":"deny","message":"unauthorized","reason":"not_on_allowlist"}'`;
+/**
+ * Is this sender allowed to drive the bot?
+ *
+ * `--allowed-user-id` used to be compiled into a `jq | grep` shell pipeline run
+ * through `sh -lc`. Neither program exists in a plain Windows shell, so the
+ * hook failed to execute on every message — and a hook that cannot run is
+ * treated as "allow", leaving the bot open to anyone who found it. The check
+ * belongs in this process, where it cannot fail open.
+ */
+export function isAllowedTelegramUser(
+	allowedUserIds: string[] | undefined,
+	participantKey: string | undefined,
+): boolean {
+	if (!allowedUserIds || allowedUserIds.length === 0) {
+		// No allow-list configured: the bot is open, as it always was.
+		return true;
+	}
+	if (!participantKey) {
+		// An allow-list is set but the sender could not be identified. Deny:
+		// an unidentifiable sender is exactly what the list exists to stop.
+		return false;
+	}
+	return allowedUserIds.some((id) => participantKey === `telegram:id:${id}`);
 }
 
 function describeTelegramGetMeFailure(
@@ -443,6 +469,11 @@ class TelegramConnector extends ConnectorBase<
 				"Run a shell command for connector events",
 			)
 			.option(
+				"--announce-chat-id <id>",
+				"Chat to post the startup confirmation to (defaults to --allowed-user-id)",
+			)
+			.option("--no-announce", "Do not post the startup confirmation")
+			.option(
 				"--rpc-address <host:port>",
 				"RPC address",
 				process.env.CLINE_RPC_ADDRESS?.trim() || resolveDefaultCliRpcAddress(),
@@ -455,6 +486,8 @@ class TelegramConnector extends ConnectorBase<
 					"  - Without -i, the connector is launched in the background.",
 					"  - Tools are enabled by default for Telegram sessions.",
 					"  - Use --allowed-user-id or `cline connect` to restrict Telegram access.",
+					"  - On startup the connector posts a confirmation to the allow-listed",
+					"    chat (--announce-chat-id to pick another, --no-announce to skip).",
 					"  - Bot username is discovered from the Telegram bot token when omitted.",
 					"  - Provider/model default to the CLI's last-used provider settings.",
 				].join("\n"),
@@ -476,6 +509,8 @@ class TelegramConnector extends ConnectorBase<
 			rpcAddress?: string;
 			hookCommand?: string;
 			allowedUserId?: string;
+			announceChatId?: string;
+			announce?: boolean;
 		}>();
 		const botUsername =
 			normalizeTelegramBotUsername(opts.botUsername ?? "") ||
@@ -490,12 +525,9 @@ class TelegramConnector extends ConnectorBase<
 		const hookCommand =
 			opts.hookCommand?.trim() ||
 			process.env.CLINE_CONNECT_HOOK_COMMAND?.trim();
+		// These used to be mutually exclusive because the allow-list WAS a hook
+		// command. It is enforced in-process now, so both can be set.
 		const allowedUserId = opts.allowedUserId?.trim();
-		if (hookCommand && allowedUserId) {
-			throw new Error(
-				"connect telegram accepts either --allowed-user-id or --hook-command, not both",
-			);
-		}
 		return {
 			botToken,
 			...(botUsername ? { botUsername } : {}),
@@ -511,11 +543,20 @@ class TelegramConnector extends ConnectorBase<
 				opts.rpcAddress?.trim() ||
 				process.env.CLINE_RPC_ADDRESS?.trim() ||
 				resolveDefaultCliRpcAddress(),
-			hookCommand: allowedUserId
-				? buildTelegramAllowedUserHookCommand(
-						normalizeAllowedTelegramUserId(allowedUserId),
-					)
-				: hookCommand,
+			hookCommand,
+			...(allowedUserId
+				? {
+						allowedUserIds: [normalizeAllowedTelegramUserId(allowedUserId)],
+					}
+				: {}),
+			// The allow-listed user id is the owner's own chat id, which is
+			// exactly where the confirmation belongs — so the common setup
+			// (`cline connect` / the `/telegram` dialog) needs no extra flag.
+			announceChatId:
+				opts.announceChatId?.trim() ||
+				process.env.TELEGRAM_ANNOUNCE_CHAT_ID?.trim() ||
+				allowedUserId,
+			announce: opts.announce !== false,
 		};
 	}
 
@@ -959,7 +1000,26 @@ class TelegramConnector extends ConnectorBase<
 			await enqueueTurn(runTurn);
 		};
 
+		/**
+		 * Reject a sender who is not on the allow-list, and say nothing back:
+		 * a reply would confirm the bot exists to whoever is probing it.
+		 */
+		const rejectUnauthorized = (rawMessage: unknown, threadId: string) => {
+			const participant = resolveTelegramParticipant(rawMessage);
+			if (isAllowedTelegramUser(options.allowedUserIds, participant?.key)) {
+				return false;
+			}
+			loggerAdapter.core.log("Telegram message ignored: not on allow-list", {
+				severity: "warn",
+				transport: "telegram",
+				threadId,
+				participantKey: participant?.key ?? "(unidentified)",
+			});
+			return true;
+		};
+
 		bot.onNewMention(async (thread, message) => {
+			if (rejectUnauthorized(message.raw, thread.id)) return;
 			await thread.subscribe();
 			await persistTelegramThreadContext({
 				thread,
@@ -985,6 +1045,7 @@ class TelegramConnector extends ConnectorBase<
 		});
 
 		bot.onSubscribedMessage(async (thread, message) => {
+			if (rejectUnauthorized(message.raw, thread.id)) return;
 			await persistTelegramThreadContext({
 				thread,
 				bindingsPath,
@@ -1006,6 +1067,33 @@ class TelegramConnector extends ConnectorBase<
 				return;
 			}
 			await handleTurn(thread, message.text);
+		});
+
+		// Telegram routes any message whose first entity is a `bot_command` —
+		// `/help`, `/new`, `/whereami`, `/sessions`, every command this
+		// connector documents — down the slash-command path instead of the
+		// message path. With no handler registered there, all of them were
+		// dropped without a log line and only plain text ever reached a
+		// session, which is why the bot answered "ping" and ignored "/help".
+		bot.onSlashCommand(async (event) => {
+			// For Telegram the channel id IS the thread id (`telegram:<chat>`).
+			const threadId = event.channel.id;
+			if (rejectUnauthorized(event.raw, threadId)) return;
+			const thread = bot.thread(threadId) as Thread<TelegramThreadState>;
+			await thread.subscribe().catch(() => undefined);
+			// Rebuild the text the command arrived as, so the shared chat
+			// command host parses it exactly as it would from any transport.
+			const text = event.text?.trim()
+				? `${event.command} ${event.text.trim()}`
+				: event.command;
+			await persistTelegramThreadContext({
+				thread,
+				bindingsPath,
+				baseStartRequest: startRequest,
+				rawMessage: event.raw,
+				errorLabel: "Telegram",
+			});
+			await handleTurn(thread, text);
 		});
 
 		await bot.initialize();
@@ -1102,6 +1190,46 @@ class TelegramConnector extends ConnectorBase<
 		io.writeln(
 			`[telegram] connected as @${options.botUsername} mode=${telegram.runtimeMode} rpc=${rpcAddress} provider=${startRequest.provider} model=${startRequest.model} tools=${startRequest.enableTools ? "on" : "off"}`,
 		);
+		// Say hello in the chat itself. Two connectors sharing one bot token are
+		// indistinguishable from Telegram's side, so this is the only thing that
+		// tells the owner which process, machine and version is actually live.
+		if (options.announce !== false && options.announceChatId) {
+			const notice = await sendTelegramStartupNotice({
+				botToken: options.botToken,
+				chatId: options.announceChatId,
+				text: buildTelegramStartupNotice({
+					botUsername: options.botUsername,
+					cliVersion,
+					pid: process.pid,
+					rpcAddress,
+					cwd: startRequest.cwd || process.cwd(),
+					provider: startRequest.provider,
+					model: startRequest.model,
+					mode: options.mode,
+					enableTools: startRequest.enableTools === true,
+				}),
+			});
+			if (notice.ok) {
+				io.writeln(
+					`[telegram] startup confirmation sent to chat ${options.announceChatId}`,
+				);
+			} else {
+				// Not fatal: a connector that cannot announce itself still works.
+				io.writeln(
+					`[telegram] could not send startup confirmation to chat ${options.announceChatId}: ${notice.error}`,
+				);
+				loggerAdapter.core.log("Telegram startup confirmation failed", {
+					severity: "warn",
+					transport: "telegram",
+					chatId: options.announceChatId,
+					error: notice.error,
+				});
+			}
+		} else if (options.announce !== false) {
+			io.writeln(
+				"[telegram] no chat id configured — startup confirmation skipped (pass --announce-chat-id <id>)",
+			);
+		}
 		io.writeln("[telegram] send /clear in a chat to start a fresh RPC session");
 		io.writeln(
 			"[telegram] send /whereami in a chat to get its delivery thread id",
@@ -1156,6 +1284,7 @@ export const telegramConnector: ConnectCommandDefinition =
 	new TelegramConnector();
 
 export const __test__ = {
+	isAllowedTelegramUser,
 	fetchTelegramBotUsername,
 	readTelegramBotId,
 	resolveTelegramBotUsername,

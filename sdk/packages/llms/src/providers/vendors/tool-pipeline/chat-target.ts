@@ -128,6 +128,15 @@ const state = () =>
 		boundChatKeys: new Map<string, string>(),
 	}));
 
+/**
+ * The chat this process last routed an ordinary turn to, if any. Providers use
+ * it to keep a running conversation on its own chat when the prompt hash alone
+ * cannot tell two conversations apart.
+ */
+export function getActiveChatKey(providerId: string): string | undefined {
+	return state().lastActiveChatKeys.get(providerId);
+}
+
 /** Record the chat an ordinary turn just used. */
 export function recordActiveChatKey(providerId: string, chatKey: string): void {
 	state().lastActiveChatKeys.set(providerId, chatKey);

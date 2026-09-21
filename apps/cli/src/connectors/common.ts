@@ -28,6 +28,48 @@ export const CLINE_CONNECTOR_DETACHED_CHILD_ENV =
  */
 export const CONNECT_ALREADY_RUNNING_EXIT_CODE = 75;
 
+/** Flags whose next argument is a secret (bot tokens, API keys, passwords). */
+const SECRET_FLAGS = new Set([
+	"-k",
+	"--key",
+	"--token",
+	"--bot-token",
+	"--api-key",
+	"--secret",
+	"--password",
+	"--signing-secret",
+	"--app-token",
+]);
+
+/**
+ * A command line safe to write to a log file.
+ *
+ * Connectors are spawned with their bot token on the command line, and that
+ * command line was logged verbatim — so every connector start wrote the token
+ * into `cline.log` in plain text. Values after a secret flag, `--flag=value`
+ * forms of them, and anything shaped like a Telegram bot token are masked.
+ */
+export function redactSecretArgs(args: readonly string[]): string[] {
+	const out: string[] = [];
+	for (let i = 0; i < args.length; i++) {
+		const arg = args[i] ?? "";
+		const eq = arg.indexOf("=");
+		if (eq > 0 && SECRET_FLAGS.has(arg.slice(0, eq))) {
+			out.push(`${arg.slice(0, eq)}=[redacted]`);
+			continue;
+		}
+		if (SECRET_FLAGS.has(arg) && i + 1 < args.length) {
+			out.push(arg, "[redacted]");
+			i++;
+			continue;
+		}
+		out.push(
+			arg.replace(/\b\d{6,}:[A-Za-z0-9_-]{30,}\b/g, "[redacted-bot-token]"),
+		);
+	}
+	return out;
+}
+
 export function parseBooleanFlag(rawArgs: string[], flag: string): boolean {
 	return rawArgs.includes(flag);
 }
@@ -195,7 +237,7 @@ export function spawnDetachedConnector(
 			});
 			logger.core.error?.("Unable to resolve detached connector command", {
 				commandPrefixArgs,
-				rawArgs,
+				rawArgs: redactSecretArgs(rawArgs),
 				childEnvKey,
 				entryArg: process.argv[1],
 				cwd: process.cwd(),
@@ -223,7 +265,7 @@ export function spawnDetachedConnector(
 		});
 		logSpawnedProcess({
 			component: options?.component ?? "connectors",
-			command: [command.launcher, ...command.childArgs],
+			command: [command.launcher, ...redactSecretArgs(command.childArgs)],
 			childPid: child.pid ?? undefined,
 			cwd: process.cwd(),
 			detached: true,
@@ -244,8 +286,11 @@ export function spawnDetachedConnector(
 			});
 			logger.core.error?.("Failed to spawn detached connector", {
 				error,
-				command: [command.launcher, ...command.childArgs].join(" "),
-				commandArgs: command.childArgs,
+				command: [
+					command.launcher,
+					...redactSecretArgs(command.childArgs),
+				].join(" "),
+				commandArgs: redactSecretArgs(command.childArgs),
 				childEnvKey,
 				logPath: options?.logPath,
 				...options?.metadata,

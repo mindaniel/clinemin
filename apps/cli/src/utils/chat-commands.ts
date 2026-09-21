@@ -46,6 +46,14 @@ export type ConnectorSessionSummary = {
 	cwd?: string;
 	updatedAt?: string;
 	unattended: boolean;
+	/**
+	 * The hub is running it right now. False for a stopped session (attaching
+	 * revives it) and for one a TUI runs on its own local backend; absent when
+	 * the hub cannot tell (older daemon).
+	 */
+	live?: boolean;
+	/** A TUI still has it open; reviving it would give it two writers. */
+	heldByPid?: number;
 };
 
 export type ChatCommandContext = {
@@ -84,8 +92,14 @@ export type ChatCommandContext = {
 	sessions?: {
 		/** Recent sessions the hub knows about, newest first. */
 		list?: (limit: number) => Promise<ConnectorSessionSummary[]>;
-		/** Point this thread at `sessionId`; returns a line for the user. */
-		attach?: (sessionId: string) => Promise<string> | string;
+		/**
+		 * Point this thread at `sessionId`; returns a line for the user.
+		 * `revive` starts a stopped session back up in the hub first.
+		 */
+		attach?: (
+			sessionId: string,
+			options?: { revive?: boolean },
+		) => Promise<string> | string;
 		/** Stop driving the attached session and go back to the thread's own. */
 		detach?: () => Promise<string> | string;
 		/** The session this thread is currently driving, if it was attached. */
@@ -322,10 +336,32 @@ function usage(text: string): string {
  */
 const SESSION_ID_PREFIX_LENGTH = 8;
 
+/**
+ * The part of a session id worth showing, and worth typing back.
+ *
+ * Hub ids are `<epoch-ms>_<random>`. The leading timestamp is identical for
+ * every session started in the same ~100-second window, so two CLIs opened
+ * together showed the SAME 8-character prefix and the list could not be used
+ * to tell them apart. The random tail is the part that differs.
+ */
+export function shortSessionLabel(sessionId: string): string {
+	const separator = sessionId.lastIndexOf("_");
+	if (separator > 0 && separator < sessionId.length - 1) {
+		return sessionId.slice(separator + 1);
+	}
+	return sessionId.slice(0, SESSION_ID_PREFIX_LENGTH);
+}
+
 function formatSessionLine(session: ConnectorSessionSummary): string {
 	const parts = [
-		session.sessionId.slice(0, SESSION_ID_PREFIX_LENGTH),
-		session.unattended ? "unattended" : "has a client",
+		shortSessionLabel(session.sessionId),
+		session.heldByPid
+			? `open in a TUI (pid ${session.heldByPid})`
+			: session.live === false
+				? "stopped"
+				: session.unattended
+					? "running, unattended"
+					: "running, has a client",
 	];
 	if (session.model) parts.push(session.model);
 	else if (session.provider) parts.push(session.provider);
@@ -362,6 +398,19 @@ export function resolveSessionReference(
 	if (exact) {
 		return { ok: true, session: exact };
 	}
+	// What the list shows is the tail, so that is what a user types back.
+	const byLabel = sessions.filter(
+		(session) => shortSessionLabel(session.sessionId).toLowerCase() === wanted,
+	);
+	if (byLabel.length === 1 && byLabel[0]) {
+		return { ok: true, session: byLabel[0] };
+	}
+	if (byLabel.length > 1) {
+		return {
+			ok: false,
+			error: `${reference} matches ${byLabel.length} sessions. Use the full id.`,
+		};
+	}
 	const matches = sessions.filter((session) =>
 		session.sessionId.toLowerCase().startsWith(wanted),
 	);
@@ -376,7 +425,7 @@ export function resolveSessionReference(
 	}
 	return {
 		ok: false,
-		error: `No session starts with ${reference}. Try /sessions.`,
+		error: `No session matches ${reference}. Try /sessions.`,
 	};
 }
 
@@ -436,7 +485,7 @@ function createDefaultChatCommandHost(): ChatCommandHost {
 				const sessions = (await context.sessions?.list?.(15)) ?? [];
 				if (sessions.length === 0) {
 					await context.reply(
-						'No sessions on the hub yet. Start one with `cline --zen "<task>"`.',
+						'No sessions yet. Start one with `cline --zen "<task>"`.',
 					);
 					return;
 				}
@@ -450,7 +499,7 @@ function createDefaultChatCommandHost(): ChatCommandHost {
 							return `${marker}${formatSessionLine(session)}`;
 						}),
 						"",
-						"/attach <id> to drive one · /detach to stop",
+						"/attach <id> to drive one (a stopped one is started back up with its history) · /detach to stop",
 					].join("\n"),
 				);
 			},
@@ -470,16 +519,31 @@ function createDefaultChatCommandHost(): ChatCommandHost {
 					await context.reply(resolved.error);
 					return;
 				}
+				// A stopped session is revived by `attach`. One a TUI still has open
+				// is not: two runtimes on one transcript overwrite each other.
+				if (resolved.session.heldByPid) {
+					await context.reply(
+						[
+							`${shortSessionLabel(resolved.session.sessionId)} is open in a TUI (pid ${resolved.session.heldByPid}) that runs it outside the hub.`,
+							"Close that TUI, then /attach again — it will be started back up",
+							"here with its full history.",
+						].join("\n"),
+					);
+					return;
+				}
 				const attached =
-					(await context.sessions?.attach?.(resolved.session.sessionId)) ??
-					`Attached to ${resolved.session.sessionId}.`;
+					(await context.sessions?.attach?.(resolved.session.sessionId, {
+						revive: resolved.session.live === false,
+					})) ?? `Attached to ${resolved.session.sessionId}.`;
 				// Say it up front rather than letting the first tool call hang. A
 				// session started from a TUI answers approvals through the client
 				// attached to it, and this thread is not that client: forwarding a
 				// message parks the turn on the first tool call that needs one, and
 				// from here that looks like the session simply stopped replying.
+				// A revived session is started by this connector, so its approvals
+				// come here — the warning only applies to one another client runs.
 				await context.reply(
-					resolved.session.unattended
+					resolved.session.unattended || resolved.session.live === false
 						? attached
 						: [
 								attached,

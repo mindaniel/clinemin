@@ -580,6 +580,19 @@ export async function runCli(): Promise<void> {
 			await scheduleCmd.parseAsync(cmd.args, { from: "user" });
 		});
 	program
+		.command("stop")
+		.description(
+			"Stop every Cline process on this machine: connectors, hub, leftovers",
+		)
+		.option("--dry-run", "List what would be stopped without stopping it")
+		.action(async (_opts: unknown, cmd: Command) => {
+			const { runStopEverything } = await import("./commands/stop-all");
+			ctx.exitCode = await runStopEverything(io, {
+				dryRun: cmd.opts().dryRun === true,
+			});
+		});
+
+	program
 		.command("hub")
 		.description("Manage the local hub daemon")
 		.allowUnknownOption()

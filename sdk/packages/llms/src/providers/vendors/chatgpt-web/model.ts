@@ -34,6 +34,7 @@ import {
 import { throwIfAborted } from "../tool-pipeline/abort";
 import { withBrowserLock } from "../tool-pipeline/browser-lock";
 import { resolveChatKey } from "../tool-pipeline/chat-target";
+import { confirmChatLocation } from "../tool-pipeline/confirm-chat-location";
 import { logConversationTurn } from "../tool-pipeline/conversation-logger";
 import { consumePendingInjectedReply } from "../tool-pipeline/injected-reply";
 import { parseInvokeStyleToolCalls } from "../tool-pipeline/invoke-parser";
@@ -421,6 +422,18 @@ export function createChatGPTWebModel(
 
 		// Wait for the composer to be ready.
 		await waitForComposerReady(cdp, cdpSessionId, runtimeConfig, logger);
+		if (sessionId) {
+			await confirmChatLocation({
+				cdp,
+				cdpSessionId,
+				provider: "chatgpt-web",
+				chatId: sessionId,
+				chatUrl: `https://chatgpt.com/c/${sessionId}`,
+				waitReady: () =>
+					waitForComposerReady(cdp, cdpSessionId, runtimeConfig, logger),
+				logger,
+			});
+		}
 
 		// Build the prompt text.
 		const promptText = buildChatGPTPrompt(

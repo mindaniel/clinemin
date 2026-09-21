@@ -77,7 +77,7 @@ describe("telegramConnector", () => {
 		expect(options.enableTools).toBe(true);
 	});
 
-	it("builds an authorization hook from --allowed-user-id", () => {
+	it("records --allowed-user-id for the in-process check, not a shell hook", () => {
 		const options = parseTelegramArgs([
 			"--bot-token",
 			"123:test",
@@ -87,9 +87,66 @@ describe("telegramConnector", () => {
 			"1201547643",
 		]);
 
-		expect(options.hookCommand).toBe(
-			`jq -r ".payload.actor.participantKey" | grep -qx "telegram:id:1201547643" && echo '{"action":"allow"}' || echo '{"action":"deny","message":"unauthorized","reason":"not_on_allowlist"}'`,
+		expect(options.allowedUserIds).toEqual(["1201547643"]);
+		// The old `jq | grep` pipeline could not run on Windows, and a hook
+		// that cannot run is treated as allow — so the list enforced nothing.
+		expect(options.hookCommand).toBeUndefined();
+	});
+
+	it("denies a sender who is not on the allow-list, and anyone unidentified", () => {
+		const allow = ["1201547643"];
+		expect(
+			__test__.isAllowedTelegramUser(allow, "telegram:id:1201547643"),
+		).toBe(true);
+		expect(__test__.isAllowedTelegramUser(allow, "telegram:id:999")).toBe(
+			false,
 		);
+		// An allow-list is set but the sender could not be identified: deny.
+		expect(__test__.isAllowedTelegramUser(allow, undefined)).toBe(false);
+		// No list configured means the bot is open, as before.
+		expect(__test__.isAllowedTelegramUser([], "telegram:id:999")).toBe(true);
+		expect(__test__.isAllowedTelegramUser(undefined, undefined)).toBe(true);
+	});
+
+	it("announces to the allow-listed chat by default", () => {
+		const options = parseTelegramArgs([
+			"--bot-token",
+			"123:test",
+			"--cwd",
+			"/tmp/work",
+			"--allowed-user-id",
+			"1201547643",
+		]);
+
+		// The saved chat id doubles as the allow-list id, so the common setup
+		// gets the confirmation without a second flag.
+		expect(options.announceChatId).toBe("1201547643");
+		expect(options.announce).toBe(true);
+	});
+
+	it("honours --announce-chat-id and --no-announce", () => {
+		const explicit = parseTelegramArgs([
+			"--bot-token",
+			"123:test",
+			"--cwd",
+			"/tmp/work",
+			"--allowed-user-id",
+			"1201547643",
+			"--announce-chat-id",
+			"-1009999",
+		]);
+		expect(explicit.announceChatId).toBe("-1009999");
+
+		const silent = parseTelegramArgs([
+			"--bot-token",
+			"123:test",
+			"--cwd",
+			"/tmp/work",
+			"--allowed-user-id",
+			"1201547643",
+			"--no-announce",
+		]);
+		expect(silent.announce).toBe(false);
 	});
 
 	it("rejects unsafe --allowed-user-id values", () => {
@@ -105,35 +162,38 @@ describe("telegramConnector", () => {
 		).toThrow("digits only");
 	});
 
-	it("rejects mixing --allowed-user-id with --hook-command", () => {
-		expect(() =>
-			parseTelegramArgs([
+	it("accepts --allowed-user-id together with --hook-command", () => {
+		// These were mutually exclusive only because the allow-list WAS a hook
+		// command. It is enforced in-process now, so a user can have both.
+		const options = parseTelegramArgs([
+			"--bot-token",
+			"123:test",
+			"--cwd",
+			"/tmp/work",
+			"--allowed-user-id",
+			"1201547643",
+			"--hook-command",
+			"echo noop",
+		]);
+
+		expect(options.allowedUserIds).toEqual(["1201547643"]);
+		expect(options.hookCommand).toBe("echo noop");
+	});
+
+	it("keeps the hook command env var alongside an allow-list", () => {
+		const originalHookCommand = process.env.CLINE_CONNECT_HOOK_COMMAND;
+		process.env.CLINE_CONNECT_HOOK_COMMAND = "echo noop";
+		try {
+			const options = parseTelegramArgs([
 				"--bot-token",
 				"123:test",
 				"--cwd",
 				"/tmp/work",
 				"--allowed-user-id",
 				"1201547643",
-				"--hook-command",
-				"echo noop",
-			]),
-		).toThrow("either --allowed-user-id or --hook-command");
-	});
-
-	it("rejects mixing --allowed-user-id with the hook command env var", () => {
-		const originalHookCommand = process.env.CLINE_CONNECT_HOOK_COMMAND;
-		process.env.CLINE_CONNECT_HOOK_COMMAND = "echo noop";
-		try {
-			expect(() =>
-				parseTelegramArgs([
-					"--bot-token",
-					"123:test",
-					"--cwd",
-					"/tmp/work",
-					"--allowed-user-id",
-					"1201547643",
-				]),
-			).toThrow("either --allowed-user-id or --hook-command");
+			]);
+			expect(options.allowedUserIds).toEqual(["1201547643"]);
+			expect(options.hookCommand).toBe("echo noop");
 		} finally {
 			if (originalHookCommand === undefined) {
 				delete process.env.CLINE_CONNECT_HOOK_COMMAND;

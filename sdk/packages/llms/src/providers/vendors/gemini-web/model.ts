@@ -31,6 +31,7 @@ import {
 import { buildLeanConversation, currentUserLabel } from "../deepseek-web-v2";
 import { withBrowserLock } from "../tool-pipeline/browser-lock";
 import { resolveChatKey } from "../tool-pipeline/chat-target";
+import { confirmChatLocation } from "../tool-pipeline/confirm-chat-location";
 import { logConversationTurn } from "../tool-pipeline/conversation-logger";
 import { parseInvokeStyleToolCalls } from "../tool-pipeline/invoke-parser";
 import { parseManagerBlocks } from "../tool-pipeline/manager-block";
@@ -524,6 +525,18 @@ export function createGeminiWebModel(
 		);
 
 		await waitForComposerReady(cdp, cdpSessionId, config, logger);
+		if (!isNewChat && sessionId) {
+			await confirmChatLocation({
+				cdp,
+				cdpSessionId,
+				provider: "gemini-web",
+				chatId: sessionId,
+				chatUrl: `https://gemini.google.com/app/${sessionId}`,
+				waitReady: () =>
+					waitForComposerReady(cdp, cdpSessionId, config, logger),
+				logger,
+			});
+		}
 
 		// Build the flat prompt sent to the UI, stripping the system prompt on
 		// follow-up turns (the web chat already has it) and re-injecting it on

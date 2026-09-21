@@ -144,6 +144,8 @@ export function startSessionMirror<TState extends ConnectorThreadState>(
 
 	let streamedText = "";
 	let lastStatus = "";
+	/** Whether any assistant text reached the thread during this turn. */
+	let postedTextThisTurn = false;
 
 	const post = (text: string): void => {
 		if (!text.trim()) {
@@ -158,6 +160,25 @@ export function startSessionMirror<TState extends ConnectorThreadState>(
 				error,
 			});
 		});
+	};
+
+	/**
+	 * Post the assistant text collected so far and start collecting afresh.
+	 *
+	 * Called whenever the model finishes speaking — before a tool status, at
+	 * the end of every iteration, at the end of the turn — rather than only on
+	 * the turn's terminal event. That event carries no reply text, and a turn
+	 * that ran from the hub's queue (every message sent from here while the
+	 * session is busy or owned by a TUI) may not produce one this mirror sees.
+	 * Waiting for it is how a whole answer never reached the phone.
+	 */
+	const flushText = (): void => {
+		const text = streamedText;
+		streamedText = "";
+		if (text.trim()) {
+			postedTextThisTurn = true;
+			post(text);
+		}
 	};
 
 	const unsubscribe = options.client.streamEvents(
@@ -186,6 +207,8 @@ export function startSessionMirror<TState extends ConnectorThreadState>(
 						return;
 					}
 					case "runtime.chat.tool_call_start": {
+						// What the model said before calling the tool comes first.
+						flushText();
 						const status = formatConnectorToolStatus({
 							toolName: payloadString(event.payload, "toolName"),
 							status: "start",
@@ -203,24 +226,39 @@ export function startSessionMirror<TState extends ConnectorThreadState>(
 						streamedText = applyTextDelta(event.payload, streamedText);
 						return;
 					}
+					case "runtime.chat.iteration_end": {
+						flushText();
+						return;
+					}
 					case "runtime.chat.completed": {
-						const finalText =
-							payloadString(event.payload, "text") || streamedText;
-						streamedText = "";
+						flushText();
+						// Nothing streamed at all: fall back to the result's own text.
+						if (!postedTextThisTurn) {
+							const result = event.payload.result;
+							const resultText =
+								result && typeof result === "object"
+									? payloadString(result as Record<string, unknown>, "text")
+									: undefined;
+							const fallback =
+								payloadString(event.payload, "text") || resultText;
+							if (fallback) post(fallback);
+						}
+						postedTextThisTurn = false;
 						lastStatus = "";
-						post(finalText);
 						return;
 					}
 					case "runtime.chat.aborted": {
-						streamedText = "";
+						flushText();
+						postedTextThisTurn = false;
 						lastStatus = "";
 						post("Task aborted.");
 						return;
 					}
 					case "runtime.chat.failed": {
+						flushText();
 						const message =
 							payloadString(event.payload, "error") || "Runtime turn failed";
-						streamedText = "";
+						postedTextThisTurn = false;
 						lastStatus = "";
 						post(`Task failed: ${message}`);
 						return;

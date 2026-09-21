@@ -46,6 +46,20 @@ export type ConnectTelegramOptions = {
 	enableTools: boolean;
 	rpcAddress: string;
 	hookCommand?: string;
+	/**
+	 * Chat to post the "connector online" notice to on startup, so the owner
+	 * can see which process and version actually came up. Defaults to the
+	 * allow-listed user id when one was given; `announce: false` turns it off.
+	 */
+	announceChatId?: string;
+	announce?: boolean;
+	/**
+	 * Telegram user ids allowed to drive the bot. Empty means everyone, which
+	 * is what a bot with no allow-list is. Enforced in-process: the old shell
+	 * hook needed `jq` and `grep`, which do not exist on Windows, and a hook
+	 * that cannot run is treated as "allow".
+	 */
+	allowedUserIds?: string[];
 };
 
 export type TelegramConnectorState = {

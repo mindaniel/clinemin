@@ -720,15 +720,19 @@ describe("AgentRuntime", () => {
 		});
 	});
 
-	it("silently drops a skipped tool call instead of telling the model", async () => {
-		// The web-provider "skip" action. Unlike a denial, the model must receive
-		// nothing at all: no tool result, no error, and no continuation note --
-		// the note alone would read as "carry on" with the work just declined.
+	it("ends the run on a skipped tool call without calling the model again", async () => {
+		// The "skip" action. Unlike a denial, the model receives nothing at all:
+		// no tool result, no error, no continuation note, and no follow-up
+		// request -- the run stops so the user can type the next message.
 		const executeTool = vi.fn(async () => ({ echoed: "hi" }));
 		const requestToolApproval = vi.fn(async () => ({
 			approved: false,
 			silentSkip: true,
 		}));
+		const secondCall = vi.fn(() => [
+			{ type: "text-delta" as const, text: "should not run" },
+			{ type: "finish" as const, reason: "stop" as const },
+		]);
 		const model = new ScriptedModel([
 			() => [
 				{
@@ -739,17 +743,7 @@ describe("AgentRuntime", () => {
 				},
 				{ type: "finish", reason: "tool-calls" },
 			],
-			(request) => {
-				const last = request.messages.at(-1) as AgentMessage;
-				expect(last.role).toBe("assistant");
-				expect(
-					request.messages.some((message) => message.role === "tool"),
-				).toBe(false);
-				return [
-					{ type: "text-delta", text: "moved on" },
-					{ type: "finish", reason: "stop" },
-				];
-			},
+			secondCall,
 		]);
 		const runtime = new AgentRuntime({
 			sessionId: "session_test",
@@ -778,9 +772,11 @@ describe("AgentRuntime", () => {
 		const result = await runtime.run("Start");
 
 		expect(result.status).toBe("completed");
-		expect(result.outputText).toBe("moved on");
+		expect(secondCall).not.toHaveBeenCalled();
 		expect(executeTool).not.toHaveBeenCalled();
 		expect(addedRoles).not.toContain("tool");
+		// No continuation note either: the last message is the model's own.
+		expect(addedRoles.at(-1)).toBe("assistant");
 	});
 
 	it("applies beforeTool approval policy overrides before executing tools", async () => {

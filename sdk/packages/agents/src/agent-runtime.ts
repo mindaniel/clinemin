@@ -787,11 +787,12 @@ export class AgentRuntime {
 				// The text is per project and customisable via the CLI `/note`
 				// command; see llms' `tool-pipeline/continuation-note.ts`.
 				//
-				// Keyed off what was actually sent. When every call was skipped there
-				// is nothing for the model to continue from, and a lone continuation
-				// note would be the one thing it did receive -- a nudge to carry on
-				// with work the user just declined to let it do.
-				if (sentMessages.length > 0) {
+				// A skip also ends the run right here: the user chose it to get the
+				// floor back, not to have the model called again with a gap where the
+				// tool result should be. So no continuation note either -- it would
+				// be a nudge to carry on with work the user just declined.
+				const skippedAny = executed.some((execution) => execution.silentSkip);
+				if (sentMessages.length > 0 && !skippedAny) {
 					const continuationMessage: AgentMessage = {
 						id: `cont-${Date.now()}`,
 						role: "user",
@@ -811,6 +812,16 @@ export class AgentRuntime {
 					iteration: this.state.iteration,
 					toolCallCount: toolCalls.length,
 				});
+				if (skippedAny) {
+					const result = this.finishRun("completed", finalAssistantMessage);
+					await this.callAfterRunHooks(result);
+					await this.emit({
+						type: "run-finished",
+						snapshot: this.snapshot(),
+						result,
+					});
+					return result;
+				}
 				const terminalToolMessage = this.findCompletingToolMessage(
 					toolCalls,
 					toolMessages.map((message, index) =>

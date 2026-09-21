@@ -2,16 +2,22 @@ import type { ChoiceContext } from "@opentui-ui/dialog";
 import { useDialogKeyboard } from "@opentui-ui/dialog/react";
 import { useState } from "react";
 import { palette } from "../../palette";
-import type { TelegramConnectorConfig } from "../../telegram-connector-config";
+import {
+	looksLikeBotToken,
+	maskBotToken,
+	type TelegramConnectorConfig,
+} from "../../telegram-connector-config";
 
 export interface TelegramConfigDialogResult {
 	botToken: string;
 	chatId: string;
 	/** Desired live state: true = start/keep running, false = stop. */
 	running: boolean;
+	/** Bring the connector back by itself when Cline (or the hub) restarts. */
+	autostart: boolean;
 }
 
-type Field = "token" | "chat" | "toggle";
+type Field = "token" | "chat" | "toggle" | "autostart";
 
 /**
  * Dialog content for `/telegram`: enter or update the Bot Token and Chat ID,
@@ -24,9 +30,16 @@ export function TelegramConfigDialogContent(
 	},
 ) {
 	const { resolve, dismiss, dialogId, initial } = props;
-	const [botToken, setBotToken] = useState(initial?.botToken ?? "");
+	const savedToken = initial?.botToken ?? "";
+	// The token field starts EMPTY even when one is saved. Pre-filling it meant
+	// a paste landed inside the old value instead of replacing it, producing a
+	// hybrid string that is the right length and completely wrong — which
+	// Telegram then rejects with a 401 long after the dialog said "saved".
+	// Empty means "keep the saved one".
+	const [botToken, setBotToken] = useState("");
 	const [chatId, setChatId] = useState(initial?.chatId ?? "");
 	const [running, setRunning] = useState(initial?.running ?? false);
+	const [autostart, setAutostart] = useState(initial?.autostart ?? false);
 	const [field, setField] = useState<Field>("token");
 	const [error, setError] = useState<string | null>(null);
 
@@ -38,19 +51,26 @@ export function TelegramConfigDialogContent(
 		// Tab / Shift+Tab cycle between the two text fields and the toggle.
 		if (key.name === "tab") {
 			setError(null);
-			setField((prev) =>
-				key.shift
-					? prev === "toggle"
-						? "chat"
-						: prev === "chat"
-							? "token"
-							: "toggle"
-					: prev === "token"
-						? "chat"
-						: prev === "chat"
-							? "toggle"
-							: "token",
-			);
+			// One ordered ring, so adding a row does not mean rewriting the
+			// nested conditionals this used to be.
+			const order: Field[] = ["token", "chat", "toggle", "autostart"];
+			setField((prev) => {
+				const index = order.indexOf(prev);
+				const next = key.shift
+					? (index - 1 + order.length) % order.length
+					: (index + 1) % order.length;
+				return order[next];
+			});
+			return;
+		}
+		if (field === "autostart") {
+			if (key.name === "space") {
+				setAutostart((prev) => !prev);
+				return;
+			}
+			if (key.name === "return") {
+				save();
+			}
 			return;
 		}
 		if (field === "toggle") {
@@ -74,8 +94,19 @@ export function TelegramConfigDialogContent(
 	}, dialogId);
 
 	function save() {
-		if (!botToken.trim()) {
+		const enteredToken = botToken.trim();
+		const effectiveToken = enteredToken || savedToken;
+		if (!effectiveToken) {
 			setError("Bot token is required.");
+			setField("token");
+			return;
+		}
+		// Validate what will actually be stored, including a token kept from a
+		// previous save — that is exactly the case that went bad silently.
+		if (!looksLikeBotToken(effectiveToken)) {
+			setError(
+				`That does not look like a bot token (got ${effectiveToken.replace(/\s+/g, "").length} characters; expected <bot id>:<secret>). Re-paste it.`,
+			);
 			setField("token");
 			return;
 		}
@@ -87,9 +118,10 @@ export function TelegramConfigDialogContent(
 			return;
 		}
 		resolve({
-			botToken: botToken.trim(),
+			botToken: effectiveToken,
 			chatId: chatId.trim(),
 			running,
+			autostart,
 		});
 	}
 
@@ -98,7 +130,12 @@ export function TelegramConfigDialogContent(
 			<text>Telegram connector</text>
 
 			<box flexDirection="column" gap={0}>
-				<text fg={palette.muted}>Bot token</text>
+				<text fg={palette.muted}>
+					Bot token
+					{savedToken
+						? ` — saved: ${maskBotToken(savedToken)}, leave empty to keep`
+						: ""}
+				</text>
 				<box
 					border
 					borderStyle="rounded"
@@ -108,7 +145,11 @@ export function TelegramConfigDialogContent(
 					<input
 						value={botToken}
 						onInput={setBotToken}
-						placeholder="7123456789:AAH..."
+						placeholder={
+							savedToken
+								? "empty = keep saved token; paste to replace"
+								: "7123456789:AAH..."
+						}
 						flexGrow={1}
 						focused={field === "token"}
 					/>
@@ -141,6 +182,16 @@ export function TelegramConfigDialogContent(
 				<text fg={field === "toggle" ? palette.textOnSelection : undefined}>
 					{running ? "[x]" : "[ ]"} Telegram connector{" "}
 					{running ? "ON (running)" : "OFF (stopped)"}
+				</text>
+			</box>
+
+			<box
+				paddingX={1}
+				backgroundColor={field === "autostart" ? palette.selection : undefined}
+				onMouseDown={() => setAutostart((prev) => !prev)}
+			>
+				<text fg={field === "autostart" ? palette.textOnSelection : undefined}>
+					{autostart ? "[x]" : "[ ]"} Start automatically when Cline starts
 				</text>
 			</box>
 

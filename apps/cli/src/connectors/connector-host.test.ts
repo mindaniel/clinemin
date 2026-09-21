@@ -4,7 +4,11 @@ import { join } from "node:path";
 import type { SentMessage } from "chat";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { enqueueThreadTurn } from "./chat-runtime";
-import { handleConnectorUserTurn } from "./connector-host";
+import {
+	handleConnectorUserTurn,
+	reviveHubSession,
+	splitConnectorText,
+} from "./connector-host";
 
 vi.mock("./hooks", () => ({
 	authorizeConnectorEvent: vi.fn(async () => ({ action: "allow" })),
@@ -176,6 +180,55 @@ describe("handleConnectorUserTurn", () => {
 		for (const dir of tempDirs.splice(0)) {
 			rmSync(dir, { recursive: true, force: true });
 		}
+	});
+
+	it("lists sessions without tripping over a later binding", async () => {
+		// `/sessions` used to read a `currentState` declared further down
+		// `handleConnectorUserTurn`, so the command ran inside its temporal dead
+		// zone and every invocation failed with "Cannot access 'currentState'
+		// before initialization".
+		const dir = mkdtempSync(join(tmpdir(), "connector-host-test-"));
+		tempDirs.push(dir);
+		const bindingsPath = join(dir, "threads.json");
+		const { thread, posts } = createThread({
+			enableTools: false,
+			autoApproveTools: false,
+			cwd: "/tmp/work",
+			workspaceRoot: "/tmp/work",
+		});
+
+		await handleConnectorUserTurn({
+			thread: thread as never,
+			client: {
+				listSessions: async () => [
+					{
+						sessionId: "session-abcdef123456",
+						metadata: { model: "deepseek-reasoner", cwd: "/tmp/other" },
+					},
+				],
+			} as never,
+			pendingApprovals: new Map(),
+			baseStartRequest: baseStartRequest() as never,
+			explicitSystemPrompt: undefined,
+			clientId: "client-1",
+			logger: {
+				core: { debug: vi.fn(), log: vi.fn(), error: vi.fn() },
+			} as never,
+			transport: "telegram",
+			botUserName: "ClineAdapterBot",
+			requestStop: vi.fn(),
+			bindingsPath,
+			systemRules: "rules",
+			errorLabel: "Telegram",
+			getSessionMetadata: () => ({}),
+			reusedLogMessage: "reused",
+			text: "/sessions",
+		});
+
+		const reply = messageText(posts.at(-1));
+		expect(reply).toContain("Sessions (newest first):");
+		expect(reply).toContain("session-");
+		expect(reply).not.toContain("currentState");
 	});
 
 	it("sends a first-contact message only once per persisted thread state", async () => {
@@ -1932,5 +1985,99 @@ describe("handleConnectorUserTurn", () => {
 		);
 		expect(getState().sessionId).toBe("session-1");
 		expect(posts.at(-1)).toEqual({ raw: "fresh reply" });
+	});
+});
+
+describe("reviveHubSession", () => {
+	const startRequest = {
+		provider: "deepseek-web",
+		model: "deepseek-reasoner",
+		apiKey: "connector-key",
+		cwd: "/connector",
+		workspaceRoot: "/connector",
+		enableTools: true,
+	} as never;
+	const messages = [{ role: "user", content: "earlier" }];
+
+	function makeClient(row: Record<string, unknown> | undefined) {
+		return {
+			listSessions: vi.fn(async () => (row ? [row] : [])),
+			readMessages: vi.fn(async () => messages),
+			startRuntimeSession: vi.fn(async () => ({
+				sessionId: "s_1",
+				startResult: { sessionId: "s_1", manifestPath: "", messagesPath: "" },
+			})),
+		};
+	}
+
+	it("starts a stopped session under its own id, model, folder and history", async () => {
+		const client = makeClient({
+			sessionId: "s_1",
+			live: false,
+			metadata: {
+				provider: "deepseek-web-v2",
+				model: "deepseek-chat",
+				cwd: "/project",
+			},
+		});
+		await reviveHubSession({
+			client: client as never,
+			startRequest,
+			sessionId: "s_1",
+		});
+		expect(client.startRuntimeSession).toHaveBeenCalledWith(
+			expect.objectContaining({
+				provider: "deepseek-web-v2",
+				model: "deepseek-chat",
+				cwd: "/project",
+				workspaceRoot: "/project",
+				// Another provider's session must not get the connector's key.
+				apiKey: undefined,
+				enableTools: true,
+			}),
+			{ sessionId: "s_1", initialMessages: messages },
+		);
+	});
+
+	it("refuses a session a TUI still has open", async () => {
+		const client = makeClient({ sessionId: "s_1", live: false, heldByPid: 42 });
+		await expect(
+			reviveHubSession({
+				client: client as never,
+				startRequest,
+				sessionId: "s_1",
+			}),
+		).rejects.toThrow("open in a TUI (pid 42)");
+		expect(client.startRuntimeSession).not.toHaveBeenCalled();
+	});
+
+	it("does nothing for a session the hub is already running", async () => {
+		const client = makeClient({ sessionId: "s_1", live: true });
+		await reviveHubSession({
+			client: client as never,
+			startRequest,
+			sessionId: "s_1",
+		});
+		expect(client.startRuntimeSession).not.toHaveBeenCalled();
+	});
+});
+
+describe("splitConnectorText", () => {
+	it("leaves a short message alone", () => {
+		expect(splitConnectorText("hello")).toEqual(["hello"]);
+	});
+
+	it("splits a long message at paragraph breaks, under the limit, losing nothing", () => {
+		const paragraph = "x".repeat(60);
+		const text = Array.from({ length: 10 }, () => paragraph).join("\n\n");
+		const chunks = splitConnectorText(text, 200);
+		expect(chunks.length).toBeGreaterThan(1);
+		for (const chunk of chunks) expect(chunk.length).toBeLessThanOrEqual(200);
+		expect(chunks.join("").replace(/\n/g, "")).toBe(text.replace(/\n/g, ""));
+	});
+
+	it("hard-cuts a message with no line breaks", () => {
+		const chunks = splitConnectorText("y".repeat(450), 200);
+		expect(chunks.map((c) => c.length)).toEqual([200, 200, 50]);
 	});
 });

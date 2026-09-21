@@ -21,7 +21,7 @@ import {
 	parseLooseDeepSeekToolCalls,
 } from "../deepseek-web";
 import { withBrowserLock } from "../tool-pipeline/browser-lock";
-import { resolveChatKey } from "../tool-pipeline/chat-target";
+import { getActiveChatKey, resolveChatKey } from "../tool-pipeline/chat-target";
 import { isSyntheticUserText } from "../tool-pipeline/continuation-note";
 import { logConversationTurn } from "../tool-pipeline/conversation-logger";
 import { consumePendingInjectedReply } from "../tool-pipeline/injected-reply";
@@ -39,7 +39,7 @@ import {
 import { validateToolCalls } from "../tool-pipeline/tool-dispatcher";
 import type { ProviderFactoryResult } from "../types";
 import { runCompletion } from "./capture";
-import { chatKeyFromPrompt, lookupChatSession } from "./chat-registry";
+import { lookupChatSession, resolveConversationChatKey } from "./chat-registry";
 import { resolveDeepSeekWebV2Config } from "./config";
 
 function detectMalformedToolTag(text: string): string | null {
@@ -821,8 +821,15 @@ function createDeepSeekWebV2Model(
 		// explicitly to the chat the last ordinary turn used. See
 		// `tool-pipeline/chat-target.ts` for the full three-stage /compact
 		// hand-off and for how to wire another web provider into it.
+		// `chatKeyFromPrompt` alone collides whenever two conversations open
+		// with the same words ("hi"), which reopened the older chat and handed
+		// the new conversation someone else's history.
 		const chatKey = resolveChatKey("deepseek-web-v2", () =>
-			chatKeyFromPrompt(options.prompt),
+			resolveConversationChatKey(
+				resolveDeepSeekWebV2Config().chatsFile,
+				options.prompt,
+				getActiveChatKey("deepseek-web-v2"),
+			),
 		);
 		const isNewChat =
 			lookupChatSession(resolveDeepSeekWebV2Config().chatsFile, chatKey) ===

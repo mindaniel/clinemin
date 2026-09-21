@@ -322,6 +322,14 @@ export interface RuntimeHost {
 	dispose(reason?: string): Promise<void>;
 	getSession(sessionId: string): Promise<SessionRecord | undefined>;
 	listSessions(limit?: number): Promise<SessionRecord[]>;
+	/**
+	 * Whether this host is running the session right now, i.e. can take input
+	 * for it. `listSessions` also returns persisted history — including sessions
+	 * another process (a TUI on its local backend) is running — and none of
+	 * those can be sent to through this host. Optional: hosts that cannot tell
+	 * leave it out, and callers must treat that as "unknown", not "no".
+	 */
+	isSessionLive?(sessionId: string): boolean;
 	deleteSession(sessionId: string): Promise<boolean>;
 	updateSession(
 		sessionId: string,

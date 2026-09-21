@@ -31,6 +31,10 @@ export interface HubSessionRow {
 	parentSessionId?: string;
 	metadata?: Record<string, unknown>;
 	messagesPath?: string;
+	/** From `session.list`: the hub is running it. Absent = unknown. */
+	live?: boolean;
+	/** From `session.list`: another live process (a TUI) has it open. */
+	heldByPid?: number;
 }
 
 export interface HubStreamEvent {
@@ -102,6 +106,10 @@ function extractSessionRow(
 				? metadata.messagesPath
 				: undefined,
 		metadata,
+		...(typeof session.live === "boolean" ? { live: session.live } : {}),
+		...(typeof session.heldByPid === "number"
+			? { heldByPid: session.heldByPid }
+			: {}),
 	};
 }
 
@@ -300,14 +308,21 @@ export class HubSessionClient {
 		await this.client.dispose();
 	}
 
+	/**
+	 * `resume` revives a stored session under its own id with its transcript —
+	 * what `cline --resume <id>` does in a TUI — instead of starting a new one.
+	 */
 	async startRuntimeSession(
 		request: ChatStartSessionRequest,
+		resume?: { sessionId: string; initialMessages: LlmsProviders.Message[] },
 	): Promise<ChatStartSessionResponse> {
 		await this.ensureMetadataApplied();
 		const reply = await this.client.command("session.create", {
 			workspaceRoot: request.workspaceRoot,
 			cwd: request.cwd,
+			...(resume ? { initialMessages: resume.initialMessages } : {}),
 			sessionConfig: {
+				...(resume ? { sessionId: resume.sessionId } : {}),
 				providerId: request.provider,
 				modelId: request.model,
 				apiKey: request.apiKey,

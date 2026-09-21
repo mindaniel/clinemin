@@ -9,6 +9,7 @@ import { createHash } from "node:crypto";
 import * as fs from "node:fs";
 import * as path from "node:path";
 import type { LanguageModelV2Prompt } from "@ai-sdk/provider";
+import { confirmChatLocation } from "../tool-pipeline/confirm-chat-location";
 import { connectBrowser } from "./browser";
 import {
 	type ChatSessionRecord,
@@ -156,8 +157,16 @@ export async function openKimiWebChat(
 	});
 	const cdpSessionId = attachResult.sessionId;
 	await navigateKimiChat(cdp, cdpSessionId, { fresh: false, sessionId });
-	return {
-		sessionId,
-		url: `https://www.kimi.ai/chat/${sessionId}`,
-	};
+	const url = `https://www.kimi.ai/chat/${sessionId}`;
+	// The tab may have been opened a moment ago, and its own start-up routing can
+	// win over ours and leave it on a blank new chat. Confirm before returning.
+	await confirmChatLocation({
+		cdp,
+		cdpSessionId,
+		provider: "kimi-web",
+		chatId: sessionId,
+		chatUrl: url,
+		waitReady: async () => undefined,
+	});
+	return { sessionId, url };
 }

@@ -2,6 +2,7 @@ import { createHash } from "node:crypto";
 import * as fs from "node:fs";
 import * as path from "node:path";
 import type { LanguageModelV2Prompt } from "@ai-sdk/provider";
+import { confirmChatLocation } from "../tool-pipeline/confirm-chat-location";
 import {
 	connectBrowser,
 	ensureDeepSeekPage,
@@ -30,6 +31,78 @@ export function chatKeyFromPrompt(prompt: LanguageModelV2Prompt): string {
 	}
 	const normalized = firstUserText.trim().toLowerCase() || "<empty>";
 	return createHash("sha256").update(normalized).digest("hex").slice(0, 24);
+}
+
+/**
+ * True when this prompt is the opening turn of a conversation: the model has
+ * not answered yet.
+ */
+export function isOpeningTurn(prompt: LanguageModelV2Prompt): boolean {
+	return !prompt.some((message) => message.role === "assistant");
+}
+
+function randomChatKeySuffix(): string {
+	return createHash("sha256")
+		.update(`${Date.now()}:${Math.random()}`)
+		.digest("hex")
+		.slice(0, 8);
+}
+
+/**
+ * Pick the chat key for one call, given what is already on disk.
+ *
+ * The plain hash of the first user message is not an identity: two separate
+ * CLI conversations that both open with "hi" hash to the same key, so the
+ * second one reopened the first one's DeepSeek chat and inherited its history.
+ * A common opening line is exactly when that happens.
+ *
+ * So the hash is only a FAMILY name now. Within it:
+ *
+ *  - A call continuing a conversation this process already routed keeps that
+ *    conversation's chat, whatever anyone else has opened since.
+ *  - An opening turn takes the plain key when nothing has claimed it, and
+ *    otherwise mints a fresh suffixed one — a new conversation gets a new
+ *    chat even when it says the same first words.
+ *  - A later turn resolves to the most recently active chat in the family,
+ *    which is the one this conversation opened.
+ */
+export function resolveConversationChatKey(
+	chatsFile: string,
+	prompt: LanguageModelV2Prompt,
+	activeChatKey?: string,
+): string {
+	const base = chatKeyFromPrompt(prompt);
+	if (
+		activeChatKey &&
+		(activeChatKey === base || activeChatKey.startsWith(`${base}-`))
+	) {
+		return activeChatKey;
+	}
+	if (isOpeningTurn(prompt)) {
+		return lookupChatSession(chatsFile, base) === undefined
+			? base
+			: `${base}-${randomChatKeySuffix()}`;
+	}
+	return newestChatKeyForBase(chatsFile, base) ?? base;
+}
+
+/** The most recently used key in a family, i.e. `base` or `base-<suffix>`. */
+function newestChatKeyForBase(
+	chatsFile: string,
+	base: string,
+): string | undefined {
+	const registry = readChatRegistry(chatsFile);
+	let newestKey: string | undefined;
+	let newestAt = "";
+	for (const [key, record] of Object.entries(registry)) {
+		if (key !== base && !key.startsWith(`${base}-`)) continue;
+		const lastActive = record?.last_active ?? "";
+		if (!newestKey || lastActive > newestAt) {
+			newestKey = key;
+			newestAt = lastActive;
+		}
+	}
+	return newestKey;
 }
 
 /** A persisted mapping entry for one CLI conversation -> one DeepSeek web chat. */
@@ -156,8 +229,16 @@ export async function openDeepSeekWebV2Chat(
 	// Reuse the provider's own navigation helper (which already avoids a
 	// redundant reload — unless recovering from a throttle).
 	await navigateDeepSeekChat(cdp, cdpSessionId, { fresh: false, sessionId });
-	return {
-		sessionId,
-		url: `https://chat.deepseek.com/a/chat/s/${sessionId}`,
-	};
+	const url = `https://chat.deepseek.com/a/chat/s/${sessionId}`;
+	// The tab may have been opened a moment ago, and its own start-up routing can
+	// win over ours and leave it on a blank new chat. Confirm before returning.
+	await confirmChatLocation({
+		cdp,
+		cdpSessionId,
+		provider: "deepseek-web-v2",
+		chatId: sessionId,
+		chatUrl: url,
+		waitReady: async () => undefined,
+	});
+	return { sessionId, url };
 }

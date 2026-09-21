@@ -37,6 +37,13 @@ export interface HubOptions {
 	displayName?: string;
 	workspaceRoot?: string;
 	cwd?: string;
+	/**
+	 * `auto` mode only: when no hub is up yet, how long to wait for the one the
+	 * prewarm just started before falling back to a local runtime. A session
+	 * that falls back runs in this process, where the hub — and so every
+	 * connector — cannot reach it. 0 (the default) never waits.
+	 */
+	startupWaitMs?: number;
 }
 
 export interface RemoteOptions {

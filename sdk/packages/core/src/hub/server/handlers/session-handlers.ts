@@ -19,6 +19,7 @@ import {
 	SessionVersioningError,
 	SessionVersioningService,
 } from "../../../session/session-versioning-service";
+import { NON_TERMINAL_SESSION_STATUSES } from "../../../types/common";
 import {
 	createHubClientContributionRuntime,
 	parseHubClientContributions,
@@ -836,6 +837,38 @@ export async function handleSessionCompactionGet(
 	return okReply(envelope, { sessionId, state });
 }
 
+/**
+ * The pid of another live process that still has this session open, if any.
+ *
+ * A session the hub is not running can be revived here — unless its owner is
+ * still alive, which in practice means a TUI running it on its local backend.
+ * Terminal statuses are skipped so a recycled pid on an old, finished row does
+ * not block reviving it forever.
+ */
+function sessionHeldElsewhere(session: {
+	pid?: number | null;
+	status: string;
+}): number | undefined {
+	const pid = session.pid;
+	if (typeof pid !== "number" || pid <= 0 || pid === process.pid) {
+		return undefined;
+	}
+	if (
+		!(NON_TERMINAL_SESSION_STATUSES as readonly string[]).includes(
+			session.status,
+		)
+	) {
+		return undefined;
+	}
+	try {
+		process.kill(pid, 0);
+		return pid;
+	} catch (error) {
+		// EPERM: exists, just not ours to signal — still alive.
+		return (error as NodeJS.ErrnoException)?.code === "EPERM" ? pid : undefined;
+	}
+}
+
 export async function handleSessionList(
 	ctx: HubTransportContext,
 	envelope: HubCommandEnvelope,
@@ -843,9 +876,19 @@ export async function handleSessionList(
 	const limit =
 		typeof envelope.payload?.limit === "number" ? envelope.payload.limit : 200;
 	const records = await ctx.sessionHost.listSessions(limit);
-	const sessions = records.map((session) =>
-		toHubSessionRecord(session, ctx.sessionState.get(session.sessionId)),
-	);
+	const isLive = ctx.sessionHost.isSessionLive?.bind(ctx.sessionHost);
+	const sessions = records.map((session) => {
+		// History rows and sessions run by another process's local backend are
+		// listed too, but only a live one accepts `session.send_input`.
+		const live = isLive?.(session.sessionId);
+		const heldByPid =
+			live === false ? sessionHeldElsewhere(session) : undefined;
+		return {
+			...toHubSessionRecord(session, ctx.sessionState.get(session.sessionId)),
+			...(live === undefined ? {} : { live }),
+			...(heldByPid ? { heldByPid } : {}),
+		};
+	});
 	return okReply(envelope, {
 		sessions,
 	});

@@ -52,6 +52,21 @@ import { buildForkSessionMetadata } from "./fork/metadata";
 import { applyInteractiveModeConfig } from "./mode";
 import { buildInteractiveSessionConfig } from "./session-config";
 
+const DEFAULT_HUB_STARTUP_WAIT_MS = 10_000;
+
+/** How long the TUI waits for a just-started hub. 0 = never wait. */
+export function resolveHubStartupWaitMs(
+	raw: string | undefined = process.env.CLINE_HUB_STARTUP_WAIT_MS,
+): number {
+	if (raw === undefined || raw.trim() === "") {
+		return DEFAULT_HUB_STARTUP_WAIT_MS;
+	}
+	const parsed = Number(raw);
+	return Number.isFinite(parsed) && parsed >= 0
+		? Math.floor(parsed)
+		: DEFAULT_HUB_STARTUP_WAIT_MS;
+}
+
 type CliCore = Awaited<ReturnType<typeof createCliCore>>;
 type RuntimeHooks = ReturnType<typeof createRuntimeHooks>;
 type StartedSession = Awaited<ReturnType<CliCore["start"]>>;
@@ -177,6 +192,13 @@ export function createInteractiveSessionRuntime(input: {
 			// Yolo and sandbox modes must stay fully local and must not prewarm or reuse
 			// the shared daemon hub.
 			backendMode: "auto",
+			// ...except when no hub is up at all, which is every first launch.
+			// Then a local fallback is permanent for this TUI: the hub arrives
+			// seconds later, but the session already lives in this process where
+			// no connector can reach it (`/attach` from Telegram would fail). This
+			// runs after the TUI has rendered, so the wait only delays a message
+			// sent in the first few seconds. CLINE_HUB_STARTUP_WAIT_MS=0 opts out.
+			hubStartupWaitMs: resolveHubStartupWaitMs(),
 			forceLocalBackend:
 				input.config.mode === "yolo" || input.config.sandbox === true,
 			capabilities: {

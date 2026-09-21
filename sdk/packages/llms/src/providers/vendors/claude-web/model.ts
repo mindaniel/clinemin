@@ -28,6 +28,7 @@ import {
 import { abortableSleep, throwIfAborted } from "../tool-pipeline/abort";
 import { withBrowserLock } from "../tool-pipeline/browser-lock";
 import { getBoundChatKey, resolveChatKey } from "../tool-pipeline/chat-target";
+import { confirmChatLocation } from "../tool-pipeline/confirm-chat-location";
 import { logConversationTurn } from "../tool-pipeline/conversation-logger";
 import { consumePendingInjectedReply } from "../tool-pipeline/injected-reply";
 import { parseInvokeStyleToolCalls } from "../tool-pipeline/invoke-parser";
@@ -435,6 +436,18 @@ function createClaudeWebModel(
 		);
 
 		await waitForComposerReady(cdp, cdpSessionId, runtimeConfig, logger);
+		if (existingClaudeSession) {
+			await confirmChatLocation({
+				cdp,
+				cdpSessionId,
+				provider: "claude-web",
+				chatId: existingClaudeSession,
+				chatUrl: `https://claude.ai/chat/${existingClaudeSession}`,
+				waitReady: () =>
+					waitForComposerReady(cdp, cdpSessionId, runtimeConfig, logger),
+				logger,
+			});
+		}
 
 		let promptText = buildClaudePrompt(options.prompt, isNewChat, isNewChat);
 

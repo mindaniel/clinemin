@@ -1,6 +1,10 @@
+import * as fs from "node:fs";
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import * as os from "node:os";
 import { tmpdir } from "node:os";
+import * as path from "node:path";
 import { join } from "node:path";
+import type { LanguageModelV2Prompt } from "@ai-sdk/provider";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { estimateDeepSeekWebUsage } from "../deepseek-web";
 import {
@@ -13,6 +17,7 @@ import {
 	chatKeyFromPrompt,
 	computeSendDelay,
 	consumeThrottleRecoveryReload,
+	isOpeningTurn,
 	isRateLimitText,
 	isSameChatLocation,
 	listDeepSeekWebV2Chats,
@@ -22,6 +27,7 @@ import {
 	randomInRange,
 	recordChatSession,
 	requestThrottleRecoveryReload,
+	resolveConversationChatKey,
 	resolveDeepSeekWebV2Config,
 	resolveV2ModelOptions,
 } from "./index";
@@ -968,5 +974,74 @@ describe("deepseek-web-v2 buildPrompt with a /paste carrier", () => {
 		expect(buildPrompt(prompt, undefined)).toContain(
 			"add a system prompt for qwen web",
 		);
+	});
+});
+
+describe("deepseek-web-v2 chat key collisions", () => {
+	const chatsFile = path.join(
+		os.tmpdir(),
+		`deepseek-v2-chats-${Date.now()}-${Math.random().toString(36).slice(2)}.json`,
+	);
+
+	afterEach(() => {
+		try {
+			fs.unlinkSync(chatsFile);
+		} catch {
+			// never existed
+		}
+	});
+
+	const opening = (text: string): LanguageModelV2Prompt => [
+		{ role: "user", content: [{ type: "text", text }] },
+	];
+	const continued = (text: string): LanguageModelV2Prompt => [
+		{ role: "user", content: [{ type: "text", text }] },
+		{ role: "assistant", content: [{ type: "text", text: "hello back" }] },
+		{ role: "user", content: [{ type: "text", text: "and now this" }] },
+	];
+
+	it("gives a second conversation its own chat when both open with 'hi'", () => {
+		const first = resolveConversationChatKey(chatsFile, opening("hi"));
+		recordChatSession(chatsFile, first, "session-one");
+
+		const second = resolveConversationChatKey(chatsFile, opening("hi"));
+
+		// Same opening words, different conversation — it must not inherit the
+		// first conversation's history.
+		expect(second).not.toBe(first);
+		expect(lookupChatSession(chatsFile, second)).toBeUndefined();
+	});
+
+	it("keeps a running conversation on its own chat", () => {
+		const first = resolveConversationChatKey(chatsFile, opening("hi"));
+		recordChatSession(chatsFile, first, "session-one");
+		const second = resolveConversationChatKey(chatsFile, opening("hi"));
+		recordChatSession(chatsFile, second, "session-two");
+
+		// The first conversation's next turn, with the newer chat on disk.
+		expect(resolveConversationChatKey(chatsFile, continued("hi"), first)).toBe(
+			first,
+		);
+	});
+
+	it("resolves a later turn to the newest chat in the family", () => {
+		const first = resolveConversationChatKey(chatsFile, opening("hi"));
+		recordChatSession(chatsFile, first, "session-one");
+		const second = resolveConversationChatKey(chatsFile, opening("hi"));
+		recordChatSession(chatsFile, second, "session-two");
+
+		// No in-process history (e.g. the hub restarted): the newest chat is
+		// the one this conversation just opened.
+		expect(resolveConversationChatKey(chatsFile, continued("hi"))).toBe(second);
+	});
+
+	it("still reuses the plain key when nothing has claimed it", () => {
+		const key = resolveConversationChatKey(chatsFile, opening("unique task"));
+		expect(key).toBe(chatKeyFromPrompt(opening("unique task")));
+	});
+
+	it("knows an opening turn from a continued one", () => {
+		expect(isOpeningTurn(opening("hi"))).toBe(true);
+		expect(isOpeningTurn(continued("hi"))).toBe(false);
 	});
 });

@@ -193,12 +193,28 @@ export async function createRuntimeHost(
 		);
 	}
 	if (configuredMode === "auto") {
-		const hubUrl = await resolveCompatibleLocalHubUrl({
-			endpoint: options.hub?.endpoint,
-			strategy: options.hub?.strategy ?? "prefer-hub",
-			workspaceRoot: options.hub?.workspaceRoot,
-			cwd: options.hub?.cwd,
-		});
+		const resolveHub = () =>
+			resolveCompatibleLocalHubUrl({
+				endpoint: options.hub?.endpoint,
+				strategy: options.hub?.strategy ?? "prefer-hub",
+				workspaceRoot: options.hub?.workspaceRoot,
+				cwd: options.hub?.cwd,
+			});
+		let hubUrl = await resolveHub();
+		// The prewarm above is already starting a hub. Give it a moment rather
+		// than settling for a local runtime the hub can never reach.
+		const waitMs = options.hub?.startupWaitMs ?? 0;
+		if (!hubUrl && waitMs > 0 && !options.hub?.endpoint?.trim()) {
+			const deadline = Date.now() + waitMs;
+			while (!hubUrl && Date.now() < deadline) {
+				await new Promise((resolve) => setTimeout(resolve, 250));
+				hubUrl = await resolveHub().catch(() => undefined);
+			}
+			options.logger?.log("Waited for local hub", {
+				waitedMs: waitMs - Math.max(0, deadline - Date.now()),
+				found: Boolean(hubUrl),
+			});
+		}
 		if (hubUrl) {
 			options.logger?.log("Using discovered local hub runtime host", {
 				url: hubUrl,

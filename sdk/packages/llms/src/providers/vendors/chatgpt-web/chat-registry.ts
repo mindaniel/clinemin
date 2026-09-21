@@ -6,6 +6,7 @@ import { createHash } from "node:crypto";
 import * as fs from "node:fs";
 import * as path from "node:path";
 import type { LanguageModelV2Prompt } from "@ai-sdk/provider";
+import { confirmChatLocation } from "../tool-pipeline/confirm-chat-location";
 import { connectBrowser } from "./browser";
 import {
 	CHATGPT_WEB_URL,
@@ -143,8 +144,16 @@ export async function openChatGPTWebChat(
 	});
 	const cdpSessionId = attachResult.sessionId;
 	await navigateChatGPTChat(cdp, cdpSessionId, { fresh: false, sessionId });
-	return {
-		sessionId,
-		url: `https://chatgpt.com/c/${sessionId}`,
-	};
+	const url = `https://chatgpt.com/c/${sessionId}`;
+	// The tab may have been opened a moment ago, and its own start-up routing can
+	// win over ours and leave it on a blank new chat. Confirm before returning.
+	await confirmChatLocation({
+		cdp,
+		cdpSessionId,
+		provider: "chatgpt-web",
+		chatId: sessionId,
+		chatUrl: url,
+		waitReady: async () => undefined,
+	});
+	return { sessionId, url };
 }

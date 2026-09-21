@@ -197,6 +197,17 @@ export interface SessionRecord {
 	};
 	usage?: SessionMetrics;
 	aggregateUsage?: SessionMetrics;
+	/**
+	 * `session.list` only: whether the hub is running this session and so can
+	 * take input for it. Absent when the hub cannot tell (older daemons).
+	 */
+	live?: boolean;
+	/**
+	 * `session.list` only: set when the hub is not running this session but a
+	 * live process other than the hub still has it open (a TUI on its local
+	 * backend). Reviving it in the hub would give it two writers.
+	 */
+	heldByPid?: number;
 }
 
 export interface HubSessionSnapshot {

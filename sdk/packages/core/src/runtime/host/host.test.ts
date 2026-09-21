@@ -168,6 +168,43 @@ describe("runtime host resolution", () => {
 		);
 	});
 
+	it("waits for the prewarmed hub when startupWaitMs is set", async () => {
+		// First launch: no hub yet, the prewarm is starting one. Picking local
+		// here would leave the session unreachable from the hub for good.
+		const { createRuntimeHost } = await import("./host");
+		const { HubRuntimeHost } = await import(
+			"../../hub/runtime-host/hub-runtime-host"
+		);
+		resolveCompatibleLocalHubUrlMock
+			.mockResolvedValueOnce(undefined)
+			.mockResolvedValueOnce(undefined)
+			.mockResolvedValue("ws://127.0.0.1:25463/hub");
+		hubConnectMock.mockResolvedValue(undefined);
+
+		const host = await createRuntimeHost({
+			backendMode: "auto",
+			logger,
+			hub: { startupWaitMs: 5_000 },
+		});
+
+		expect(host).toBeInstanceOf(HubRuntimeHost);
+		expect(resolveCompatibleLocalHubUrlMock).toHaveBeenCalledTimes(3);
+	});
+
+	it("still falls back to local when the hub never arrives in time", async () => {
+		const { createRuntimeHost } = await import("./host");
+		const { LocalRuntimeHost } = await import("./local-runtime-host");
+		resolveCompatibleLocalHubUrlMock.mockResolvedValue(undefined);
+
+		const host = await createRuntimeHost({
+			backendMode: "auto",
+			logger,
+			hub: { startupWaitMs: 600 },
+		});
+
+		expect(host).toBeInstanceOf(LocalRuntimeHost);
+	});
+
 	it("falls back to local runtime when auto hub connect fails", async () => {
 		const { createRuntimeHost } = await import("./host");
 		const { LocalRuntimeHost } = await import("./local-runtime-host");

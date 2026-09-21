@@ -123,7 +123,9 @@ type HubStopResult = "stopped" | "not_running" | "still_running";
  * name a process — which was neither "we killed it" nor "it is gone". Now the
  * answer is the observable one: nothing is listening any more.
  */
-async function stopHubServer(_workspaceRoot: string): Promise<HubStopResult> {
+export async function stopHubServer(
+	_workspaceRoot: string,
+): Promise<HubStopResult> {
 	const owner = resolveCliHubOwnerContext();
 	const discovery = await readHubDiscovery(owner.discoveryPath);
 	const url = discovery?.url;

@@ -5,6 +5,7 @@ import {
 	__test__,
 	readSessionMessageCount,
 	readSessionReplyText,
+	redactSecretArgs,
 } from "./common";
 
 describe("spawnDetachedConnector", () => {
@@ -187,5 +188,32 @@ describe("readSessionReplyText", () => {
 		await expect(
 			readSessionMessageCount(client as never, "session-1"),
 		).resolves.toBe(2);
+	});
+});
+
+describe("redactSecretArgs", () => {
+	it("masks the value after a secret flag and bot-token-shaped args", () => {
+		const token = "8569020955:AAE90lXgvnUIabcdefghijklmnopqrstuvwxyz";
+		expect(
+			redactSecretArgs([
+				"connect",
+				"telegram",
+				"-k",
+				token,
+				"--api-key=sk-123",
+				"--allowed-user-id",
+				"42",
+				`TELEGRAM=${token}`,
+			]),
+		).toEqual([
+			"connect",
+			"telegram",
+			"-k",
+			"[redacted]",
+			"--api-key=[redacted]",
+			"--allowed-user-id",
+			"42",
+			"TELEGRAM=[redacted-bot-token]",
+		]);
 	});
 });

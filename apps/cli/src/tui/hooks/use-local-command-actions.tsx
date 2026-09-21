@@ -166,6 +166,8 @@ import {
 	buildTelegramConnectArgs,
 	isTelegramConnectorRunning,
 	readTelegramConnectorConfig,
+	telegramBotIdFromToken,
+	verifyTelegramBotToken,
 	writeTelegramCredentials,
 } from "../telegram-connector-config";
 import type { AppView, TuiProps } from "../types";
@@ -1093,9 +1095,17 @@ export function useLocalCommandActions(input: {
 			return true;
 		}
 		// The hub daemon reconnects any connector marked enabled on startup.
-		// Always clear that flag: Telegram should only run when explicitly
-		// toggled on here.
-		disableConnectorAutostart("telegram");
+		// Whether Telegram takes part is the user's choice now (the checkbox in
+		// the dialog): it used to be cleared unconditionally, so the connector
+		// was off after every restart and had to be switched on by hand.
+		if (!result.autostart) {
+			disableConnectorAutostart("telegram");
+		}
+		const applyAutostartChoice = () => {
+			if (!result.autostart) {
+				disableConnectorAutostart("telegram");
+			}
+		};
 		const io = {
 			writeln: (text?: string) => {
 				if (text) session.appendEntry({ kind: "status", text });
@@ -1105,26 +1115,67 @@ export function useLocalCommandActions(input: {
 			},
 		};
 		try {
+			const previousBotId = telegramBotIdFromToken(initial?.botToken ?? "");
+			const previousChatId = (initial?.chatId ?? "").trim();
 			writeTelegramCredentials({
 				botToken: result.botToken,
 				chatId: result.chatId,
+				autostart: result.autostart,
 			});
+			// Saving is silent: a typo, a revoked token or a half-pasted string
+			// all look identical afterwards. Ask Telegram who the token belongs
+			// to and say so, naming the bot it replaced when it changed.
+			const check = await verifyTelegramBotToken(result.botToken);
+			if (check.ok) {
+				session.appendEntry({
+					kind: "status",
+					text:
+						previousBotId && previousBotId !== check.botId
+							? `/telegram: token verified — now @${check.username} (id ${check.botId}), replacing bot ${previousBotId}.`
+							: `/telegram: token verified — @${check.username} (id ${check.botId}).`,
+				});
+			} else {
+				session.appendEntry({
+					kind: "error",
+					text: `/telegram: saved, but Telegram rejected the token — ${check.error}`,
+				});
+			}
+			const credentialsChanged =
+				(check.ok && previousBotId !== check.botId) ||
+				previousChatId !== result.chatId.trim();
 			const wasRunning = isTelegramConnectorRunning();
-			if (result.running && !wasRunning) {
+			// A connector already running holds the OLD token in memory; writing
+			// the store does not reach it. Restart it, or it keeps answering as
+			// the previous bot while the dialog shows the new one.
+			if (result.running && wasRunning && credentialsChanged) {
+				await runStopConnector("telegram", io);
+				await runConnectAdapter(
+					"telegram",
+					buildTelegramConnectArgs(result),
+					io,
+				);
+				applyAutostartChoice();
+				session.appendEntry({
+					kind: "status",
+					text: "/telegram: credentials changed — connector restarted with the new bot.",
+				});
+			} else if (result.running && !wasRunning) {
 				await runConnectAdapter(
 					"telegram",
 					buildTelegramConnectArgs(result),
 					io,
 				);
 				// Starting through the connect command records an autostart row.
-				// Drop it: Telegram must never reconnect on its own at startup.
-				disableConnectorAutostart("telegram");
+				// Keep it only if the user asked for automatic start.
+				applyAutostartChoice();
 				session.appendEntry({
 					kind: "status",
-					text: "/telegram: credentials saved, connector started.",
+					text: "/telegram: credentials saved, connector started — it posts a confirmation in Telegram when it is ready.",
 				});
 			} else if (!result.running && wasRunning) {
 				await runStopConnector("telegram", io);
+				// A deliberate stop always clears autostart: otherwise the next
+				// restart would bring back the connector the user just stopped.
 				disableConnectorAutostart("telegram");
 				session.appendEntry({
 					kind: "status",
@@ -1133,7 +1184,9 @@ export function useLocalCommandActions(input: {
 			} else {
 				session.appendEntry({
 					kind: "status",
-					text: `/telegram: credentials saved. Connector is ${result.running ? "running" : "stopped"}.`,
+					text: result.running
+						? `/telegram: credentials saved. Connector already running with these credentials.${result.autostart ? " It will start automatically with Cline." : ""}`
+						: "/telegram: credentials saved. Connector is stopped — turn it on here to start it and get the confirmation message in Telegram.",
 				});
 			}
 		} catch (error) {

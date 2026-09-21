@@ -3,11 +3,13 @@ export {
 	chatKeyFromPrompt,
 	type DeepSeekWebV2ChatEntry,
 	deleteChatSession,
+	isOpeningTurn,
 	listDeepSeekWebV2Chats,
 	lookupChatSession,
 	openDeepSeekWebV2Chat,
 	parseSessionIdFromUrl,
 	recordChatSession,
+	resolveConversationChatKey,
 } from "./chat-registry";
 export {
 	computeSendDelay,

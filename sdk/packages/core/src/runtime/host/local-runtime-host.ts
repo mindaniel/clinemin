@@ -1137,6 +1137,10 @@ export class LocalRuntimeHost implements RuntimeHost {
 		return persisted.slice(0, limit);
 	}
 
+	isSessionLive(sessionId: string): boolean {
+		return this.sessions.has(sessionId);
+	}
+
 	async deleteSession(sessionId: string): Promise<boolean> {
 		if (this.sessions.has(sessionId)) {
 			await this.stopSession(sessionId);

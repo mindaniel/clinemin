@@ -26,6 +26,7 @@ import {
 import { throwIfAborted } from "../tool-pipeline/abort";
 import { withBrowserLock } from "../tool-pipeline/browser-lock";
 import { getBoundChatKey, resolveChatKey } from "../tool-pipeline/chat-target";
+import { confirmChatLocation } from "../tool-pipeline/confirm-chat-location";
 import { logConversationTurn } from "../tool-pipeline/conversation-logger";
 import { consumePendingInjectedReply } from "../tool-pipeline/injected-reply";
 import { parseManagerBlocks } from "../tool-pipeline/manager-block";
@@ -246,6 +247,18 @@ function createGrokWebModel(
 		);
 
 		await waitForComposerReady(cdp, cdpSessionId, runtimeConfig, logger);
+		if (existingGrokSession) {
+			await confirmChatLocation({
+				cdp,
+				cdpSessionId,
+				provider: "grok-web",
+				chatId: existingGrokSession,
+				chatUrl: `https://grok.com/c/${existingGrokSession}`,
+				waitReady: () =>
+					waitForComposerReady(cdp, cdpSessionId, runtimeConfig, logger),
+				logger,
+			});
+		}
 
 		// Re-inject the system prompt only when this turn opens a brand-new
 		// Grok chat — every other turn in the SAME chat sends no system

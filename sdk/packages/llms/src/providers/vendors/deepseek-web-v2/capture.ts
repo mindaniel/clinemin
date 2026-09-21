@@ -7,6 +7,7 @@ import {
 	waitWithAbort,
 } from "../deepseek-web";
 import { isAbortError } from "../tool-pipeline/abort";
+import { confirmChatLocation } from "../tool-pipeline/confirm-chat-location";
 import {
 	type CdpClient,
 	connectBrowser,
@@ -516,6 +517,17 @@ export async function runCompletion(input: {
 	await navigateDeepSeekChat(cdp, sessionId, chatTarget, logger, forceReload);
 
 	await waitForComposerReady(cdp, sessionId, config, logger);
+	if (existingDeepSeekSession) {
+		await confirmChatLocation({
+			cdp,
+			cdpSessionId: sessionId,
+			provider: "deepseek-web-v2",
+			chatId: existingDeepSeekSession,
+			chatUrl: `https://chat.deepseek.com/a/chat/s/${existingDeepSeekSession}`,
+			waitReady: () => waitForComposerReady(cdp, sessionId, config, logger),
+			logger,
+		});
+	}
 
 	// Retry logic: if the first attempt fails (empty response or error), edit the last user message and retry.
 	let attempt = 0;

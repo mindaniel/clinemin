@@ -18,6 +18,7 @@ import {
 	type MuteCommandInput,
 	maybeHandleChatCommand,
 	normalizeCommandName,
+	shortSessionLabel,
 } from "../utils/chat-commands";
 import { authorizeConnectorEvent, dispatchConnectorHook } from "./hooks";
 import {
@@ -91,12 +92,48 @@ function connectorTextPayload(
 	return transport === "telegram" ? { raw: body } : body;
 }
 
+/**
+ * Telegram rejects messages over 4096 characters, and the chat adapter
+ * truncates to fit — so a long answer arrived cut off mid-sentence. Split it
+ * instead, preferring paragraph and then line boundaries. Kept a little under
+ * the limit so the adapter's own formatting has room.
+ */
+const TELEGRAM_CHUNK_LIMIT = 3900;
+
+export function splitConnectorText(
+	text: string,
+	limit = TELEGRAM_CHUNK_LIMIT,
+): string[] {
+	const chunks: string[] = [];
+	let rest = text;
+	while (rest.length > limit) {
+		const window = rest.slice(0, limit);
+		const cut = Math.max(
+			window.lastIndexOf("\n\n"),
+			window.lastIndexOf("\n") > limit / 2 ? window.lastIndexOf("\n") : -1,
+		);
+		const at = cut > limit / 2 ? cut : limit;
+		chunks.push(rest.slice(0, at).trimEnd());
+		rest = rest.slice(at).replace(/^\n+/, "");
+	}
+	if (rest.trim()) chunks.push(rest);
+	return chunks.length > 0 ? chunks : [text];
+}
+
 async function postConnectorText<TState extends ConnectorThreadState>(
 	thread: Thread<TState>,
 	transport: string,
 	text: string,
 ): Promise<SentMessage> {
-	return await thread.post(connectorTextPayload(transport, text));
+	if (transport !== "telegram") {
+		return await thread.post(connectorTextPayload(transport, text));
+	}
+	const chunks = splitConnectorText(text);
+	let last: SentMessage | undefined;
+	for (const chunk of chunks) {
+		last = await thread.post(connectorTextPayload(transport, chunk));
+	}
+	return last as SentMessage;
 }
 
 async function editConnectorText(
@@ -240,12 +277,66 @@ function metadataString(
 	return typeof value === "string" && value.trim() ? value.trim() : undefined;
 }
 
+/**
+ * Start a stopped session back up in the hub, under its own id and with its
+ * whole transcript — what `cline --resume <id>` does in a TUI.
+ *
+ * It keeps the provider, model and folder it had; tool and yolo settings come
+ * from this thread, since this connector is now the client answering its
+ * approvals. The connector's API key is only reused for the connector's own
+ * provider — for any other the hub falls back to that provider's saved key.
+ */
+export async function reviveHubSession(input: {
+	client: Pick<
+		HubSessionClient,
+		"listSessions" | "readMessages" | "startRuntimeSession"
+	>;
+	startRequest: ChatStartSessionRequest;
+	sessionId: string;
+}): Promise<void> {
+	const { client, startRequest, sessionId } = input;
+	// From the list rather than `session.get`: only the list says whether a
+	// TUI still has it open, and that is the one case reviving must refuse —
+	// two runtimes appending to one transcript overwrite each other.
+	const row = (await client.listSessions({ limit: 200 })).find(
+		(candidate) => candidate.sessionId === sessionId,
+	);
+	if (!row) {
+		throw new Error(`no stored session ${shortSessionLabel(sessionId)}`);
+	}
+	if (row.live) {
+		return;
+	}
+	if (row.heldByPid) {
+		throw new Error(
+			`it is open in a TUI (pid ${row.heldByPid}) outside the hub. Close that TUI first.`,
+		);
+	}
+	const provider =
+		metadataString(row.metadata, "provider") ?? startRequest.provider;
+	const cwd = metadataString(row.metadata, "cwd") ?? startRequest.cwd;
+	const initialMessages = await client.readMessages(sessionId);
+	await client.startRuntimeSession(
+		{
+			...startRequest,
+			provider,
+			model: metadataString(row.metadata, "model") ?? startRequest.model,
+			apiKey:
+				provider === startRequest.provider ? startRequest.apiKey : undefined,
+			...(cwd ? { cwd, workspaceRoot: cwd } : {}),
+		},
+		{ sessionId, initialMessages },
+	);
+}
+
 /** A hub row, reduced to what a phone screen can use. */
 export function toConnectorSessionSummary(row: {
 	sessionId: string;
 	metadata?: Record<string, unknown>;
+	live?: boolean;
 }): ConnectorSessionSummary {
 	return {
+		...(typeof row.live === "boolean" ? { live: row.live } : {}),
 		sessionId: row.sessionId,
 		title: metadataString(row.metadata, "title"),
 		provider: metadataString(row.metadata, "provider"),
@@ -873,9 +964,21 @@ export async function handleConnectorUserTurn<
 			},
 			sessions: {
 				list: async (limit) => {
+					// Load the thread's state here rather than closing over the
+					// `currentState` declared further down this function: the
+					// command host calls this BEFORE that line runs, so the
+					// closure hit the temporal dead zone and every `/sessions`
+					// failed with "Cannot access 'currentState' before
+					// initialization". The sibling handlers below already load
+					// their own copy for the same reason.
+					const threadState = await loadThreadState(
+						input.thread,
+						input.bindingsPath,
+						input.baseStartRequest,
+					);
 					const rows = await input.client.listSessions({ limit });
 					return rows
-						.filter((row) => row.sessionId !== currentState.sessionId)
+						.filter((row) => row.sessionId !== threadState.sessionId)
 						.map((row) => toConnectorSessionSummary(row));
 				},
 				attached: async () =>
@@ -886,12 +989,28 @@ export async function handleConnectorUserTurn<
 							input.baseStartRequest,
 						)
 					).attachedSessionId,
-				attach: async (sessionId) => {
+				attach: async (sessionId, options) => {
 					const state = await loadThreadState(
 						input.thread,
 						input.bindingsPath,
 						input.baseStartRequest,
 					);
+					if (options?.revive) {
+						try {
+							await reviveHubSession({
+								client: input.client,
+								startRequest: buildThreadStartRequest(
+									input.baseStartRequest,
+									applyForcedToolDisable(state, input.forceDisableTools),
+								),
+								sessionId,
+							});
+						} catch (error) {
+							return `Could not start ${shortSessionLabel(sessionId)} back up: ${
+								error instanceof Error ? error.message : String(error)
+							}`;
+						}
+					}
 					await persistMergedThreadState(
 						input.thread,
 						input.bindingsPath,
@@ -911,7 +1030,9 @@ export async function handleConnectorUserTurn<
 						},
 					});
 					return [
-						`Attached to ${sessionId.slice(0, 8)}.`,
+						options?.revive
+							? `Started ${shortSessionLabel(sessionId)} back up with its history and attached.`
+							: `Attached to ${shortSessionLabel(sessionId)}.`,
 						"Messages here now go to that session, and everything it does —",
 						"replies, tool calls, approval requests — shows up here, including",
 						"turns started somewhere else. /detach to stop.",
@@ -938,7 +1059,7 @@ export async function handleConnectorUserTurn<
 						{ ...state, attachedSessionId: undefined } as TState,
 						input.errorLabel,
 					);
-					return `Detached from ${was.slice(0, 8)}. Back to this thread's own session.`;
+					return `Detached from ${shortSessionLabel(was)}. Back to this thread's own session.`;
 				},
 			},
 			schedule: {
@@ -1212,12 +1333,42 @@ async function forwardToAttachedSession<
 	// printing the RPC result here too would show each answer twice. The mirror
 	// is the better source: it also covers turns this thread did not start.
 	const mirrored = isSessionMirrored(input.thread.id);
-	try {
-		const { result } = await input.client.sendSessionInput(
+	const send = () =>
+		input.client.sendSessionInput(
 			sessionId,
 			{ prompt, delivery: "queue" },
 			{ timeoutMs: null },
 		);
+	try {
+		let reply: Awaited<ReturnType<typeof send>>;
+		try {
+			reply = await send();
+		} catch (error) {
+			if (!isSessionNotFoundError(error)) throw error;
+			// Attached, but the hub is no longer running it (hub restart, or it
+			// was stopped). Start it back up with its history and send again —
+			// the same thing /attach does for a stopped session.
+			const state = await loadThreadState(
+				input.thread,
+				input.bindingsPath,
+				input.baseStartRequest,
+			);
+			await reviveHubSession({
+				client: input.client,
+				startRequest: buildThreadStartRequest(
+					input.baseStartRequest,
+					applyForcedToolDisable(state, input.forceDisableTools),
+				),
+				sessionId,
+			});
+			await postConnectorText(
+				input.thread,
+				input.transport,
+				`${shortSessionLabel(sessionId)} had stopped — started it back up with its history.`,
+			);
+			reply = await send();
+		}
+		const { result } = reply;
 		if (mirrored) {
 			return;
 		}
@@ -1227,7 +1378,7 @@ async function forwardToAttachedSession<
 			result?.text?.trim() ||
 				// A queued prompt the session has not reached yet answers with no
 				// result. It is delivered, not lost, and saying so beats silence.
-				`Delivered to ${sessionId.slice(0, 8)}; no reply yet.`,
+				`Delivered to ${shortSessionLabel(sessionId)}; no reply yet.`,
 		);
 	} catch (error) {
 		const detail = error instanceof Error ? error.message : String(error);
@@ -1235,14 +1386,14 @@ async function forwardToAttachedSession<
 			await postConnectorText(
 				input.thread,
 				input.transport,
-				`Session ${sessionId.slice(0, 8)} is gone. /detach, then /sessions to pick another.`,
+				`Session ${shortSessionLabel(sessionId)} is gone. /detach, then /sessions to pick another.`,
 			);
 			return;
 		}
 		await postConnectorText(
 			input.thread,
 			input.transport,
-			`Could not reach ${sessionId.slice(0, 8)}: ${detail}`,
+			`Could not reach ${shortSessionLabel(sessionId)}: ${detail}`,
 		);
 	}
 }

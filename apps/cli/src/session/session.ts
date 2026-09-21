@@ -34,6 +34,8 @@ export async function createCliCore(options?: {
 	forceLocalBackend?: boolean;
 	cwd?: string;
 	workspaceRoot?: string;
+	/** See `HubOptions.startupWaitMs`. */
+	hubStartupWaitMs?: number;
 }): Promise<ClineCore> {
 	const explicitBackendMode = options?.forceLocalBackend
 		? "local"
@@ -55,6 +57,9 @@ export async function createCliCore(options?: {
 						workspaceRoot,
 						clientType: "cli",
 						displayName: "Cline CLI",
+						...(options?.hubStartupWaitMs
+							? { startupWaitMs: options.hubStartupWaitMs }
+							: {}),
 					},
 				}
 			: {}),
