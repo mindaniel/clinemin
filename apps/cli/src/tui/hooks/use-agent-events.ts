@@ -20,43 +20,63 @@ import type {
 } from "../types";
 import { parseCompactionNoticeMetadata } from "../utils/compaction-status";
 
+/** Providers that report a share of the session spent, as a percentage. */
+const PERCENT_LIMIT_PROVIDERS = ["claude-web", "kimi-web"] as const;
+
+/** Providers that report a remaining message/query count instead. */
+const COUNT_LIMIT_PROVIDERS = ["chatgpt-web", "grok-web"] as const;
+
 /**
  * A web provider's own usage limit, from the provider metadata on a usage
- * event: Claude Web's session percentage under `claude-web`, ChatGPT Web's
- * remaining message count under `chatgpt-web`.
+ * event. Two shapes, because the providers meter two different things:
+ * Claude Web and Kimi report a percentage of the session spent, ChatGPT Web
+ * and Grok report how many messages or queries are left. Each publishes it
+ * under its own provider id.
  */
 export function readWebSessionStatus(
 	metadata: unknown,
 ): WebSessionStatus | undefined {
 	if (!metadata || typeof metadata !== "object") return undefined;
 	const record = metadata as Record<string, unknown>;
-	const claude = record["claude-web"] as
-		| { sessionPercent?: unknown; sessionResetsAt?: unknown }
-		| undefined;
-	if (
-		typeof claude?.sessionPercent === "number" &&
-		Number.isFinite(claude.sessionPercent)
-	) {
-		return {
-			percent: Math.max(0, Math.min(claude.sessionPercent, 100)),
-			...(typeof claude.sessionResetsAt === "string"
-				? { resetsAt: claude.sessionResetsAt }
-				: {}),
-		};
+	for (const providerId of PERCENT_LIMIT_PROVIDERS) {
+		const entry = record[providerId] as
+			| { sessionPercent?: unknown; sessionResetsAt?: unknown }
+			| undefined;
+		if (
+			typeof entry?.sessionPercent === "number" &&
+			Number.isFinite(entry.sessionPercent)
+		) {
+			return {
+				percent: Math.max(0, Math.min(entry.sessionPercent, 100)),
+				...(typeof entry.sessionResetsAt === "string"
+					? { resetsAt: entry.sessionResetsAt }
+					: {}),
+			};
+		}
 	}
-	const chatgpt = record["chatgpt-web"] as
-		| { messagesRemaining?: unknown; messagesResetAt?: unknown }
-		| undefined;
-	if (
-		typeof chatgpt?.messagesRemaining === "number" &&
-		Number.isFinite(chatgpt.messagesRemaining)
-	) {
-		return {
-			messagesRemaining: Math.max(0, chatgpt.messagesRemaining),
-			...(typeof chatgpt.messagesResetAt === "string"
-				? { resetsAt: chatgpt.messagesResetAt }
-				: {}),
-		};
+	for (const providerId of COUNT_LIMIT_PROVIDERS) {
+		const entry = record[providerId] as
+			| {
+					messagesRemaining?: unknown;
+					messagesTotal?: unknown;
+					messagesResetAt?: unknown;
+			  }
+			| undefined;
+		if (
+			typeof entry?.messagesRemaining === "number" &&
+			Number.isFinite(entry.messagesRemaining)
+		) {
+			return {
+				messagesRemaining: Math.max(0, entry.messagesRemaining),
+				...(typeof entry.messagesTotal === "number" &&
+				Number.isFinite(entry.messagesTotal)
+					? { messagesTotal: Math.max(0, entry.messagesTotal) }
+					: {}),
+				...(typeof entry.messagesResetAt === "string"
+					? { resetsAt: entry.messagesResetAt }
+					: {}),
+			};
+		}
 	}
 	return undefined;
 }

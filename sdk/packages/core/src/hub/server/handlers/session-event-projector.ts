@@ -300,6 +300,11 @@ async function projectAgentEvent(
 						cacheReadTokens: agentEvent.cacheReadTokens ?? 0,
 						cacheWriteTokens: agentEvent.cacheWriteTokens ?? 0,
 						totalCost: agentEvent.cost ?? 0,
+						// What the provider said about its own limits this turn.
+						// The client reads `delta.metadata`; left out here, a web
+						// provider's message count or session percentage never
+						// reaches a TUI attached over the hub.
+						...(agentEvent.metadata ? { metadata: agentEvent.metadata } : {}),
 					},
 					totals: {
 						inputTokens: agentEvent.totalInputTokens,

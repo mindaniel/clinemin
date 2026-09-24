@@ -258,13 +258,15 @@ export type InlineStream = "text" | "reasoning" | undefined;
 
 /**
  * What a web provider reports about its own usage limit, shown in the status
- * bar in place of a token count. Claude Web sends a session percentage;
- * ChatGPT Web sends how many messages are left. `resetsAt` is when either
- * refills.
+ * bar in place of a token count. Claude Web and Kimi send a percentage of the
+ * session spent; ChatGPT Web and Grok send how many messages or queries are
+ * left, and Grok also says how many the window holds. `resetsAt` is when any
+ * of them refills.
  */
 export interface WebSessionStatus {
 	percent?: number;
 	messagesRemaining?: number;
+	messagesTotal?: number;
 	resetsAt?: string;
 }
 

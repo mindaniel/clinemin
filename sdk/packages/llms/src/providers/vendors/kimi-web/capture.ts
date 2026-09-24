@@ -7,6 +7,7 @@ import type { BasicLogger } from "@cline/shared";
 import { computeSendDelay, isRateLimitText } from "../deepseek-web-v2";
 import { abortableSleep, abortRace } from "../tool-pipeline/abort";
 import type { CdpClient } from "../tool-pipeline/cdp-client";
+import { usageOrEstimate } from "../tool-pipeline/estimate-usage";
 import {
 	KIMI_SUBSCRIPTION_STATS_ENDPOINT,
 	Kimi_API_ENDPOINTS,
@@ -213,6 +214,11 @@ export async function sendAndCapture(
 				usage = nextUsage;
 			},
 		);
+
+		// Kimi's stream usually carries no usage block. Keep whatever it did
+		// report and estimate the rest from the prompt and the reply, so the
+		// context bar moves instead of sitting at zero all session.
+		usage = usageOrEstimate(usage, prompt, fullText);
 
 		// Flag a throttled reply so the caller can back off / report it, and
 		// arm a one-shot recovery reload so the next turn forces a page

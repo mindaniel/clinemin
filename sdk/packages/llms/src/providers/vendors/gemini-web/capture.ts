@@ -4,10 +4,10 @@
 
 import type { LanguageModelV2FinishReason } from "@ai-sdk/provider";
 import type { BasicLogger } from "@cline/shared";
-import { estimateTokens } from "@cline/shared";
 import { computeSendDelay, isRateLimitText } from "../deepseek-web-v2";
 import { abortableSleep, abortRace } from "../tool-pipeline/abort";
 import type { CdpClient } from "../tool-pipeline/cdp-client";
+import { estimateWebUsage } from "../tool-pipeline/estimate-usage";
 import {
 	GEMINI_API_ENDPOINT,
 	type GeminiWebV2RuntimeConfig,
@@ -175,12 +175,7 @@ export async function sendAndCapture(
 		// deepseek-web-v2's `estimateDeepSeekWebUsage`. Use the repo-wide
 		// `estimateTokens` (chars / 3) so the context bar, per-turn metrics, and
 		// session totals show real numbers instead of zeros.
-		const usage = {
-			inputTokens: estimateTokens(prompt.length),
-			outputTokens: estimateTokens(fullText.length),
-			totalTokens: 0,
-		};
-		usage.totalTokens = usage.inputTokens + usage.outputTokens;
+		const usage = estimateWebUsage(prompt, fullText);
 
 		// Flag a throttled reply so the caller can back off / report it, and
 		// arm a one-shot recovery reload so the next turn forces a page

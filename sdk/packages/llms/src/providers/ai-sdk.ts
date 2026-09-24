@@ -50,6 +50,13 @@ interface GatewayNormalizedUsage {
 	cacheWriteTokens: number;
 	reasoningTokenCount?: number;
 	totalCost?: number;
+	/**
+	 * The call's `providerMetadata`, carried through untouched. Web providers
+	 * report their own limits here -- ChatGPT's remaining messages, Claude's
+	 * session percentage, Grok's remaining queries -- and the status bar reads
+	 * it off the usage event. Dropped here, those readouts sit at "-" forever.
+	 */
+	metadata?: Record<string, unknown>;
 }
 type ProviderModuleKind = AiSdkProviderOptionsTarget;
 

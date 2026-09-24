@@ -177,6 +177,40 @@ describe("formatStatusBarUsageText", () => {
 		).toBe("(messages left: —)");
 	});
 
+	it("counts Grok's remaining queries against its window", () => {
+		expect(
+			formatStatusBarUsageText({
+				totalTokens: 60_000,
+				totalCost: 0,
+				providerId: "grok-web",
+				maxInputTokens: 1_000_000,
+				webSessionStatus: { messagesRemaining: 17, messagesTotal: 20 },
+			}),
+		).toBe("(17/20 queries left)");
+	});
+
+	it("shows a placeholder for Grok before its limits are read", () => {
+		expect(
+			formatStatusBarUsageText({
+				totalTokens: 60_000,
+				totalCost: 0,
+				providerId: "grok-web",
+			}),
+		).toBe("(queries left: —)");
+	});
+
+	it("shows Kimi's subscription percentage like Claude Web's", () => {
+		expect(
+			formatStatusBarUsageText({
+				totalTokens: 60_000,
+				totalCost: 0,
+				providerId: "kimi-web",
+				maxInputTokens: 1_000_000,
+				webSessionStatus: { percent: 37.5 },
+			}),
+		).toBe("(37.5/100%)");
+	});
+
 	it("adds the date to a reset more than a day away", () => {
 		const text = formatResetTime(
 			"2026-09-24T22:00:00Z",
@@ -201,6 +235,33 @@ describe("readWebSessionStatus", () => {
 				},
 			}),
 		).toEqual({ messagesRemaining: 12, resetsAt: "2026-08-26T00:29:00Z" });
+	});
+
+	it("reads Grok's remaining queries, including the window size", () => {
+		expect(
+			readWebSessionStatus({
+				"grok-web": {
+					messagesRemaining: 17,
+					messagesTotal: 20,
+					messagesResetAt: "2026-08-26T00:29:00Z",
+				},
+			}),
+		).toEqual({
+			messagesRemaining: 17,
+			messagesTotal: 20,
+			resetsAt: "2026-08-26T00:29:00Z",
+		});
+	});
+
+	it("reads Kimi's subscription percentage", () => {
+		expect(
+			readWebSessionStatus({
+				"kimi-web": {
+					sessionPercent: 37.5,
+					sessionResetsAt: "2026-10-01T00:00:00Z",
+				},
+			}),
+		).toEqual({ percent: 37.5, resetsAt: "2026-10-01T00:00:00Z" });
 	});
 
 	it("still reads Claude Web's session percentage", () => {

@@ -1399,6 +1399,11 @@ export class AgentRuntime {
 				(this.state.usage.reasoningTokenCount ?? 0) +
 				(usage.reasoningTokenCount ?? 0),
 			totalCost: (this.state.usage.totalCost ?? 0) + (usage.totalCost ?? 0),
+			// Not a number to add up: this is what the provider said about its
+			// own limits this turn (a web chat's remaining messages or session
+			// percentage). Keep the newest report, and hold the last one when a
+			// turn says nothing, so the status bar stops flipping to "-".
+			metadata: usage.metadata ?? this.state.usage.metadata,
 		};
 		await this.emit({
 			type: "usage-updated",

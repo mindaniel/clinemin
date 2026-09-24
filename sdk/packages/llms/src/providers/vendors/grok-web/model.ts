@@ -28,6 +28,7 @@ import { withBrowserLock } from "../tool-pipeline/browser-lock";
 import { getBoundChatKey, resolveChatKey } from "../tool-pipeline/chat-target";
 import { confirmChatLocation } from "../tool-pipeline/confirm-chat-location";
 import { logConversationTurn } from "../tool-pipeline/conversation-logger";
+import { estimateWebUsage } from "../tool-pipeline/estimate-usage";
 import { consumePendingInjectedReply } from "../tool-pipeline/injected-reply";
 import { parseManagerBlocks } from "../tool-pipeline/manager-block";
 import {
@@ -48,6 +49,7 @@ import {
 import {
 	consumeGrokThrottleRecoveryReload,
 	Grok_WEB_URL,
+	type GrokRateLimitInfo,
 	resolveGrokWebV2Config,
 	sleep,
 } from "./config";
@@ -63,6 +65,39 @@ interface GrokCompletionResult {
 	text: string;
 	toolCalls: { name: string; arguments: Record<string, unknown> }[];
 	usage: { inputTokens: number; outputTokens: number; totalTokens: number };
+	/** Grok's own query allowance, when the page reported one this turn. */
+	rateLimit?: GrokRateLimitInfo;
+}
+
+/**
+ * What the status bar reads off `providerMetadata["grok-web"]`.
+ *
+ * Grok meters a web session in queries, not tokens: `/rest/rate-limits`
+ * answers with how many are left in the current window and how long that
+ * window is. That count is the thing that actually stops a session, so show
+ * it the way chatgpt-web's message count is shown.
+ *
+ * The page only asks for the limits on some turns. `lastRateLimit` holds the
+ * last answer so the readout does not flip to "-" in between.
+ */
+function rateLimitProviderMetadata(rateLimit: GrokRateLimitInfo | undefined) {
+	if (!rateLimit || !Number.isFinite(rateLimit.remainingQueries)) return {};
+	const windowSeconds = Number(rateLimit.windowSizeSeconds);
+	const resetsAt =
+		Number.isFinite(windowSeconds) && windowSeconds > 0
+			? new Date(Date.now() + windowSeconds * 1000).toISOString()
+			: undefined;
+	return {
+		providerMetadata: {
+			"grok-web": {
+				messagesRemaining: Math.max(0, Math.floor(rateLimit.remainingQueries)),
+				...(Number.isFinite(rateLimit.totalQueries)
+					? { messagesTotal: Math.max(0, Math.floor(rateLimit.totalQueries)) }
+					: {}),
+				...(resetsAt ? { messagesResetAt: resetsAt } : {}),
+			},
+		},
+	};
 }
 
 /** The text of the last user message in the prompt (for dedup + fallback filename hints). */
@@ -133,6 +168,10 @@ function createGrokWebModel(
 	// the debug port and the chat registry. A model built before the switch
 	// would otherwise keep driving the old profile's Chrome.
 	let runtimeConfig = resolveGrokWebV2Config();
+
+	// Grok reports its query allowance only on some turns. Hold the last
+	// answer so the status bar keeps showing a number in between.
+	let lastRateLimit: GrokRateLimitInfo | undefined;
 
 	const debugLog = (msg: string) => {
 		if (runtimeConfig.debug) logger?.debug(`[grok-web] ${msg}`);
@@ -446,7 +485,15 @@ ${patchNotice}`.trim();
 			// Ignore logging failures
 		}
 
-		return { text: finalText, toolCalls: finalToolCalls, usage: result.usage };
+		if (result.rateLimit) {
+			lastRateLimit = result.rateLimit;
+		}
+		return {
+			text: finalText,
+			toolCalls: finalToolCalls,
+			usage: result.usage,
+			...(lastRateLimit ? { rateLimit: lastRateLimit } : {}),
+		};
 	}
 
 	/**
@@ -458,7 +505,9 @@ ${patchNotice}`.trim();
 		text: string,
 		options: LanguageModelV2CallOptions,
 	): GrokCompletionResult {
-		const usage = { inputTokens: 0, outputTokens: 0, totalTokens: 0 };
+		// Replaying a captured body: there is no prompt to measure here, so
+		// count the reply alone rather than reporting a turn as free.
+		const usage = estimateWebUsage("", text);
 		const toolNames = (options.tools ?? [])
 			.filter(
 				(tool): tool is LanguageModelV2FunctionTool => tool.type === "function",
@@ -536,7 +585,7 @@ ${patchNotice}`.trim(),
 
 		async doGenerate(options: LanguageModelV2CallOptions) {
 			try {
-				const { text, toolCalls, usage } = await withBrowserLock(
+				const { text, toolCalls, usage, rateLimit } = await withBrowserLock(
 					"grok-web",
 					options.abortSignal,
 					() => runCompletion(options),
@@ -557,6 +606,7 @@ ${patchNotice}`.trim(),
 					content,
 					finishReason: finishReasonFor(text, toolCalls),
 					usage,
+					...rateLimitProviderMetadata(rateLimit),
 					warnings: [],
 				};
 			} catch (error) {
@@ -567,7 +617,7 @@ ${patchNotice}`.trim(),
 		},
 
 		async doStream(options: LanguageModelV2CallOptions) {
-			const { text, toolCalls, usage } = await withBrowserLock(
+			const { text, toolCalls, usage, rateLimit } = await withBrowserLock(
 				"grok-web",
 				options.abortSignal,
 				() => runCompletion(options),
@@ -603,6 +653,7 @@ ${patchNotice}`.trim(),
 				type: "finish",
 				finishReason: finishReasonFor(text, toolCalls),
 				usage,
+				...rateLimitProviderMetadata(rateLimit),
 			});
 
 			const stream = new ReadableStream<LanguageModelV2StreamPart>({

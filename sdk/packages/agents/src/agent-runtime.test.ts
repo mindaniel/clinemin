@@ -2153,6 +2153,46 @@ describe("AgentRuntime", () => {
 		);
 	});
 
+	it("keeps a provider's limit metadata on usage", async () => {
+		// A web provider reports its own cap here (ChatGPT's remaining
+		// messages, Grok's remaining queries) and says nothing on some turns.
+		// Dropping it left the status bar stuck on a placeholder.
+		const model = new ScriptedModel([
+			() => [
+				{
+					type: "usage",
+					usage: {
+						inputTokens: 10,
+						outputTokens: 2,
+						metadata: { "chatgpt-web": { messagesRemaining: 12 } },
+					},
+				},
+				{ type: "text-delta", text: "first" },
+				{ type: "finish", reason: "stop" },
+			],
+			() => [
+				{
+					type: "usage",
+					usage: { inputTokens: 10, outputTokens: 2 },
+				},
+				{ type: "text-delta", text: "second" },
+				{ type: "finish", reason: "stop" },
+			],
+		]);
+		const runtime = new AgentRuntime({ model });
+
+		await runtime.run("Turn 1");
+		expect(runtime.snapshot().usage.metadata).toEqual({
+			"chatgpt-web": { messagesRemaining: 12 },
+		});
+
+		// A run starts its counters fresh, and the provider re-reports what it
+		// knows on the next turn, so a turn that says nothing is not asked to
+		// carry a number across the reset.
+		await runtime.continue("Turn 2");
+		expect(runtime.snapshot().usage.metadata).toBeUndefined();
+	});
+
 	it("resets usage between consecutive run/continue calls", async () => {
 		const model = new ScriptedModel([
 			() => [

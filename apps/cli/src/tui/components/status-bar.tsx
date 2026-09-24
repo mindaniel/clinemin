@@ -96,15 +96,28 @@ export function formatResetTime(resetsAt: string, now = new Date()): string {
 	return `${date} ${time}`;
 }
 
-function chatgptMessagesRemaining(
+/** Providers whose status bar shows a percentage of the session spent. */
+const PERCENT_LIMIT_PROVIDERS = new Set(["claude-web", "kimi-web"]);
+
+/** Providers whose status bar shows a remaining message/query count. */
+const COUNT_LIMIT_PROVIDERS = new Set(["chatgpt-web", "grok-web"]);
+
+function messagesRemaining(
 	providerId: string,
 	status: WebSessionStatus | null | undefined,
 ): number | undefined {
-	return providerId === "chatgpt-web" &&
+	return COUNT_LIMIT_PROVIDERS.has(providerId) &&
 		typeof status?.messagesRemaining === "number" &&
 		Number.isFinite(status.messagesRemaining)
 		? Math.max(0, status.messagesRemaining)
 		: undefined;
+}
+
+/** What one of these providers calls the thing it is counting down. */
+function limitUnit(providerId: string): { one: string; many: string } {
+	return providerId === "grok-web"
+		? { one: "query", many: "queries" }
+		: { one: "message", many: "messages" };
 }
 
 export function formatStatusBarUsageText(input: {
@@ -122,7 +135,7 @@ export function formatStatusBarUsageText(input: {
 	const resetSuffix = resetText ? ` · resets ${resetText}` : "";
 
 	if (
-		input.providerId === "claude-web" &&
+		PERCENT_LIMIT_PROVIDERS.has(input.providerId) &&
 		typeof status?.percent === "number" &&
 		Number.isFinite(status.percent)
 	) {
@@ -130,13 +143,14 @@ export function formatStatusBarUsageText(input: {
 		return `(${Number.isInteger(percent) ? percent : percent.toFixed(1)}/100%${resetSuffix})`;
 	}
 
-	// ChatGPT Web: a token estimate against a nominal window says nothing about
-	// when the session stops. Its message cap does, so show that — the count
-	// ChatGPT reports after each reply, and when it refills.
-	if (input.providerId === "chatgpt-web") {
-		const remaining = chatgptMessagesRemaining(input.providerId, status);
+	// ChatGPT Web and Grok: a token estimate against a nominal window says
+	// nothing about when the session stops. Their own caps do, so show that —
+	// the count the provider reports after each reply, and when it refills.
+	if (COUNT_LIMIT_PROVIDERS.has(input.providerId)) {
+		const unit = limitUnit(input.providerId);
+		const remaining = messagesRemaining(input.providerId, status);
 		if (remaining === undefined) {
-			return "(messages left: —)";
+			return `(${unit.many} left: —)`;
 		}
 		// At zero the account is not stopped, it is demoted: ChatGPT keeps
 		// answering on the fallback model, which has no allowance to count. So
@@ -145,7 +159,13 @@ export function formatStatusBarUsageText(input: {
 		if (remaining === 0) {
 			return `(limit reached${resetSuffix || " · reset time unknown"})`;
 		}
-		return `(${remaining} message${remaining === 1 ? "" : "s"} left${resetSuffix})`;
+		// Grok says how big the window is, so show the count against it the way
+		// a token budget is shown. ChatGPT reports no total, so it stays bare.
+		const outOf =
+			typeof status?.messagesTotal === "number" && status.messagesTotal > 0
+				? `/${status.messagesTotal}`
+				: "";
+		return `(${remaining}${outOf} ${remaining === 1 && !outOf ? unit.one : unit.many} left${resetSuffix})`;
 	}
 
 	// When the effective context limit is known, show usage as "used/total"

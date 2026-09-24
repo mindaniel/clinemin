@@ -2,6 +2,7 @@ import type { LanguageModelV2FinishReason } from "@ai-sdk/provider";
 import type { BasicLogger } from "@cline/shared";
 import { computeSendDelay, isRateLimitText } from "../deepseek-web-v2";
 import { abortableSleep, abortRace } from "../tool-pipeline/abort";
+import { estimateWebUsage } from "../tool-pipeline/estimate-usage";
 import type { CdpClient } from "./browser";
 import {
 	Grok_RATE_LIMIT_ENDPOINT,
@@ -37,6 +38,8 @@ export async function sendAndCapture(
 	finishReason: LanguageModelV2FinishReason;
 	usage: { inputTokens: number; outputTokens: number; totalTokens: number };
 	rateLimited?: boolean;
+	/** Grok's own query allowance, read off /rest/rate-limits during the turn. */
+	rateLimit?: GrokRateLimitInfo;
 	rawBody: string;
 }> {
 	const debugLog = (msg: string) => {
@@ -53,6 +56,7 @@ export async function sendAndCapture(
 
 	// Rate limit monitoring (network-based) for token usage tracking
 	let rateLimitRequestId: string | undefined;
+	let capturedRateLimit: GrokRateLimitInfo | undefined;
 
 	const onResponseReceived = (
 		event: { response?: { url?: string; status?: number }; requestId?: string },
@@ -90,6 +94,7 @@ export async function sendAndCapture(
 				debugLog(
 					`Rate limit info: remaining=${rateLimitInfo.remainingQueries}, total=${rateLimitInfo.totalQueries}`,
 				);
+				capturedRateLimit = rateLimitInfo;
 				// Store the rate limit info globally for later retrieval
 				(globalThis as Record<string, unknown>).__grok_rate_limit =
 					rateLimitInfo;
@@ -295,13 +300,18 @@ export async function sendAndCapture(
 			text: "",
 			finishReason: "stop",
 			usage: { inputTokens: 0, outputTokens: 0, totalTokens: 0 },
+			rateLimit: capturedRateLimit,
 			rawBody: "",
 		};
 	}
 
 	// Parse tool calls from the full text (reuse existing parsing logic later)
 	const finishReason: LanguageModelV2FinishReason = "stop";
-	const usage = { inputTokens: 0, outputTokens: 0, totalTokens: 0 };
+	// Grok's page reports no token counts, so estimate them from the prompt
+	// sent and the reply read back -- the same chars/3 rule gemini-web and
+	// deepseek-web-v2 use. Without this the context bar sits at zero for the
+	// whole session.
+	const usage = estimateWebUsage(prompt, fullText);
 
 	// Flag a throttled reply so the caller can back off / report it
 	const rateLimited = isRateLimitText(fullText);
@@ -318,6 +328,7 @@ export async function sendAndCapture(
 		finishReason,
 		usage,
 		rateLimited,
+		rateLimit: capturedRateLimit,
 		rawBody: fullText, // raw body not available via DOM, but we have the text
 	};
 }

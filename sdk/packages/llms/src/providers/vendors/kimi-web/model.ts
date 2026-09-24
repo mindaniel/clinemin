@@ -36,6 +36,7 @@ import { withBrowserLock } from "../tool-pipeline/browser-lock";
 import { getBoundChatKey, resolveChatKey } from "../tool-pipeline/chat-target";
 import { confirmChatLocation } from "../tool-pipeline/confirm-chat-location";
 import { logConversationTurn } from "../tool-pipeline/conversation-logger";
+import { estimateWebUsage } from "../tool-pipeline/estimate-usage";
 import { consumePendingInjectedReply } from "../tool-pipeline/injected-reply";
 import { parseInvokeStyleToolCalls } from "../tool-pipeline/invoke-parser";
 import { parseManagerBlocks } from "../tool-pipeline/manager-block";
@@ -69,6 +70,39 @@ export interface KimiCompletionResult {
 	text: string;
 	toolCalls: { name: string; arguments: Record<string, unknown> }[];
 	usage: { inputTokens: number; outputTokens: number; totalTokens: number };
+	/** Kimi's own subscription usage, when the page reported it this turn. */
+	subscription?: KimiSubscriptionBalance;
+}
+
+interface KimiSubscriptionBalance {
+	amountUsedRatio: number;
+	usedPercent: number;
+	expireTime: string;
+}
+
+/**
+ * What the status bar reads off `providerMetadata["kimi-web"]`.
+ *
+ * Kimi meters a web session as a share of the subscription spent, which its
+ * own UI shows as a percentage with an expiry date. That is the same shape
+ * claude-web reports, so publish it the same way and the status bar renders
+ * it with no extra case.
+ */
+function subscriptionProviderMetadata(
+	subscription: KimiSubscriptionBalance | undefined,
+) {
+	if (!subscription || !Number.isFinite(subscription.usedPercent)) return {};
+	const resetsAt = Number.isNaN(Date.parse(subscription.expireTime))
+		? undefined
+		: new Date(subscription.expireTime).toISOString();
+	return {
+		providerMetadata: {
+			"kimi-web": {
+				sessionPercent: Math.max(0, Math.min(subscription.usedPercent, 100)),
+				...(resetsAt ? { sessionResetsAt: resetsAt } : {}),
+			},
+		},
+	};
 }
 
 /**
@@ -124,6 +158,10 @@ export function createKimiWebModel(
 	// the debug port and the chat registry. A model built before the switch
 	// would otherwise keep driving the old profile's Chrome.
 	let runtimeConfig = resolveKimiWebV2Config();
+
+	// Kimi only reports subscription usage on some turns. Hold the last
+	// answer so the status bar keeps showing a number in between.
+	let lastSubscription: KimiSubscriptionBalance | undefined;
 
 	const debugLog = (msg: string) => {
 		if (runtimeConfig.debug) logger?.debug(`[kimi-web] ${msg}`);
@@ -443,7 +481,15 @@ ${patchNotice}`.trim();
 			// Ignore logging failures
 		}
 
-		return { text: finalText, toolCalls: finalToolCalls, usage: result.usage };
+		if (result.subscriptionBalance) {
+			lastSubscription = result.subscriptionBalance;
+		}
+		return {
+			text: finalText,
+			toolCalls: finalToolCalls,
+			usage: result.usage,
+			...(lastSubscription ? { subscription: lastSubscription } : {}),
+		};
 	}
 
 	/**
@@ -455,7 +501,9 @@ ${patchNotice}`.trim();
 		text: string,
 		options: LanguageModelV2CallOptions,
 	): KimiCompletionResult {
-		const usage = { inputTokens: 0, outputTokens: 0, totalTokens: 0 };
+		// Replaying a captured body: there is no prompt to measure here, so
+		// count the reply alone rather than reporting a turn as free.
+		const usage = estimateWebUsage("", text);
 		const toolNames = (options.tools ?? [])
 			.filter(
 				(tool): tool is LanguageModelV2FunctionTool => tool.type === "function",
@@ -549,7 +597,7 @@ ${patchNotice}`.trim(),
 
 		async doGenerate(options: LanguageModelV2CallOptions) {
 			try {
-				const { text, toolCalls, usage } = await withBrowserLock(
+				const { text, toolCalls, usage, subscription } = await withBrowserLock(
 					"kimi-web",
 					options.abortSignal,
 					() => runCompletion(options),
@@ -570,6 +618,7 @@ ${patchNotice}`.trim(),
 					content,
 					finishReason: finishReasonFor(text, toolCalls),
 					usage,
+					...subscriptionProviderMetadata(subscription),
 					warnings: [],
 				};
 			} catch (error) {
@@ -580,7 +629,7 @@ ${patchNotice}`.trim(),
 		},
 
 		async doStream(options: LanguageModelV2CallOptions) {
-			const { text, toolCalls, usage } = await withBrowserLock(
+			const { text, toolCalls, usage, subscription } = await withBrowserLock(
 				"kimi-web",
 				options.abortSignal,
 				() => runCompletion(options),
@@ -616,6 +665,7 @@ ${patchNotice}`.trim(),
 				type: "finish",
 				finishReason: finishReasonFor(text, toolCalls),
 				usage,
+				...subscriptionProviderMetadata(subscription),
 			});
 
 			const stream = new ReadableStream<LanguageModelV2StreamPart>({
