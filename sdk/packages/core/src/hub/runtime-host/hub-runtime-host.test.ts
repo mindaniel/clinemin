@@ -548,7 +548,12 @@ describe("HubRuntimeHost", () => {
 		});
 		expect(commandMock).toHaveBeenLastCalledWith(
 			"approval.respond",
-			{ approvalId: "approval-1", approved: true, reason: "ok" },
+			{
+				approvalId: "approval-1",
+				approved: true,
+				reason: "ok",
+				silentSkip: false,
+			},
 			"sess-1",
 		);
 
@@ -563,6 +568,77 @@ describe("HubRuntimeHost", () => {
 			},
 		});
 		expect(eventOrder).toEqual(["tool-started", "approval-requested"]);
+	});
+
+	it("carries a silent skip back to the hub instead of a bare denial", async () => {
+		let onEvent:
+			| ((event: {
+					version: 1;
+					event: string;
+					sessionId: string;
+					payload: Record<string, unknown>;
+			  }) => void)
+			| undefined;
+		subscribeMock.mockImplementation((listener) => {
+			onEvent = listener;
+			return () => {};
+		});
+		commandMock
+			.mockResolvedValueOnce({
+				payload: {
+					session: {
+						sessionId: "sess-1",
+						status: "running",
+						createdAt: Date.now(),
+						updatedAt: Date.now(),
+						workspaceRoot: "/tmp/project",
+						cwd: "/tmp/project",
+					},
+				},
+			})
+			.mockResolvedValueOnce({ ok: true, payload: {} });
+		const requestToolApproval = vi.fn(async () => ({
+			approved: false,
+			silentSkip: true,
+		}));
+
+		const { HubRuntimeHost } = await import("./hub-runtime-host");
+		const host = new HubRuntimeHost({
+			url: "ws://127.0.0.1:25463/hub",
+			capabilities: { requestToolApproval },
+		});
+		await host.startSession({
+			config: createConfig(),
+			source: SessionSource.CLI,
+			prompt: "Hey",
+		});
+		onEvent?.({
+			version: 1,
+			event: "approval.requested",
+			sessionId: "sess-1",
+			payload: {
+				approvalId: "approval-1",
+				agentId: "agent-1",
+				conversationId: "conversation-1",
+				iteration: 2,
+				toolCallId: "call-1",
+				toolName: "run_commands",
+				inputJson: '{"commands":["echo hi"]}',
+				policy: { autoApprove: false },
+			},
+		});
+		await new Promise((resolve) => setTimeout(resolve, 0));
+
+		expect(commandMock).toHaveBeenLastCalledWith(
+			"approval.respond",
+			{
+				approvalId: "approval-1",
+				approved: false,
+				reason: undefined,
+				silentSkip: true,
+			},
+			"sess-1",
+		);
 	});
 
 	it("uses one app runtime capability object for hub tool executors and approvals", async () => {
@@ -701,6 +777,7 @@ describe("HubRuntimeHost", () => {
 				approvalId: "approval-1",
 				approved: true,
 				reason: "approved by app handler",
+				silentSkip: false,
 			},
 			"sess-1",
 		);

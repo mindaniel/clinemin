@@ -2,6 +2,7 @@ import type {
 	HubCommandEnvelope,
 	HubReplyEnvelope,
 	ToolApprovalRequest,
+	ToolApprovalResult,
 } from "@cline/shared";
 import { createSessionId } from "@cline/shared";
 import { errorReply, type HubTransportContext, okReply } from "./context";
@@ -9,7 +10,7 @@ import { errorReply, type HubTransportContext, okReply } from "./context";
 export async function requestToolApproval(
 	ctx: HubTransportContext,
 	request: ToolApprovalRequest,
-): Promise<{ approved: boolean; reason?: string }> {
+): Promise<ToolApprovalResult> {
 	const approvalId = createSessionId("approval_");
 	const sessionId = request.sessionId;
 	const state = ctx.sessionState.get(sessionId);
@@ -48,7 +49,7 @@ export async function requestToolApproval(
 export function resolvePendingApproval(
 	ctx: HubTransportContext,
 	approvalId: string,
-	result: { approved: boolean; reason?: string },
+	result: ToolApprovalResult,
 ): { sessionId: string } | undefined {
 	const pending = ctx.pendingApprovals.get(approvalId);
 	if (!pending) {
@@ -83,6 +84,19 @@ export function cancelPendingApprovals(
 	return cancelled;
 }
 
+/** Read `silentSkip` from the command payload, or from its nested `payload`. */
+function readSilentSkip(payload: HubCommandEnvelope["payload"]): boolean {
+	if (!payload || typeof payload !== "object") return false;
+	if ((payload as Record<string, unknown>).silentSkip === true) return true;
+	const nested = (payload as Record<string, unknown>).payload;
+	return (
+		!!nested &&
+		typeof nested === "object" &&
+		!Array.isArray(nested) &&
+		(nested as Record<string, unknown>).silentSkip === true
+	);
+}
+
 export async function handleApprovalRespond(
 	ctx: HubTransportContext,
 	envelope: HubCommandEnvelope,
@@ -111,9 +125,15 @@ export async function handleApprovalRespond(
 						.reason as string)
 				: undefined;
 	const approved = envelope.payload?.approved === true;
+	// A skip is not a quiet denial: the runtime drops the call and tells the
+	// model nothing at all. The flag has to survive the hub hop, or a skip
+	// taken in a TUI attached to a hub session arrives here as a bare
+	// `approved: false` and the runtime turns it into a denial the model reads.
+	const silentSkip = readSilentSkip(envelope.payload);
 	const resolved = resolvePendingApproval(ctx, approvalId, {
 		approved,
 		reason,
+		...(silentSkip ? { silentSkip: true } : {}),
 	});
 	if (!resolved) {
 		return errorReply(

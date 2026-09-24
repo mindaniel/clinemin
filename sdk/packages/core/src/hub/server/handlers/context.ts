@@ -7,6 +7,7 @@ import type {
 	ITelemetryService,
 	JsonValue,
 	SessionParticipant,
+	ToolApprovalResult,
 } from "@cline/shared";
 import { createSessionId } from "@cline/shared";
 import type {
@@ -26,7 +27,7 @@ import {
 
 export type PendingApproval = {
 	sessionId: string;
-	resolve: (result: { approved: boolean; reason?: string }) => void;
+	resolve: (result: ToolApprovalResult) => void;
 };
 
 export type PendingCapabilityRequest = {

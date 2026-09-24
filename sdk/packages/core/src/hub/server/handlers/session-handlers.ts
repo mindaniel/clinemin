@@ -3,6 +3,7 @@ import type {
 	HubReplyEnvelope,
 	JsonValue,
 	ToolApprovalRequest,
+	ToolApprovalResult,
 } from "@cline/shared";
 import {
 	createSessionId,
@@ -153,7 +154,7 @@ export async function handleSessionCreate(
 	envelope: HubCommandEnvelope,
 	requestToolApproval: (
 		request: ToolApprovalRequest,
-	) => Promise<{ approved: boolean; reason?: string }>,
+	) => Promise<ToolApprovalResult>,
 ): Promise<HubReplyEnvelope> {
 	const startedAt = performance.now();
 	const baseLogContext = {
@@ -397,7 +398,7 @@ export async function handleSessionRestore(
 	envelope: HubCommandEnvelope,
 	requestToolApproval: (
 		request: ToolApprovalRequest,
-	) => Promise<{ approved: boolean; reason?: string }>,
+	) => Promise<ToolApprovalResult>,
 ): Promise<HubReplyEnvelope> {
 	const payload =
 		envelope.payload && typeof envelope.payload === "object"

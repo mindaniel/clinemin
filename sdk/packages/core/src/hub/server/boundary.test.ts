@@ -534,6 +534,49 @@ describe("HubServerTransport boundaries", () => {
 		}
 	});
 
+	it("keeps a silent skip a skip when it comes back over the hub", async () => {
+		const transport = createTransport();
+		let approvalId = "";
+		transport.subscribe("test", (event) => {
+			if (
+				event.event === "approval.requested" &&
+				typeof event.payload?.approvalId === "string"
+			) {
+				approvalId = event.payload.approvalId;
+			}
+		});
+		const ctx = getContext(transport);
+		ensureSessionState(ctx, "session-1", "client-1", "creator", {
+			interactive: true,
+		});
+
+		const resultPromise = requestToolApproval(ctx, {
+			sessionId: "session-1",
+			agentId: "agent-1",
+			conversationId: "conversation-1",
+			iteration: 1,
+			toolCallId: "call-1",
+			toolName: "run_commands",
+			input: { commands: ["echo hi"] },
+			policy: { autoApprove: false },
+		});
+		await Promise.resolve();
+
+		await expect(
+			handleApprovalRespond(ctx, {
+				version: "v1",
+				requestId: "req-1",
+				command: "approval.respond",
+				payload: { approvalId, approved: false, silentSkip: true },
+			}),
+		).resolves.toMatchObject({ ok: true });
+		await expect(resultPromise).resolves.toEqual({
+			approved: false,
+			reason: undefined,
+			silentSkip: true,
+		});
+	});
+
 	it("rejects pending tool approvals when a run is aborted", async () => {
 		const abort = vi.fn().mockResolvedValue(undefined);
 		const transport = createTransport({

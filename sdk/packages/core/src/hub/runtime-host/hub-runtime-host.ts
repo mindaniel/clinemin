@@ -11,6 +11,7 @@ import type {
 	ITelemetryService,
 	JsonValue,
 	ToolApprovalRequest,
+	ToolApprovalResult,
 } from "@cline/shared";
 import {
 	captureSdkError,
@@ -2138,13 +2139,15 @@ export class HubRuntimeHost implements RuntimeHost {
 				input,
 				policy,
 			}),
-		).catch((error) => ({
-			approved: false,
-			reason:
-				error instanceof Error
-					? error.message
-					: `Tool approval request failed: ${String(error)}`,
-		}));
+		).catch(
+			(error): ToolApprovalResult => ({
+				approved: false,
+				reason:
+					error instanceof Error
+						? error.message
+						: `Tool approval request failed: ${String(error)}`,
+			}),
+		);
 		await this.client
 			.command(
 				"approval.respond",
@@ -2152,6 +2155,10 @@ export class HubRuntimeHost implements RuntimeHost {
 					approvalId,
 					approved: result.approved,
 					reason: result.reason,
+					// A skip must stay a skip across the hub hop. Dropped here, the
+					// server resolves a bare `approved: false` and the runtime hands
+					// the model a denial -- the very message a skip exists to avoid.
+					silentSkip: result.silentSkip === true,
 				},
 				sessionId,
 			)

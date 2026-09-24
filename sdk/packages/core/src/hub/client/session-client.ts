@@ -633,12 +633,15 @@ export class HubSessionClient {
 		approvalId: string;
 		approved: boolean;
 		reason?: string;
+		/** Drop the call and tell the model nothing -- not a denial. */
+		silentSkip?: boolean;
 		responderClientId?: string;
 	}): Promise<void> {
 		await this.ensureMetadataApplied();
 		await this.client.command("approval.respond", {
 			approvalId: input.approvalId,
 			approved: input.approved,
+			silentSkip: input.silentSkip === true,
 			payload: input.reason ? { reason: input.reason } : undefined,
 			responderClientId: input.responderClientId,
 		});
