@@ -37,6 +37,7 @@ import {
 	MANAGER_EXAMPLE_BODY,
 	MANAGER_EXAMPLE_COMMAND,
 } from "@cline/shared";
+import { parsePatchBlocks } from "./patch-block";
 import { parseShellFenceFlags } from "./shell-fence";
 
 const OPEN_TAG_RE = /^[ \t]*<\s*manager\s*>[ \t]*\r?$/im;
@@ -234,7 +235,12 @@ export interface ManagerVerify {
 	arguments: { commands: string[]; timeout_seconds?: number; echo?: true };
 }
 
-export type ManagerDelegation = ManagerRunTask | ManagerVerify;
+export interface ManagerPatch {
+	name: "apply_patch";
+	arguments: { input: string };
+}
+
+export type ManagerDelegation = ManagerRunTask | ManagerVerify | ManagerPatch;
 
 export interface ParsedManagerBlocks {
 	/** The reply with every `<manager>` block removed. */
@@ -481,9 +487,39 @@ const ECHOED_PROMPT_PROBLEM =
 	"so the examples in them were skipped rather than run. Send the delegation " +
 	"you actually want, with a real message under the TO: line.";
 
+/**
+ * `toolNames` lets a patch block ride along with the commands and delegations
+ * in the same reply. Callers return early once this finds anything, so the
+ * patch parser that normally runs after it never sees the text: a reply with a
+ * `*** Begin Patch` block and a ```powershell fence ran the command and
+ * dropped the edit. Patches go first so a command that tests the edited file
+ * runs against the new version.
+ */
 export function parseManagerBlocks(
 	text: string,
-	options: { allowCommands?: boolean } = {},
+	options: { allowCommands?: boolean; toolNames?: readonly string[] } = {},
+): ParsedManagerBlocks {
+	const parsed = parseManagerBlocksOnly(text, options);
+	if (
+		!options.toolNames ||
+		(parsed.delegations.length === 0 && parsed.problems.length === 0)
+	) {
+		return parsed;
+	}
+	const patched = parsePatchBlocks(parsed.cleanedContent, options.toolNames);
+	if (patched.toolCalls.length === 0) {
+		return parsed;
+	}
+	return {
+		cleanedContent: patched.cleanedContent,
+		delegations: [...patched.toolCalls, ...parsed.delegations],
+		problems: parsed.problems,
+	};
+}
+
+function parseManagerBlocksOnly(
+	text: string,
+	options: { allowCommands?: boolean },
 ): ParsedManagerBlocks {
 	// PowerShell fences are stripped first so a command that mentions the word
 	// manager can never be mistaken for a delegation, and so the manager can

@@ -588,6 +588,66 @@ describe("untagged fences alongside a patch", () => {
 		expect(parsed.problems).toEqual([]);
 		expect(parsed.cleanedContent).toContain("*** Begin Patch");
 	});
+
+	it("applies a patch sent alongside a command, before the command", () => {
+		// Claude web was asked for a patch and a test command in one message.
+		// The command ran; the patch stayed in the text, so the command failed
+		// on a file that was never written.
+		const reply = [
+			"I'll use PyMuPDF.",
+			"",
+			"*** Begin Patch",
+			"*** Add File: C:\\Users\\quang\\Downloads\\extract_pdf_text.py",
+			"+import fitz",
+			"*** End Patch",
+			"",
+			"Then test it:",
+			"",
+			"```powershell",
+			"python C:\\Users\\quang\\Downloads\\extract_pdf_text.py a.pdf",
+			"```",
+		].join("\n");
+
+		const parsed = parseManagerBlocks(reply, {
+			allowCommands: true,
+			toolNames: ["apply_patch", "run_commands", "team_run_task"],
+		});
+
+		expect(parsed.problems).toEqual([]);
+		expect(parsed.delegations.map((d) => d.name)).toEqual([
+			"apply_patch",
+			"run_commands",
+		]);
+		expect(parsed.delegations[0]?.arguments).toEqual({
+			input: [
+				"*** Begin Patch",
+				"*** Add File: C:\\Users\\quang\\Downloads\\extract_pdf_text.py",
+				"+import fitz",
+				"*** End Patch",
+			].join("\n"),
+		});
+		expect(parsed.cleanedContent).not.toContain("*** Begin Patch");
+	});
+
+	it("leaves a patch alone when the session has no apply_patch", () => {
+		const reply = [
+			"*** Begin Patch",
+			"*** Add File: a.py",
+			"+x = 1",
+			"*** End Patch",
+			"```powershell",
+			"python a.py",
+			"```",
+		].join("\n");
+
+		const parsed = parseManagerBlocks(reply, {
+			allowCommands: true,
+			toolNames: ["run_commands", "team_run_task"],
+		});
+
+		expect(parsed.delegations.map((d) => d.name)).toEqual(["run_commands"]);
+		expect(parsed.cleanedContent).toContain("*** Begin Patch");
+	});
 });
 
 describe("a reply that echoes the manager prompt back", () => {

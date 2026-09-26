@@ -341,6 +341,7 @@ function parseCapturedReply(
 		const manager = parseManagerBlocks(text, {
 			// Only when the session actually has the shell tool to run it with.
 			allowCommands: toolNames.includes("run_commands"),
+			toolNames,
 		});
 		if (manager.delegations.length > 0 || manager.problems.length > 0) {
 			const retryPrompt =

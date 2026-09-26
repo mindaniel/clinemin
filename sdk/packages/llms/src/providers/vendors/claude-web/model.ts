@@ -135,6 +135,7 @@ function parseCapturedReply(
 	if (toolNames.includes("team_run_task")) {
 		const manager = parseManagerBlocks(text, {
 			allowCommands: toolNames.includes("run_commands"),
+			toolNames,
 		});
 		if (manager.delegations.length > 0 || manager.problems.length > 0) {
 			const retryPrompt =

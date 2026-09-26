@@ -373,6 +373,7 @@ function createGrokWebModel(
 				const manager = parseManagerBlocks(result.text, {
 					// Only when the session actually has the shell tool to run it with.
 					allowCommands: toolNames.includes("run_commands"),
+					toolNames,
 				});
 				if (manager.delegations.length > 0) {
 					finalText = manager.cleanedContent;
