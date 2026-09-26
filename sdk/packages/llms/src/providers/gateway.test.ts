@@ -607,6 +607,47 @@ describe("sdk-gateway", () => {
 		});
 	});
 
+	it("keeps provider metadata that streamText only puts on finish-step", async () => {
+		// Real `streamText` output: `finish-step` carries the model's
+		// providerMetadata and the closing `finish` has none. Reading `finish`
+		// alone left ChatGPT web's status bar at "messages left: —" for good.
+		streamTextSpy.mockReturnValue({
+			fullStream: makeStreamParts([
+				{ type: "text-delta", textDelta: "hi" },
+				{
+					type: "finish-step",
+					finishReason: "stop",
+					usage: { inputTokens: 3, outputTokens: 1 },
+					providerMetadata: { "chatgpt-web": { messagesRemaining: 2 } },
+				},
+				{
+					type: "finish",
+					finishReason: "stop",
+					totalUsage: { inputTokens: 3, outputTokens: 1 },
+				},
+			]),
+		});
+
+		const gateway = createGateway({
+			providerConfigs: [{ providerId: "openai-native", apiKey: "test" }],
+		});
+		const events = await collect(
+			await gateway.stream({
+				providerId: "openai-native",
+				modelId: "gpt-5-mini",
+				messages: baseMessages,
+				tools: [],
+			}),
+		);
+
+		expect(events).toContainEqual({
+			type: "usage",
+			usage: expect.objectContaining({
+				metadata: { "chatgpt-web": { messagesRemaining: 2 } },
+			}),
+		});
+	});
+
 	it("adapts OpenAI Responses streams through the native AI SDK provider", async () => {
 		streamTextSpy.mockReturnValue({
 			fullStream: makeStreamParts([
@@ -1243,6 +1284,9 @@ describe("sdk-gateway", () => {
 				cacheReadTokens: 0,
 				cacheWriteTokens: 0,
 				totalCost: 0.01829135,
+				metadata: {
+					gateway: { cost: "0.01829135", marketCost: "0.01829135" },
+				},
 			},
 		});
 	});

@@ -1064,9 +1064,18 @@ async function* emitAiSdkEvents(
 					continue;
 				}
 
+				// `streamText` puts the model's `providerMetadata` on `finish-step`
+				// only; its closing `finish` part has none. Reading `finish` alone
+				// dropped what a web provider says about its own limits (ChatGPT's
+				// messages left, Claude's session percent) on every real stream.
+				if (part.type === "finish-step" && part.providerMetadata) {
+					finishProviderMetadata = part.providerMetadata;
+				}
+
 				if (part.type === "finish") {
 					finishUsage = part.usage ?? part.totalUsage;
-					finishProviderMetadata = part.providerMetadata;
+					finishProviderMetadata =
+						part.providerMetadata ?? finishProviderMetadata;
 					finishReason =
 						part.finishReason ?? part.rawFinishReason ?? part.reason;
 				}

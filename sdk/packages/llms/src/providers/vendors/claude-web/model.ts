@@ -333,6 +333,7 @@ function createClaudeWebModel(
 	};
 
 	let lastSentUserMessage = "";
+	let lastSessionStatus: ClaudeCompletionResult["sessionStatus"];
 
 	async function runCompletionWithOptions(
 		options: LanguageModelV2CallOptions,
@@ -537,6 +538,15 @@ function createClaudeWebModel(
 			await abortableSleep(sendDelay, options.abortSignal);
 		}
 
+		// A reply recovered through the conversation API carries no
+		// `message_limit` event, so it has no percentage of its own. Showing the
+		// last one Claude reported beats falling back to a token count against a
+		// window that means nothing for this provider.
+		if (parsed.sessionStatus) {
+			lastSessionStatus = parsed.sessionStatus;
+		} else if (lastSessionStatus) {
+			parsed.sessionStatus = lastSessionStatus;
+		}
 		return parsed;
 	}
 

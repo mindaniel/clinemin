@@ -29,6 +29,10 @@ interface ClaudeSSEEvent {
 		total_tokens?: number;
 	};
 	message_limit?: {
+		windows?: Record<
+			string,
+			{ utilization?: number; resets_at?: number } | undefined
+		>;
 		resolved?: {
 			limit?: {
 				percent?: number;
@@ -314,9 +318,20 @@ export function consumeClaudeSse(
 			}
 
 			if (parsed.type === "message_limit" && onSessionPercent) {
-				const resolvedPercent = parsed.message_limit?.resolved?.limit?.percent;
+				// `resolved.limit` is Claude's own summary. The raw five-hour
+				// window carries the same figure as a 0-1 fraction and an epoch
+				// reset, so fall back to it if the summary is ever missing.
+				const window5h = parsed.message_limit?.windows?.["5h"];
+				const resolvedPercent =
+					parsed.message_limit?.resolved?.limit?.percent ??
+					(typeof window5h?.utilization === "number"
+						? Math.round(window5h.utilization * 1000) / 10
+						: undefined);
 				const resolvedResetsAt =
-					parsed.message_limit?.resolved?.limit?.resets_at;
+					parsed.message_limit?.resolved?.limit?.resets_at ??
+					(typeof window5h?.resets_at === "number"
+						? new Date(window5h.resets_at * 1000).toISOString()
+						: undefined);
 				if (
 					typeof resolvedPercent === "number" &&
 					Number.isFinite(resolvedPercent) &&

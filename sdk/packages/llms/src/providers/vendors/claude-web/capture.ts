@@ -73,6 +73,78 @@ const FETCH_LATEST_REPLY_EXPRESSION = `(async () => {
 	}
 })()`;
 
+/**
+ * Keep a copy of the completion stream inside the page.
+ *
+ * `Network.getResponseBody` has stopped working for claude.ai's completion
+ * stream: every turn since mid-September fell through to the conversation-API
+ * rescue, which returns the reply text and nothing else. The SSE's
+ * `message_limit` event -- the only place the session percentage comes from --
+ * was lost with it, so the status bar showed "(0/1M)" instead of "x/100%".
+ *
+ * So wrap `fetch` and clone each completion response as the page reads it. The
+ * page's own copy is untouched; this one is read back once the reply settles.
+ * Installed before every send, because a reload (throttle recovery, a fresh
+ * chat) drops it, and the slot is cleared so a stale body is never reused.
+ */
+const INSTALL_COMPLETION_TEE_EXPRESSION = `(() => {
+	window.__clineClaudeCompletion = '';
+	if (window.__clineClaudeTeeInstalled) return true;
+	window.__clineClaudeTeeInstalled = true;
+	const original = window.fetch;
+	window.fetch = function (...args) {
+		const pending = original.apply(this, args);
+		try {
+			const input = args[0];
+			const url = input instanceof Request ? input.url : String(input);
+			if (url.includes('${CLAUDE_API_ENDPOINT}') && url.includes('${CLAUDE_COMPLETION_PATH}')) {
+				pending.then((res) => {
+					if (!res.ok) return;
+					res.clone().text().then((text) => {
+						window.__clineClaudeCompletion = text;
+					}).catch(() => {});
+				}).catch(() => {});
+			}
+		} catch {}
+		return pending;
+	};
+	return true;
+})()`;
+
+const READ_COMPLETION_TEE_EXPRESSION = `window.__clineClaudeCompletion || ''`;
+
+async function installCompletionTee(
+	cdp: CdpClient,
+	cdpSessionId: string,
+): Promise<void> {
+	try {
+		await cdp.send(
+			"Runtime.evaluate",
+			{ expression: INSTALL_COMPLETION_TEE_EXPRESSION, returnByValue: true },
+			cdpSessionId,
+		);
+	} catch {
+		// Not fatal: the network capture and the conversation API still work.
+	}
+}
+
+async function readCompletionTee(
+	cdp: CdpClient,
+	cdpSessionId: string,
+): Promise<string> {
+	try {
+		const result = await cdp.send(
+			"Runtime.evaluate",
+			{ expression: READ_COMPLETION_TEE_EXPRESSION, returnByValue: true },
+			cdpSessionId,
+		);
+		const value = result?.result?.value;
+		return typeof value === "string" ? value : "";
+	} catch {
+		return "";
+	}
+}
+
 async function fetchLatestReplyMarkdown(
 	cdp: CdpClient,
 	cdpSessionId: string,
@@ -274,6 +346,8 @@ export async function sendAndCapture(
 		text: (before?.text ?? "").trim(),
 	};
 
+	await installCompletionTee(cdp, cdpSessionId);
+
 	// Build the send script and inject it.
 	const script = buildSendScript(prompt, sendOptions);
 	try {
@@ -336,6 +410,14 @@ export async function sendAndCapture(
 				return;
 			}
 			if (capturedBody || watchdogDone) return;
+			const teed = await readCompletionTee(cdp, cdpSessionId);
+			if (capturedBody || watchdogDone) return;
+			if (teed.trim()) {
+				capturedBody = teed;
+				debugLog("read the completion stream from the page's own copy");
+				bodyResolve?.();
+				return;
+			}
 			const reason = completionRequestId
 				? `completion seen, body read failed: ${bodyReadError ?? "empty"}`
 				: "no completion response seen";
