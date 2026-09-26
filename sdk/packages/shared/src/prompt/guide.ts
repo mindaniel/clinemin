@@ -1,5 +1,5 @@
 import { renderWebProviderToolDocs, TOOL_CALL_PROTOCOL_RULES } from "./cline";
-import { SIMPLE_WEB_SYSTEM_PROMPT } from "./simple-web";
+import { SIMPLE_WEB_SYSTEM_PROMPT, withWebPromptFolder } from "./simple-web";
 
 /**
  * `/guide-ai <message>` — re-send the working agreement with this turn.
@@ -127,7 +127,7 @@ export function buildGuideAiReminder(options: {
 		return [
 			"Reminder — the working agreement for this conversation, unchanged since it started. Follow it exactly for the request below.",
 			"",
-			SIMPLE_WEB_SYSTEM_PROMPT,
+			withWebPromptFolder(SIMPLE_WEB_SYSTEM_PROMPT),
 		].join("\n");
 	}
 	return [

@@ -3,6 +3,7 @@ import { isClineProvider } from "../providers/utils";
 import type { WorkspaceInfo } from "../session/workspace";
 import type { ManagerWorkerSummary } from "./manager";
 import { buildManagerSystemPrompt } from "./manager";
+import { withWebPromptFolder } from "./simple-web";
 import {
 	DEFAULT_CLINE_SYSTEM_PROMPT,
 	YOLO_CLINE_SYSTEM_PROMPT,
@@ -424,7 +425,7 @@ export function buildClineSystemPrompt(
 			basePrompt = prompts.worker;
 		}
 		// manager is handled above; fallback to shared prompt.
-		return basePrompt
+		return withWebPromptFolder(basePrompt, workspaceRoot)
 			.replace("{{PLATFORM_NAME}}", platform)
 			.replace("{{CWD}}", workspaceRoot)
 			.replace("{{CURRENT_DATE}}", new Date().toLocaleDateString())

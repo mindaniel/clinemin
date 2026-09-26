@@ -1,5 +1,5 @@
 import type { LanguageModelV2Prompt } from "@ai-sdk/provider";
-import { SIMPLE_WEB_SYSTEM_PROMPT } from "@cline/shared";
+import { SIMPLE_WEB_SYSTEM_PROMPT, withWebPromptFolder } from "@cline/shared";
 
 /**
  * The human-in-the-loop prompt for the smart web providers.
@@ -44,7 +44,7 @@ export function applySimpleWebSystemPrompt(
 ): LanguageModelV2Prompt {
 	return prompt.map((message) =>
 		message.role === "system" && isStockWebSystemPrompt(message.content)
-			? { ...message, content: SIMPLE_WEB_SYSTEM_PROMPT }
+			? { ...message, content: withWebPromptFolder(SIMPLE_WEB_SYSTEM_PROMPT) }
 			: message,
 	);
 }

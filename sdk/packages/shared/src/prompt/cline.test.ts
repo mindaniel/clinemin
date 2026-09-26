@@ -4,6 +4,7 @@ import {
 	MODE_TAG_INSTRUCTIONS,
 	PLAN_MODE_INSTRUCTIONS,
 } from "./cline";
+import { SIMPLE_WEB_SYSTEM_PROMPT } from "./simple-web";
 
 const BASE_OPTIONS = {
 	ide: "VS Code",
@@ -91,6 +92,25 @@ describe("web provider tool docs", () => {
 		expect(prompt).not.toContain(MODE_TAG_INSTRUCTIONS);
 		expect(prompt).not.toContain(PLAN_MODE_INSTRUCTIONS);
 		expect(prompt).not.toContain("switch_to_act_mode");
+	});
+
+	it("tells a provider's own web prompt which folder it is working in", () => {
+		const prompt = buildClineSystemPrompt({
+			...WEB,
+			workspaceRoot: "C:\\Users\\quang\\Downloads",
+			prompts: { default: SIMPLE_WEB_SYSTEM_PROMPT },
+		});
+		expect(prompt).toContain("Folder: C:\\Users\\quang\\Downloads");
+		expect(prompt).not.toContain("{{CWD}}");
+	});
+
+	it("drops the folder line when no folder is known", () => {
+		const prompt = buildClineSystemPrompt({
+			...WEB,
+			workspaceRoot: "",
+			prompts: { default: SIMPLE_WEB_SYSTEM_PROMPT },
+		});
+		expect(prompt).not.toContain("Folder:");
 	});
 
 	it("does not offer apply_patch to an unrestricted session", () => {

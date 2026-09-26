@@ -6,7 +6,7 @@ import {
 	expandGuideAiPrompt,
 	parseGuideAiCommand,
 } from "./guide";
-import { SIMPLE_WEB_SYSTEM_PROMPT } from "./simple-web";
+import { SIMPLE_WEB_SYSTEM_PROMPT, withWebPromptFolder } from "./simple-web";
 
 describe("parseGuideAiCommand", () => {
 	it("leaves anything that is not the command alone", () => {
@@ -76,7 +76,8 @@ describe("detectGuideAiStyle", () => {
 describe("buildGuideAiReminder", () => {
 	it("restates the PowerShell and patch rules verbatim", () => {
 		const reminder = buildGuideAiReminder({ style: "patch" });
-		expect(reminder).toContain(SIMPLE_WEB_SYSTEM_PROMPT);
+		expect(reminder).toContain(withWebPromptFolder(SIMPLE_WEB_SYSTEM_PROMPT));
+		expect(reminder).not.toContain("{{CWD}}");
 		expect(reminder).not.toContain("<tool>");
 	});
 

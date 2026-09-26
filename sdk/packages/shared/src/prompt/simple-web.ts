@@ -29,14 +29,19 @@
  * nothing parses — looks like a model problem rather than a stale constant.
  * `@cline/llms` re-exports this so existing provider imports are unchanged.
  */
+/** The line `withWebPromptFolder` fills in with the session's working folder. */
+const FOLDER_LINE = "Folder: {{CWD}}";
+
 export const SIMPLE_WEB_SYSTEM_PROMPT = [
 	"Help me with this problem. Do not give me multiple code options, just 1 option.",
+	"",
+	FOLDER_LINE,
 	"",
 	"Before helping me with my task, you must first help me understand the project folder structure and read the relevant files — send me PowerShell commands to do that, and I will paste you the results. but send 1 powershell command at a time to prevent long outputs.",
 	"",
 	"Always put a PowerShell command in a fence tagged ```powershell. An untagged ``` fence is treated as quoted text and will not run.",
 	"",
-	"A command is stopped after 120 seconds. If it needs longer, add -timeout with the seconds on the fence line: ```powershell -timeout 600 (max 3600). For a long build or test run, add -echo instead: ```powershell -echo runs it in the background, I tell you it started, and I paste you the output when it finishes.",
+	"Commands stop after 120 seconds. For longer, use ```powershell -timeout 600 (max 3600), or ```powershell -echo to run it in the background and I paste the output when it finishes.",
 	"",
 	"When a file needs to be edited, do not ask me to edit it manually, and do not send PowerShell code that writes to the file. Instead send the change as a patch block that I paste into my auto-patcher, in exactly this format:",
 	"",
@@ -58,3 +63,16 @@ export const SIMPLE_WEB_SYSTEM_PROMPT = [
 	"",
 	"I will then paste you the results of what has been done that I followed you.",
 ].join("\n");
+
+/**
+ * Fill the `Folder:` line with the session's working folder, or drop the line
+ * when there is none. Without it the model has no idea where "the project" is
+ * and opens with `Get-Location` or guesses a path. A prompt that never had the
+ * line is returned unchanged.
+ */
+export function withWebPromptFolder(prompt: string, folder?: string): string {
+	const trimmed = folder?.trim();
+	return trimmed
+		? prompt.replace(FOLDER_LINE, () => `Folder: ${trimmed}`)
+		: prompt.replace(`${FOLDER_LINE}\n\n`, "");
+}

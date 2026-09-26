@@ -292,7 +292,10 @@ export {
 	buildManagerSystemPrompt,
 	shortProviderName,
 } from "./prompt/manager";
-export { SIMPLE_WEB_SYSTEM_PROMPT } from "./prompt/simple-web";
+export {
+	SIMPLE_WEB_SYSTEM_PROMPT,
+	withWebPromptFolder,
+} from "./prompt/simple-web";
 export { CLINE_DEFAULT_MODEL_ID } from "./providers/defaults";
 export { isClineProvider } from "./providers/utils";
 export { REMOTE_URI_SCHEME } from "./remote-config/constants";

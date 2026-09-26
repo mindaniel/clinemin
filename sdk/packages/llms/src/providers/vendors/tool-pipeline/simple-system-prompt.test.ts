@@ -1,4 +1,5 @@
 import type { LanguageModelV2Prompt } from "@ai-sdk/provider";
+import { withWebPromptFolder } from "@cline/shared";
 import { describe, expect, it } from "vitest";
 import {
 	applySimpleWebSystemPrompt,
@@ -39,7 +40,7 @@ describe("isStockWebSystemPrompt", () => {
 describe("applySimpleWebSystemPrompt", () => {
 	it("replaces the stock prompt", () => {
 		expect(systemOf(applySimpleWebSystemPrompt(systemPrompt(STOCK)))).toBe(
-			SIMPLE_WEB_SYSTEM_PROMPT,
+			withWebPromptFolder(SIMPLE_WEB_SYSTEM_PROMPT),
 		);
 	});
 
