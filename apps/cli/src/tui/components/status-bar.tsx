@@ -152,11 +152,15 @@ export function formatStatusBarUsageText(input: {
 		if (remaining === undefined) {
 			return `(${unit.many} left: —)`;
 		}
-		// At zero the account is not stopped, it is demoted: ChatGPT keeps
-		// answering on the fallback model, which has no allowance to count. So
-		// say the limit was reached rather than "0 messages left", which reads
-		// like the session is over.
+		// At zero ChatGPT does not stop, it demotes: replies keep coming from
+		// the fallback model, which has no allowance to count. "limit reached"
+		// read as "you are blocked" while the user was still chatting, so say
+		// which model is answering and when the full one comes back. Grok has
+		// no fallback, so for it zero really is the limit.
 		if (remaining === 0) {
+			if (input.providerId === "chatgpt-web") {
+				return `(fallback model${resetText ? ` · full model back ${resetText}` : ""})`;
+			}
 			return `(limit reached${resetSuffix || " · reset time unknown"})`;
 		}
 		// Grok says how big the window is, so show the count against it the way

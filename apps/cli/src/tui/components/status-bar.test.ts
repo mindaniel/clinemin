@@ -152,10 +152,10 @@ describe("formatStatusBarUsageText", () => {
 				webSessionStatus: { messagesRemaining: 0, resetsAt },
 				now,
 			}),
-		).toBe(`(limit reached · resets ${time})`);
+		).toBe(`(fallback model · full model back ${time})`);
 	});
 
-	it("still says the limit was reached with no reset time", () => {
+	it("still names the fallback model with no reset time", () => {
 		expect(
 			formatStatusBarUsageText({
 				totalTokens: 60_000,
@@ -163,7 +163,7 @@ describe("formatStatusBarUsageText", () => {
 				providerId: "chatgpt-web",
 				webSessionStatus: { messagesRemaining: 0 },
 			}),
-		).toBe("(limit reached · reset time unknown)");
+		).toBe("(fallback model)");
 	});
 
 	it("shows a placeholder for ChatGPT Web before the first reply", () => {
