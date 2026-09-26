@@ -33,6 +33,7 @@ import { withBrowserLock } from "../tool-pipeline/browser-lock";
 import { resolveChatKey } from "../tool-pipeline/chat-target";
 import { confirmChatLocation } from "../tool-pipeline/confirm-chat-location";
 import { logConversationTurn } from "../tool-pipeline/conversation-logger";
+import { addToChatContext } from "../tool-pipeline/estimate-usage";
 import { parseInvokeStyleToolCalls } from "../tool-pipeline/invoke-parser";
 import { parseManagerBlocks } from "../tool-pipeline/manager-block";
 import { unappliedPatchNotice } from "../tool-pipeline/patch-block";
@@ -599,6 +600,12 @@ export function createGeminiWebModel(
 
 			debugLog(`Received response (${result.text.length} chars)`);
 
+			result.usage = addToChatContext(
+				"gemini-web",
+				chatKey,
+				result.usage,
+				isNewChat && attempt === 0,
+			);
 			parsed = parseCapturedReply(result.text, options, result.usage);
 
 			// Log raw and parsed response per conversation

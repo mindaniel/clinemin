@@ -13,11 +13,12 @@
  * numbers are comparable even though none of them are exact.
  *
  * Note what this counts: one turn's prompt, not the whole conversation the
- * browser tab is holding. The caller accumulates turns, so the running total
- * tracks what this session has pushed through the chat.
+ * browser tab is holding. `addToChatContext` turns that into the size of the
+ * conversation itself, which is what the context bar is meant to show.
  */
 
 import { estimateTokens } from "@cline/shared";
+import { processGlobal } from "./process-global";
 
 export interface EstimatedUsage {
 	inputTokens: number;
@@ -39,6 +40,40 @@ export function estimateWebUsage(
 	const inputTokens = countTokens(promptText);
 	const outputTokens = countTokens(replyText);
 	return { inputTokens, outputTokens, totalTokens: inputTokens + outputTokens };
+}
+
+const chatContextTotals = () =>
+	processGlobal<Map<string, number>>("webChatContextTotals", () => new Map());
+
+/**
+ * Report a turn's usage as the size of the whole web chat so far.
+ *
+ * The context bar reads `inputTokens` off the latest reply, which for an API
+ * model is the whole conversation it was just sent. A web chat is sent only
+ * the new message -- the rest already lives in the browser tab -- so the bar
+ * showed one turn's size (Gemini at "839/1M" deep into a session) instead of
+ * how full the chat actually is. So keep a running total per chat: every
+ * earlier prompt and reply, plus this prompt, is this turn's input.
+ *
+ * `freshChat` starts the count over, for a turn that opened a new web chat.
+ * The total lives in memory, so after a hub restart it counts from zero again.
+ */
+export function addToChatContext(
+	provider: string,
+	chatKey: string,
+	usage: EstimatedUsage,
+	freshChat: boolean,
+): EstimatedUsage {
+	const totals = chatContextTotals();
+	const key = `${provider}:${chatKey}`;
+	const before = freshChat ? 0 : (totals.get(key) ?? 0);
+	const inputTokens = before + usage.inputTokens;
+	totals.set(key, inputTokens + usage.outputTokens);
+	return {
+		inputTokens,
+		outputTokens: usage.outputTokens,
+		totalTokens: inputTokens + usage.outputTokens,
+	};
 }
 
 /**
