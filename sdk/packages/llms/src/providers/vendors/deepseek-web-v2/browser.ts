@@ -323,8 +323,12 @@ export function isSameChatLocation(
 	currentUrl: string,
 	destination: string,
 ): boolean {
+	// The query string is dropped as well as the fragment: every provider keeps
+	// the chat id in the path, and pages add their own parameters after a reply
+	// (Grok appends `?rid=<response id>`). Comparing those made every follow-up
+	// turn look like a different chat and reloaded the tab each time.
 	const normalize = (url: string): string =>
-		(url || "").replace(/\/+$/, "").split("#")[0] ?? "";
+		((url || "").split(/[?#]/)[0] ?? "").replace(/\/+$/, "");
 	return (
 		normalize(currentUrl) === normalize(destination) &&
 		normalize(destination) !== ""

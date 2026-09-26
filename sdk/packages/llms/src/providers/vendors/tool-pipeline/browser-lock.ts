@@ -27,7 +27,7 @@
  * browser for a dead turn would steal the tab from a live one.
  */
 
-import { abortError, throwIfAborted } from "./abort";
+import { abortError, abortRace, throwIfAborted } from "./abort";
 import { processGlobal } from "./process-global";
 
 interface BrowserLockState {
@@ -69,18 +69,29 @@ export async function withBrowserLock<T>(
 	const tail = previous ? previous.then(() => held) : held;
 	slot.tails.set(key, tail);
 
-	if (previous) {
-		// A failed predecessor still released its slot; its rejection is that
-		// turn's problem, not this one's.
-		await previous.catch(() => undefined);
-	}
-
+	// A cancelled turn gives the browser back at once, and a queued turn can
+	// be cancelled while it waits. The lock used to be held until whatever CDP
+	// step the turn was in returned -- for a wait on the page, possibly never --
+	// so after pressing esc every later message on that provider queued behind
+	// a dead turn and sat on "Thinking..." for good. The abandoned turn may
+	// still finish a step in the background; its result is ignored.
+	const cancelled = abortRace(signal);
+	// Raced below, but not on every path; never an unhandled rejection.
+	cancelled.promise.catch(() => undefined);
 	try {
+		if (previous) {
+			// A failed predecessor still released its slot; its rejection is
+			// that turn's problem, not this one's.
+			await Promise.race([previous.catch(() => undefined), cancelled.promise]);
+		}
 		// Re-checked after the wait: a turn cancelled while queued must not touch
 		// the browser now that the user has moved on.
 		throwIfAborted(signal);
-		return await turn();
+		const running = turn();
+		running.catch(() => undefined);
+		return await Promise.race([running, cancelled.promise]);
 	} finally {
+		cancelled.dispose();
 		release();
 		// Only clear the tail if nobody queued behind this turn, otherwise the
 		// next waiter's position would be dropped and the queue would unbound.

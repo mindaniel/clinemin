@@ -109,6 +109,23 @@ describe("withBrowserLock", () => {
 		expect(ran).toBe(false);
 	});
 
+	it("frees the browser when a stuck turn is cancelled", async () => {
+		// Grok: pressing esc on a turn stuck in a page wait left it holding the
+		// lock, and every later message sat on "Thinking..." behind it.
+		const controller = new AbortController();
+		const stuck = withBrowserLock(
+			"p-stuck",
+			controller.signal,
+			() => new Promise<void>(() => {}),
+		);
+
+		controller.abort();
+		await expect(stuck).rejects.toThrow();
+		await expect(
+			withBrowserLock("p-stuck", undefined, async () => "next"),
+		).resolves.toBe("next");
+	});
+
 	it("reports the key as free again once every turn has finished", async () => {
 		await withBrowserLock("p-idle", undefined, async () => undefined);
 		expect(isBrowserBusy("p-idle")).toBe(false);

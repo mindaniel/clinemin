@@ -388,6 +388,30 @@ describe("deepseek-web-v2 isSameChatLocation (no-reload guard)", () => {
 		).toBe(true);
 	});
 
+	it("ignores query parameters a page adds after a reply (no reload)", () => {
+		// Grok appends `?rid=<response id>` once it answers; reloading on that
+		// refreshed the tab before every tool-loop turn.
+		expect(
+			isSameChatLocation(
+				"https://grok.com/c/91d76c7e-7229-4ee0-be46-8327872eba62?rid=eb44a580",
+				"https://grok.com/c/91d76c7e-7229-4ee0-be46-8327872eba62",
+			),
+		).toBe(true);
+		// Kimi opens every chat as `?chat_enter_method=home`.
+		expect(
+			isSameChatLocation(
+				"https://www.kimi.ai/chat/d1abc?chat_enter_method=home",
+				"https://www.kimi.ai/chat/d1abc",
+			),
+		).toBe(true);
+		expect(
+			isSameChatLocation(
+				"https://grok.com/c/one?rid=x",
+				"https://grok.com/c/two",
+			),
+		).toBe(false);
+	});
+
 	it("is false when on a different chat (reload needed)", () => {
 		expect(
 			isSameChatLocation(
