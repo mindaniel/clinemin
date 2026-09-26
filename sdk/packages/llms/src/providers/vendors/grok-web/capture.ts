@@ -24,6 +24,109 @@ import { buildSendScript } from "./send-script";
 // call's own cdpSessionId and unregistered in `finally`, so a listener left
 // over from an earlier turn never intercepts a later turn's response.
 
+/**
+ * The newest assistant reply in the open chat, as raw markdown, from the
+ * endpoints grok.com's own page uses to load a conversation.
+ */
+const FETCH_LATEST_REPLY_EXPRESSION = `(async () => {
+	try {
+		const id = (location.pathname.match(/\\/c\\/([0-9a-f-]{36})/i) || [])[1];
+		if (!id) return '';
+		const nodesRes = await fetch('/rest/app-chat/conversations/' + id + '/response-node?includeThreads=true', { credentials: 'include' });
+		if (!nodesRes.ok) return '';
+		const nodes = ((await nodesRes.json()).responseNodes || []).filter((n) => n.sender === 'assistant' || n.sender === 'ASSISTANT');
+		const last = nodes[nodes.length - 1];
+		if (!last) return '';
+		const res = await fetch('/rest/app-chat/conversations/' + id + '/load-responses', {
+			method: 'POST',
+			credentials: 'include',
+			headers: { 'content-type': 'application/json' },
+			body: JSON.stringify({ responseIds: [last.responseId] }),
+		});
+		if (!res.ok) return '';
+		const reply = ((await res.json()).responses || []).find((r) => r.responseId === last.responseId);
+		return (reply && typeof reply.message === 'string') ? reply.message : '';
+	} catch {
+		return '';
+	}
+})()`;
+
+/**
+ * Grok's query allowance, asked for directly.
+ *
+ * The page used to call `/rest/rate-limits` around every send and the network
+ * listener below read the answer off the wire. It no longer does -- the call
+ * never appears in the page's network log -- so the status bar sat on
+ * "queries left: —" for good. Ask the same endpoint ourselves.
+ *
+ * Grok Auto spends from two buckets: `fast` (what an ordinary reply uses) and
+ * `expert` (the harder-thinking one, with a much smaller allowance). Show
+ * whichever has the smaller share left, since that is the one that stops the
+ * session first.
+ */
+const FETCH_RATE_LIMIT_EXPRESSION = `(async () => {
+	let best = null;
+	for (const modelName of ['fast', 'expert']) {
+		try {
+			const res = await fetch('${Grok_RATE_LIMIT_ENDPOINT}', {
+				method: 'POST',
+				credentials: 'include',
+				headers: { 'content-type': 'application/json' },
+				body: JSON.stringify({ requestKind: 'DEFAULT', modelName }),
+			});
+			if (!res.ok) continue;
+			const info = await res.json();
+			if (!info || !(info.totalQueries > 0) || typeof info.remainingQueries !== 'number') continue;
+			if (!best || info.remainingQueries / info.totalQueries < best.remainingQueries / best.totalQueries) best = info;
+		} catch {}
+	}
+	return best ? JSON.stringify(best) : '';
+})()`;
+
+async function fetchGrokRateLimit(
+	cdp: CdpClient,
+	cdpSessionId: string,
+): Promise<GrokRateLimitInfo | undefined> {
+	try {
+		const result = await cdp.send(
+			"Runtime.evaluate",
+			{
+				expression: FETCH_RATE_LIMIT_EXPRESSION,
+				returnByValue: true,
+				awaitPromise: true,
+			},
+			cdpSessionId,
+		);
+		const value = result?.result?.value;
+		return typeof value === "string" && value
+			? (JSON.parse(value) as GrokRateLimitInfo)
+			: undefined;
+	} catch {
+		return undefined;
+	}
+}
+
+async function fetchLatestGrokReply(
+	cdp: CdpClient,
+	cdpSessionId: string,
+): Promise<string | undefined> {
+	try {
+		const result = await cdp.send(
+			"Runtime.evaluate",
+			{
+				expression: FETCH_LATEST_REPLY_EXPRESSION,
+				returnByValue: true,
+				awaitPromise: true,
+			},
+			cdpSessionId,
+		);
+		const value = result?.result?.value;
+		return typeof value === "string" ? value : undefined;
+	} catch {
+		return undefined;
+	}
+}
+
 export async function sendAndCapture(
 	cdp: CdpClient,
 	cdpSessionId: string,
@@ -118,7 +221,17 @@ export async function sendAndCapture(
 
 	// Inject a DOM monitor that watches for assistant message content.
 	// It tracks text changes and resolves when the response stabilizes (no changes for 1.2s).
+	// Grok renders each reply as `[data-testid="assistant-message"]`. The
+	// monitor used to take the FIRST match on the page and compared it with an
+	// empty string, so in any chat with an earlier reply it "captured" that old
+	// reply 1.2s after injection -- before this turn's message was even sent.
+	// It now reads the LAST reply and ignores it until it differs from what was
+	// on screen before sending.
 	const monitorScript = `(() => {
+		const replyNodes = () => document.querySelectorAll('[data-testid="assistant-message"]');
+		const lastReply = () => { const n = replyNodes(); return n.length ? n[n.length - 1] : null; };
+		const baselineCount = replyNodes().length;
+		const baselineText = (lastReply() && lastReply().innerText) || '';
 		let lastContent = '';
 		let lastChangeTime = Date.now();
 		let stableTimer = null;
@@ -135,6 +248,13 @@ export async function sendAndCapture(
 		};
 
 		const getAssistantContent = () => {
+			const reply = lastReply();
+			if (reply) {
+				const text = reply.innerText || '';
+				if (replyNodes().length <= baselineCount && text === baselineText) return null;
+				if (text.includes('Working for') || text.includes('Thinking for') || text.trim() === '') return null;
+				return text;
+			}
 			// Try common selectors for assistant message content
 			const selectors = [
 				'.message.assistant .ProseMirror',
@@ -304,6 +424,16 @@ export async function sendAndCapture(
 			rawBody: "",
 		};
 	}
+
+	// The page only has the rendered reply: code fences are gone and line
+	// breaks are whatever the renderer kept, so a ```powershell command or a
+	// patch block read off the DOM does not parse. Grok's own conversation API
+	// returns the reply as written; prefer it whenever it answers.
+	const rawReply = await fetchLatestGrokReply(cdp, cdpSessionId);
+	if (rawReply?.trim()) {
+		fullText = rawReply;
+	}
+	capturedRateLimit ??= await fetchGrokRateLimit(cdp, cdpSessionId);
 
 	// Parse tool calls from the full text (reuse existing parsing logic later)
 	const finishReason: LanguageModelV2FinishReason = "stop";

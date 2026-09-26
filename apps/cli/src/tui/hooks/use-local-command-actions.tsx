@@ -20,9 +20,11 @@ import {
 	deleteChatSession,
 	deleteClaudeChatSession,
 	deleteGeminiChatSession,
+	deleteGrokChatSession,
 	deleteKimiChatSession,
 	deleteQwenChatSession,
 	type GeminiWebChatEntry,
+	type GrokWebChatEntry,
 	getActiveBrowserProfile,
 	getContinuationNote,
 	type KimiWebChatEntry,
@@ -31,12 +33,14 @@ import {
 	listClaudeWebChats,
 	listDeepSeekWebV2Chats,
 	listGeminiWebChats,
+	listGrokWebChats,
 	listKimiWebChats,
 	listQwenWebChats,
 	openChatGPTWebChat,
 	openClaudeWebChat,
 	openDeepSeekWebV2Chat,
 	openGeminiWebChat,
+	openGrokWebChat,
 	openKimiWebChat,
 	openQwenWebChat,
 	PASTE_CARRIER_PROMPT,
@@ -47,6 +51,7 @@ import {
 	resolveClaudeWebV2Config,
 	resolveDeepSeekWebV2Config,
 	resolveGeminiWebV2Config,
+	resolveGrokWebV2Config,
 	resolveKimiWebV2Config,
 	resolveQwenWebV2Config,
 	setActiveBrowserProfile,
@@ -64,6 +69,7 @@ export type WebChatEntry =
 	| ChatGPTWebChatEntry
 	| ClaudeWebChatEntry
 	| GeminiWebChatEntry
+	| GrokWebChatEntry
 	| KimiWebChatEntry;
 
 interface WebProviderConfig {
@@ -126,6 +132,15 @@ const webProviderConfigs: Record<string, WebProviderConfig> = {
 		deleteChat: (chatKey: string) => {
 			const config = resolveGeminiWebV2Config();
 			deleteGeminiChatSession(config.chatsFile, chatKey);
+		},
+	},
+	"grok-web": {
+		name: "Grok Web",
+		listChats: listGrokWebChats,
+		openChat: openGrokWebChat,
+		deleteChat: (chatKey: string) => {
+			const config = resolveGrokWebV2Config();
+			deleteGrokChatSession(config.chatsFile, chatKey);
 		},
 	},
 };

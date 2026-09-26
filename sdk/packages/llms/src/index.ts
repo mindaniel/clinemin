@@ -138,6 +138,13 @@ export {
 	openGeminiWebChat,
 	resolveGeminiWebV2Config,
 } from "./providers/vendors/gemini-web";
+export {
+	deleteGrokChatSession,
+	type GrokWebChatEntry,
+	listGrokWebChats,
+	openGrokWebChat,
+	resolveGrokWebV2Config,
+} from "./providers/vendors/grok-web";
 
 export {
 	deleteKimiChatSession,

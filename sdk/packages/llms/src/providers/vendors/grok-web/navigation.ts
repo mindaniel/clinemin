@@ -108,10 +108,17 @@ export async function waitForComposerReady(
 ): Promise<void> {
 	const pageFullyLoaded = `(() => {
         if (document.readyState !== 'complete') return false;
-        var candidates = Array.from(document.querySelectorAll('textarea, input[type="text"], .chat-input'));
+        // Grok's composer is a tiptap editor (a contenteditable textbox), not
+        // a textarea. The only textarea left on grok.com is a hidden measuring
+        // element, so a textarea-only check never passed: every turn waited
+        // out loginTimeoutMs and failed with nothing sent.
+        var candidates = Array.from(document.querySelectorAll(
+            '[data-testid="chat-input"] [contenteditable="true"], .tiptap.ProseMirror[contenteditable="true"], [contenteditable="true"][role="textbox"], textarea, input[type="text"], .chat-input'
+        ));
         for (var i = 0; i < candidates.length; i++) {
             var ta = candidates[i];
             if (!ta || ta.disabled || ta.readOnly) continue;
+            if (ta.getAttribute('aria-disabled') === 'true') continue;
             // Exclude Monaco/code-block editors rendered inside assistant
             // responses. Grok wraps code blocks in .Grok-markdown-code and the
             // Monaco editor contains a readonly .ime-text-area textarea that
