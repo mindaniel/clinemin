@@ -553,6 +553,7 @@ describe("HubRuntimeHost", () => {
 				approved: true,
 				reason: "ok",
 				silentSkip: false,
+				foreground: false,
 			},
 			"sess-1",
 		);
@@ -636,6 +637,7 @@ describe("HubRuntimeHost", () => {
 				approved: false,
 				reason: undefined,
 				silentSkip: true,
+				foreground: false,
 			},
 			"sess-1",
 		);
@@ -778,6 +780,7 @@ describe("HubRuntimeHost", () => {
 				approved: true,
 				reason: "approved by app handler",
 				silentSkip: false,
+				foreground: false,
 			},
 			"sess-1",
 		);

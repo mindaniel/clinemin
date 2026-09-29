@@ -635,6 +635,8 @@ export class HubSessionClient {
 		reason?: string;
 		/** Drop the call and tell the model nothing -- not a denial. */
 		silentSkip?: boolean;
+		/** Run the approved call with no time limit, in the turn. */
+		foreground?: boolean;
 		responderClientId?: string;
 	}): Promise<void> {
 		await this.ensureMetadataApplied();
@@ -642,6 +644,7 @@ export class HubSessionClient {
 			approvalId: input.approvalId,
 			approved: input.approved,
 			silentSkip: input.silentSkip === true,
+			foreground: input.foreground === true,
 			payload: input.reason ? { reason: input.reason } : undefined,
 			responderClientId: input.responderClientId,
 		});

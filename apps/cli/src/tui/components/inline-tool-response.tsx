@@ -200,13 +200,19 @@ function ToolApprovalResponse(
 	},
 ) {
 	const allowSilentSkip = props.allowSilentSkip;
-	const choices: ToolApprovalOutcome[] = allowSilentSkip
-		? ["approve", "deny", "skip"]
-		: ["approve", "deny"];
+	const request = props.interaction.request;
+	// A command can also be run in the foreground: no timeout, no background,
+	// the whole output goes back to the model when it ends.
+	const allowForeground = request.toolName === "run_commands";
+	const choices: ToolApprovalOutcome[] = [
+		"approve",
+		...(allowForeground ? (["foreground"] as const) : []),
+		"deny",
+		...(allowSilentSkip ? (["skip"] as const) : []),
+	];
 	const [selected, setSelected] = useState<ToolApprovalOutcome>("approve");
 	const selectedRef = useRef(selected);
 	selectedRef.current = selected;
-	const request = props.interaction.request;
 	const interactionId = props.interaction.id;
 	const onResolveToolApproval = props.onResolveToolApproval;
 	const params = formatApprovalParams(request.toolName, request.input);
@@ -225,6 +231,10 @@ function ToolApprovalResponse(
 		}
 		if (key.name === "n") {
 			resolve("deny");
+			return;
+		}
+		if (key.name === "f" && allowForeground) {
+			resolve("foreground");
 			return;
 		}
 		if (key.name === "s" && allowSilentSkip) {
@@ -276,6 +286,13 @@ function ToolApprovalResponse(
 					selected={selected === "approve"}
 					onPress={() => resolve("approve")}
 				/>
+				{allowForeground && (
+					<ChoiceButton
+						label="[f] Foreground, no timeout"
+						selected={selected === "foreground"}
+						onPress={() => resolve("foreground")}
+					/>
+				)}
 				<ChoiceButton
 					label="[n] Deny"
 					selected={selected === "deny"}

@@ -135,8 +135,10 @@ export type TuiStartupTarget = "chat" | "config" | "history";
  * "deny" sends the model a tool result saying it was refused; "skip" sends it
  * nothing at all and is only offered on web providers, where a turn can simply
  * end without a tool result. See `silentSkip` in the agent runtime.
+ * "foreground" approves a run_commands call and waits for it with no time
+ * limit (and not in the background), so its whole output reaches the model.
  */
-export type ToolApprovalOutcome = "approve" | "deny" | "skip";
+export type ToolApprovalOutcome = "approve" | "deny" | "skip" | "foreground";
 
 export type RuntimeToolInteraction =
 	| {

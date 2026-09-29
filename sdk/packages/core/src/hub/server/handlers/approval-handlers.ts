@@ -84,16 +84,19 @@ export function cancelPendingApprovals(
 	return cancelled;
 }
 
-/** Read `silentSkip` from the command payload, or from its nested `payload`. */
-function readSilentSkip(payload: HubCommandEnvelope["payload"]): boolean {
+/** Read a `true` flag from the command payload, or from its nested `payload`. */
+function readPayloadFlag(
+	payload: HubCommandEnvelope["payload"],
+	key: "silentSkip" | "foreground",
+): boolean {
 	if (!payload || typeof payload !== "object") return false;
-	if ((payload as Record<string, unknown>).silentSkip === true) return true;
+	if ((payload as Record<string, unknown>)[key] === true) return true;
 	const nested = (payload as Record<string, unknown>).payload;
 	return (
 		!!nested &&
 		typeof nested === "object" &&
 		!Array.isArray(nested) &&
-		(nested as Record<string, unknown>).silentSkip === true
+		(nested as Record<string, unknown>)[key] === true
 	);
 }
 
@@ -129,11 +132,15 @@ export async function handleApprovalRespond(
 	// model nothing at all. The flag has to survive the hub hop, or a skip
 	// taken in a TUI attached to a hub session arrives here as a bare
 	// `approved: false` and the runtime turns it into a denial the model reads.
-	const silentSkip = readSilentSkip(envelope.payload);
+	const silentSkip = readPayloadFlag(envelope.payload, "silentSkip");
+	// Same for a foreground run: without it the command gets its usual timeout.
+	const foreground =
+		approved && readPayloadFlag(envelope.payload, "foreground");
 	const resolved = resolvePendingApproval(ctx, approvalId, {
 		approved,
 		reason,
 		...(silentSkip ? { silentSkip: true } : {}),
+		...(foreground ? { foreground: true } : {}),
 	});
 	if (!resolved) {
 		return errorReply(

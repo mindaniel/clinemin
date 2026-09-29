@@ -231,7 +231,15 @@ interface PreparedToolExecution {
 	input: unknown;
 	skipReason?: string;
 	silentSkip?: boolean;
+	/** The user approved it to run in the foreground, with no time limit. */
+	foreground?: boolean;
 }
+
+/**
+ * Tool-context metadata key set when the user approved a call to run in the
+ * foreground. The shell tool reads it to drop its timeout and background mode.
+ */
+export const RUN_IN_FOREGROUND_METADATA_KEY = "runInForeground";
 
 /**
  * One executed tool call: the tool message it produced, and whether the user
@@ -1501,6 +1509,7 @@ export class AgentRuntime {
 		}
 
 		let policyOverride: ToolPolicy | undefined;
+		let foreground = false;
 		if (tool && !skipReason) {
 			for (const hook of this.hooks.beforeTool) {
 				const result = (await hook({
@@ -1551,6 +1560,8 @@ export class AgentRuntime {
 					}
 					skipReason =
 						approval.reason ?? `Tool "${toolCall.toolName}" was not approved`;
+				} else if (approval.foreground) {
+					foreground = true;
 				}
 			}
 		}
@@ -1560,6 +1571,7 @@ export class AgentRuntime {
 			tool,
 			input,
 			skipReason,
+			...(foreground ? { foreground: true } : {}),
 		};
 	}
 
@@ -1643,7 +1655,12 @@ export class AgentRuntime {
 					iteration: this.state.iteration,
 					toolCallId: prepared.toolCall.toolCallId,
 					signal: this.abortController?.signal,
-					metadata: this.config.toolContextMetadata,
+					metadata: prepared.foreground
+						? {
+								...this.config.toolContextMetadata,
+								[RUN_IN_FOREGROUND_METADATA_KEY]: true,
+							}
+						: this.config.toolContextMetadata,
 					snapshot: this.snapshot(),
 					emitUpdate: (update: unknown) => {
 						void this.emit({

@@ -1166,6 +1166,42 @@ describe("default run_commands tool", () => {
 		expect(result[0].query).toContain("command truncated");
 	});
 
+	it("runs a foreground-approved call with no timeout and never in the background", async () => {
+		const seen: Array<Record<string, unknown> | undefined> = [];
+		const execute = vi.fn(
+			async (
+				_command: unknown,
+				_cwd: string,
+				context: { metadata?: Record<string, unknown> },
+			) => {
+				seen.push(context.metadata);
+				// Outlives the 5ms timeout this tool would otherwise apply.
+				await new Promise((resolve) => setTimeout(resolve, 30));
+				return "done";
+			},
+		);
+		const tool = createShellTool(execute as never, { bashTimeoutMs: 5 });
+
+		const result = await tool.execute(
+			{ commands: ["long build"], echo: true, timeout_seconds: 1 } as never,
+			{
+				sessionId: "session-1",
+				agentId: "agent-1",
+				conversationId: "conv-1",
+				runId: "run-1",
+				iteration: 1,
+				toolCallId: "tool-call-1",
+				metadata: { runInForeground: true },
+			},
+		);
+
+		expect(result).toEqual([
+			expect.objectContaining({ success: true, result: "done" }),
+		]);
+		expect(seen[0]).toMatchObject({ commandNoTimeout: true });
+		expect(seen[0]).not.toHaveProperty("commandTimeoutMs");
+	});
+
 	it("emits timeout telemetry without leaking raw command data", async () => {
 		// Never resolves, so the configured timeout deterministically wins the
 		// race regardless of host load (a tight real-timer margin flaked under

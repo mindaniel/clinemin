@@ -83,6 +83,12 @@ export interface ToolApprovalResult {
 	approved: boolean;
 	reason?: string;
 	silentSkip?: boolean;
+	/**
+	 * Approved, and the user wants to wait for it: run the call in the turn with
+	 * no time limit, ignoring any background (`echo`) request, so its full
+	 * output comes back as the tool result. Esc still stops it.
+	 */
+	foreground?: boolean;
 }
 
 export const ToolCallRecordSchema = z.object({

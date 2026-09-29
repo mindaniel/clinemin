@@ -205,7 +205,7 @@ function spawnAndCollect(
 			}
 		};
 
-		let timeout: NodeJS.Timeout;
+		let timeout: NodeJS.Timeout | undefined;
 		const abortHandler = () => killAndReject(new Error("Command was aborted"));
 		const cleanup = () => {
 			clearTimeout(timeout);
@@ -218,13 +218,20 @@ function spawnAndCollect(
 			void killProcessTree().finally(() => settle(() => reject(error)));
 		};
 
-		timeout = setTimeout(
-			() =>
-				killAndReject(
-					new TimeoutError(`Command timed out after ${timeoutMs}ms`, timeoutMs),
-				),
-			timeoutMs,
-		);
+		// Infinity is a foreground run with no limit. setTimeout would clamp it
+		// to ~1ms and kill the command at once, so set no timer at all.
+		if (Number.isFinite(timeoutMs)) {
+			timeout = setTimeout(
+				() =>
+					killAndReject(
+						new TimeoutError(
+							`Command timed out after ${timeoutMs}ms`,
+							timeoutMs,
+						),
+					),
+				timeoutMs,
+			);
+		}
 
 		if (context.signal) {
 			context.signal.addEventListener("abort", abortHandler, { once: true });
@@ -302,6 +309,9 @@ function spawnAndCollect(
 function readCommandTimeoutOverride(
 	context: AgentToolContext,
 ): number | undefined {
+	if (context.metadata?.commandNoTimeout === true) {
+		return Number.POSITIVE_INFINITY;
+	}
 	const value = context.metadata?.commandTimeoutMs;
 	return typeof value === "number" && value > 0 ? value : undefined;
 }

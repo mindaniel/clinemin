@@ -720,6 +720,57 @@ describe("AgentRuntime", () => {
 		});
 	});
 
+	it("tells the tool when the user approved it to run in the foreground", async () => {
+		const executeTool = vi.fn(
+			async (_input: unknown, context: { metadata?: unknown }) =>
+				context.metadata,
+		);
+		const requestToolApproval = vi.fn(async () => ({
+			approved: true,
+			foreground: true,
+		}));
+		const model = new ScriptedModel([
+			() => [
+				{
+					type: "tool-call-delta",
+					toolCallId: "call_foreground",
+					toolName: "echo",
+					inputText: '{"text":"hi"}',
+				},
+				{ type: "finish", reason: "tool-calls" },
+			],
+			() => [
+				{ type: "text-delta", text: "done" },
+				{ type: "finish", reason: "stop" },
+			],
+		]);
+		const runtime = new AgentRuntime({
+			sessionId: "session_test",
+			agentId: "agent_test",
+			conversationId: "conversation_test",
+			model,
+			tools: [
+				{
+					name: "echo",
+					description: "Echo input text",
+					inputSchema: { type: "object" },
+					execute: executeTool,
+				},
+			],
+			toolPolicies: { "*": { autoApprove: false } },
+			toolContextMetadata: { mode: "act" },
+			requestToolApproval,
+		});
+
+		await runtime.run("Start");
+
+		expect(executeTool).toHaveBeenCalledTimes(1);
+		expect(executeTool.mock.calls[0]?.[1].metadata).toEqual({
+			mode: "act",
+			runInForeground: true,
+		});
+	});
+
 	it("ends the run on a skipped tool call without calling the model again", async () => {
 		// The "skip" action. Unlike a denial, the model receives nothing at all:
 		// no tool result, no error, no continuation note, and no follow-up

@@ -121,9 +121,11 @@ export function useRuntimeDialogBridge(input: {
 			pending.resolve(
 				outcome === "approve"
 					? { approved: true }
-					: outcome === "skip"
-						? { approved: false, silentSkip: true }
-						: deniedToolResult(pending.request),
+					: outcome === "foreground"
+						? { approved: true, foreground: true }
+						: outcome === "skip"
+							? { approved: false, silentSkip: true }
+							: deniedToolResult(pending.request),
 			);
 			const hasNext = finishActive(id);
 			if (!hasNext) {

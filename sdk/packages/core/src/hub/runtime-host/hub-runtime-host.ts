@@ -2159,6 +2159,7 @@ export class HubRuntimeHost implements RuntimeHost {
 					// server resolves a bare `approved: false` and the runtime hands
 					// the model a denial -- the very message a skip exists to avoid.
 					silentSkip: result.silentSkip === true,
+					foreground: result.foreground === true,
 				},
 				sessionId,
 			)

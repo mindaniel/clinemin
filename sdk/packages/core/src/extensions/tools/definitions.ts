@@ -187,7 +187,8 @@ async function executeShellCommands(
 		executor: ShellExecutor;
 		cwd: string;
 		context: AgentToolContext;
-		timeoutMs: number;
+		/** `undefined` runs with no time limit (a foreground run the user chose). */
+		timeoutMs: number | undefined;
 		timeoutSource: "default_setting" | "configured_setting";
 		telemetry?: ITelemetryService;
 	},
@@ -206,7 +207,9 @@ async function executeShellCommands(
 		...baseContext,
 		metadata: {
 			...baseContext.metadata,
-			[COMMAND_TIMEOUT_METADATA_KEY]: timeoutMs,
+			...(timeoutMs === undefined
+				? { [COMMAND_NO_TIMEOUT_METADATA_KEY]: true }
+				: { [COMMAND_TIMEOUT_METADATA_KEY]: timeoutMs }),
 		},
 	};
 
@@ -215,11 +218,15 @@ async function executeShellCommands(
 			const startedAt = Date.now();
 			const query = formatRunCommandQueryPreview(command);
 			try {
-				const output = await withTimeout(
-					executor(command, cwd, context),
-					timeoutMs,
-					`Command timed out after ${timeoutMs}ms`,
-				);
+				const run = executor(command, cwd, context);
+				const output =
+					timeoutMs === undefined
+						? await run
+						: await withTimeout(
+								run,
+								timeoutMs,
+								`Command timed out after ${timeoutMs}ms`,
+							);
 				return {
 					query,
 					result: output,
@@ -427,6 +434,15 @@ export const MAX_COMMAND_TIMEOUT_MS = 60 * 60_000;
  * carry it on the context.
  */
 export const COMMAND_TIMEOUT_METADATA_KEY = "commandTimeoutMs";
+/** Set instead of a timeout when the command may run for as long as it takes. */
+export const COMMAND_NO_TIMEOUT_METADATA_KEY = "commandNoTimeout";
+
+/**
+ * Set by the agent runtime (`RUN_IN_FOREGROUND_METADATA_KEY` there) when the
+ * user approved this call to run in the foreground: wait for it however long
+ * it takes, and never hand it to the background.
+ */
+const RUN_IN_FOREGROUND_METADATA_KEY = "runInForeground";
 
 const RUN_COMMANDS_SHARED_INSTRUCTIONS =
 	"Use for listing files, checking git status, running builds, executing tests, etc. " +
@@ -553,6 +569,17 @@ export function createShellTool(
 			const effectiveSource = callOptions.timeoutMs
 				? "configured_setting"
 				: timeoutSource;
+
+			if (context.metadata?.[RUN_IN_FOREGROUND_METADATA_KEY] === true) {
+				return executeShellCommands(commands, {
+					executor,
+					cwd,
+					context,
+					timeoutMs: undefined,
+					timeoutSource: effectiveSource,
+					telemetry: config.telemetry,
+				});
+			}
 
 			const sessionId = context.sessionId;
 			if (
