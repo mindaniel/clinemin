@@ -361,7 +361,9 @@ function runInVisibleWindow(
 		"& {",
 		command,
 		"} 2>&1 | ForEach-Object { if ($_ -is [System.Management.Automation.ErrorRecord]) { $_.ToString() } else { $_ } } |",
-		`  Tee-Object -FilePath ${psLiteral(outPath)}`,
+		// Out-Host draws each result now. Left to implicit output, PowerShell
+		// 5.1 holds tables back and the Read-Host below keeps them hidden.
+		`  Tee-Object -FilePath ${psLiteral(outPath)} | Out-Host`,
 		"if ($LASTEXITCODE) { $__clineCode = $LASTEXITCODE }",
 		"} catch {",
 		"$__clineCode = 1",
