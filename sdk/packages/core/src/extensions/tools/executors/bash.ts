@@ -5,11 +5,21 @@
  */
 
 import { spawn } from "node:child_process";
+import {
+	existsSync,
+	mkdtempSync,
+	readFileSync,
+	rmSync,
+	writeFileSync,
+} from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { StringDecoder } from "node:string_decoder";
 import {
 	type AgentToolContext,
 	getDefaultShell,
 	getShellArgs,
+	getShellKind,
 } from "@cline/shared";
 import { TimeoutError } from "../helpers";
 import type { ShellExecutor } from "../types";
@@ -301,6 +311,167 @@ function spawnAndCollect(
 	});
 }
 
+/** Quote a value as a PowerShell single-quoted string literal. */
+function psLiteral(value: string): string {
+	return `'${value.replaceAll("'", "''")}'`;
+}
+
+/** Decode a file written by PowerShell 5.1 (UTF-16 LE) or 7 (UTF-8). */
+function readShellOutputFile(path: string): string {
+	if (!existsSync(path)) return "";
+	const bytes = readFileSync(path);
+	if (bytes[0] === 0xff && bytes[1] === 0xfe) {
+		return bytes.subarray(2).toString("utf16le");
+	}
+	if (bytes[0] === 0xef && bytes[1] === 0xbb && bytes[2] === 0xbf) {
+		return bytes.subarray(3).toString("utf8");
+	}
+	return bytes.toString("utf8");
+}
+
+/**
+ * A foreground run the user chose on Windows: open the command in its own
+ * console window so it can be watched live. Its output is also teed to a
+ * file, which is returned when the command finishes. The window then stays
+ * open until the user presses Enter.
+ */
+function runInVisibleWindow(
+	command: string,
+	shell: string,
+	cwd: string,
+	context: AgentToolContext,
+	maxOutputChars: number,
+): Promise<string> {
+	if (context.signal?.aborted) {
+		return Promise.reject(new Error("Command was aborted"));
+	}
+	const dir = mkdtempSync(join(tmpdir(), "cline-fg-"));
+	const scriptPath = join(dir, "run.ps1");
+	const outPath = join(dir, "out.txt");
+	const donePath = join(dir, "done.txt");
+	const title = command.split(/\r?\n/)[0]?.slice(0, 80) ?? "";
+	const script = [
+		"$ErrorActionPreference = 'Continue'",
+		`try { $Host.UI.RawUI.WindowTitle = 'cline: ' + ${psLiteral(title)} } catch {}`,
+		`Set-Location -LiteralPath ${psLiteral(cwd)}`,
+		`Write-Host ('PS ' + (Get-Location).Path + '> ' + ${psLiteral(command)}) -ForegroundColor Cyan`,
+		"$global:LASTEXITCODE = 0",
+		"$__clineCode = 0",
+		"try {",
+		"& {",
+		command,
+		"} 2>&1 | ForEach-Object { if ($_ -is [System.Management.Automation.ErrorRecord]) { $_.ToString() } else { $_ } } |",
+		`  Tee-Object -FilePath ${psLiteral(outPath)}`,
+		"if ($LASTEXITCODE) { $__clineCode = $LASTEXITCODE }",
+		"} catch {",
+		"$__clineCode = 1",
+		"Write-Host $_ -ForegroundColor Red",
+		`$_ | Out-String | Out-File -LiteralPath ${psLiteral(outPath)} -Append`,
+		"}",
+		`Set-Content -LiteralPath ${psLiteral(donePath)} -Value $__clineCode -Encoding ASCII`,
+		"Write-Host ''",
+		'Write-Host "[exit $__clineCode] Output sent to cline. Press Enter to close this window." -ForegroundColor Yellow',
+		"[void](Read-Host)",
+	].join("\r\n");
+	// BOM so Windows PowerShell 5.1 reads non-ASCII commands as UTF-8.
+	writeFileSync(scriptPath, `﻿${script}`, "utf8");
+
+	return new Promise((resolve, reject) => {
+		// `start` gives the command its own visible console even when cline's
+		// hub runs without one. `/wait` keeps cmd alive until the window
+		// closes, so its exit means the user closed the window.
+		const child = spawn(
+			"cmd.exe",
+			[
+				`/d /s /c "start "cline command" /wait "${shell}" -NoProfile -ExecutionPolicy Bypass -File "${scriptPath}""`,
+			],
+			{
+				cwd,
+				stdio: "ignore",
+				windowsHide: true,
+				windowsVerbatimArguments: true,
+			},
+		);
+		let settled = false;
+		const finish = (fn: () => void) => {
+			if (settled) return;
+			settled = true;
+			clearInterval(poll);
+			context.signal?.removeEventListener("abort", onAbort);
+			child.unref();
+			fn();
+		};
+		const collect = (): string => {
+			const text = readShellOutputFile(outPath)
+				.replaceAll("\r\n", "\n")
+				.replace(/^\s*\n/, "")
+				.trimEnd();
+			return text.length > maxOutputChars
+				? truncateCommandOutput(text, {
+						maxChars: maxOutputChars,
+						totalChars: text.length,
+					})
+				: text;
+		};
+		const cleanup = () => {
+			try {
+				rmSync(dir, { recursive: true, force: true });
+			} catch {
+				// The window may still hold a file; the OS temp dir is fine.
+			}
+		};
+		const onAbort = () =>
+			finish(() => {
+				if (child.pid) {
+					spawn("taskkill.exe", ["/PID", String(child.pid), "/T", "/F"], {
+						stdio: "ignore",
+						windowsHide: true,
+					}).once("error", () => child.kill());
+				}
+				cleanup();
+				reject(new Error("Command was aborted"));
+			});
+		const poll = setInterval(() => {
+			if (!existsSync(donePath)) return;
+			finish(() => {
+				const exitCode =
+					Number.parseInt(readFileSync(donePath, "utf8").trim(), 10) || 0;
+				const output = collect();
+				cleanup();
+				if (exitCode !== 0) {
+					reject(
+						new CommandExitError(
+							exitCode,
+							output
+								? `[Command exited with code ${exitCode}]\n${output}`
+								: `[Command exited with code ${exitCode}]`,
+						),
+					);
+				} else {
+					resolve(output);
+				}
+			});
+		}, 300);
+		child.on("exit", () => {
+			// The done file may land just before the window closes.
+			if (existsSync(donePath)) return;
+			finish(() => {
+				const output = collect();
+				cleanup();
+				const note = "[Command window was closed before the command finished]";
+				reject(new CommandExitError(1, output ? `${note}\n${output}` : note));
+			});
+		});
+		child.on("error", (error) =>
+			finish(() => {
+				cleanup();
+				reject(new Error(`Failed to open command window: ${error.message}`));
+			}),
+		);
+		context.signal?.addEventListener("abort", onAbort, { once: true });
+	});
+}
+
 /**
  * A per-call timeout set by `run_commands` (`timeout_seconds`). Read by key
  * rather than importing the constant, to keep this executor free of the tool
@@ -344,6 +515,14 @@ export function createShellExecutor(
 		MAX_COMMAND_OUTPUT_CHARS;
 
 	return (command, cwd, context) => {
+		if (
+			process.platform === "win32" &&
+			typeof command === "string" &&
+			context.metadata?.commandNoTimeout === true &&
+			getShellKind(shell) === "powershell"
+		) {
+			return runInVisibleWindow(command, shell, cwd, context, maxOutputChars);
+		}
 		const isStructured = typeof command !== "string";
 		return spawnAndCollect(
 			{
