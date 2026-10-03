@@ -149,6 +149,58 @@ export async function applyInteractiveModelChange(input: {
 	});
 }
 
+/**
+ * Restart the session so changed tool policies (auto-approve, tool/plugin/
+ * skill/MCP toggles) take effect, but never while a turn is in flight: the
+ * restart clears the active session id, and a turn still running against it
+ * fails with "Unknown session: " and loses its history. A refresh requested
+ * mid-turn is remembered and run by `refreshIfPending` once the turn ends.
+ */
+export function createSessionPolicyRefresher(input: {
+	isTurnBusy: () => boolean;
+	isShutdownRequested: () => boolean;
+	ensureReady: () => Promise<void>;
+	restart: () => Promise<void>;
+	onError: (error: unknown) => void;
+}): { refresh: () => Promise<void>; refreshIfPending: () => void } {
+	let inFlight: Promise<void> | undefined;
+	let pending = false;
+	const refresh = async (): Promise<void> => {
+		if (input.isShutdownRequested()) {
+			return;
+		}
+		if (input.isTurnBusy()) {
+			pending = true;
+			return;
+		}
+		if (inFlight) {
+			return await inFlight;
+		}
+		pending = false;
+		inFlight = (async () => {
+			await input.ensureReady();
+			if (input.isTurnBusy() || input.isShutdownRequested()) {
+				pending = input.isTurnBusy();
+				return;
+			}
+			await input.restart();
+		})()
+			.catch(input.onError)
+			.finally(() => {
+				inFlight = undefined;
+			});
+		return await inFlight;
+	};
+	return {
+		refresh,
+		refreshIfPending: () => {
+			if (pending) {
+				void refresh();
+			}
+		},
+	};
+}
+
 export async function resumeInteractiveSession(
 	sessionRuntime: Pick<
 		ReturnType<typeof createInteractiveSessionRuntime>,
@@ -354,6 +406,13 @@ export async function runInteractive(
 	};
 
 	let isRunning = false;
+	// True from submit until onSubmit has fully returned. `isRunning` follows
+	// the TUI, which flips it off as soon as the agent's last event arrives —
+	// while onSubmit is still reading the turn's usage. A policy restart in that
+	// window cleared the active session mid-turn ("Unknown session: ") and
+	// started over with an empty history.
+	let turnInFlight = false;
+	const isTurnBusy = () => isRunning || turnInFlight;
 	setActiveRuntimeAbort(sessionRuntime.abortAll);
 
 	let cleanupPromise: Promise<InteractiveExitSummary | undefined> | undefined;
@@ -411,44 +470,21 @@ export async function runInteractive(
 		})();
 		return await cleanupPromise;
 	};
-	let sessionPolicyRefresh: Promise<void> | undefined;
-	let pendingSessionPolicyRefresh = false;
-	const refreshInteractiveSessionPolicies = async (): Promise<void> => {
-		if (sessionRuntime.isShutdownRequested()) {
-			return;
-		}
-		if (isRunning) {
-			pendingSessionPolicyRefresh = true;
-			return;
-		}
-		if (sessionPolicyRefresh) {
-			return await sessionPolicyRefresh;
-		}
-		pendingSessionPolicyRefresh = false;
-		sessionPolicyRefresh = (async () => {
-			await sessionRuntime.ensureReady();
-			if (isRunning || sessionRuntime.isShutdownRequested()) {
-				pendingSessionPolicyRefresh = isRunning;
-				return;
-			}
-			await sessionRuntime.restartWithCurrentMessages();
-		})()
-			.catch((error) => {
-				logCliError(config.logger, "Interactive policy refresh failed", {
-					error,
-				});
-				writeErr(error instanceof Error ? error.message : String(error));
-			})
-			.finally(() => {
-				sessionPolicyRefresh = undefined;
+	const sessionPolicyRefresher = createSessionPolicyRefresher({
+		isTurnBusy,
+		isShutdownRequested: () => sessionRuntime.isShutdownRequested(),
+		ensureReady: () => sessionRuntime.ensureReady(),
+		restart: () => sessionRuntime.restartWithCurrentMessages(),
+		onError: (error) => {
+			logCliError(config.logger, "Interactive policy refresh failed", {
+				error,
 			});
-		return await sessionPolicyRefresh;
-	};
-	const refreshInteractiveSessionPoliciesIfPending = (): void => {
-		if (pendingSessionPolicyRefresh) {
-			void refreshInteractiveSessionPolicies();
-		}
-	};
+			writeErr(error instanceof Error ? error.message : String(error));
+		},
+	});
+	const refreshInteractiveSessionPolicies = sessionPolicyRefresher.refresh;
+	const refreshInteractiveSessionPoliciesIfPending =
+		sessionPolicyRefresher.refreshIfPending;
 
 	const shouldRefreshInteractiveSessionForConfigItem = (
 		item: InteractiveConfigItem,
@@ -588,6 +624,7 @@ export async function runInteractive(
 				sessionRuntime.resetAbortRequest();
 				if (!delivery) {
 					isRunning = true;
+					turnInFlight = true;
 				}
 
 				let chatCommandResult = await runInteractiveChatCommand({
@@ -746,6 +783,7 @@ export async function runInteractive(
 				zeroCurrentTurnCost = false;
 				if (!delivery) {
 					isRunning = false;
+					turnInFlight = false;
 					clearAbortInProgress();
 					refreshInteractiveSessionPoliciesIfPending();
 				}

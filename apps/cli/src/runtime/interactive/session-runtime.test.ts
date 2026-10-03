@@ -1006,6 +1006,22 @@ describe("createInteractiveSessionRuntime", () => {
 		expect(runtime.getActiveSessionId()).toBe("session-2");
 	});
 
+	it("reports the turn's own usage when no session is active or it is gone", async () => {
+		const manager = makeManager();
+		const fallback = { inputTokens: 7, outputTokens: 3 };
+		const runtime = await makeRuntime(manager);
+
+		// Before startup (or mid-restart) the active id is empty.
+		await expect(runtime.getAccumulatedUsage(fallback)).resolves.toBe(fallback);
+		expect(manager.getAccumulatedUsage).not.toHaveBeenCalled();
+
+		await runtime.ensureReady();
+		manager.getAccumulatedUsage.mockRejectedValueOnce(
+			new SessionNotFoundError("session-1"),
+		);
+		await expect(runtime.getAccumulatedUsage(fallback)).resolves.toBe(fallback);
+	});
+
 	it("waits for missing-session recovery before cleanup disposes the manager", async () => {
 		const manager = makeManager();
 		const recoveryRead = deferred<Message[]>();

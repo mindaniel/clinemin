@@ -644,12 +644,20 @@ export function createInteractiveSessionRuntime(input: {
 	const getAccumulatedUsage = async (
 		fallback: NonNullable<CurrentTurnResult>["usage"],
 	) => {
-		if (!sessionManager) {
+		// A restart clears the active id while it swaps sessions. Asking the hub
+		// about session "" then throws "Unknown session: " and fails a turn that
+		// already finished, so report the turn's own usage instead.
+		const sessionId = activeSessionId;
+		if (!sessionManager || !sessionId) {
 			return fallback;
 		}
-		const usageSummary =
-			await sessionManager.getAccumulatedUsage(activeSessionId);
-		return usageSummary?.aggregateUsage ?? usageSummary?.usage ?? fallback;
+		try {
+			const usageSummary = await sessionManager.getAccumulatedUsage(sessionId);
+			return usageSummary?.aggregateUsage ?? usageSummary?.usage ?? fallback;
+		} catch (error) {
+			if (!isSessionNotFoundError(error)) throw error;
+			return fallback;
+		}
 	};
 
 	const forkCurrentSession = async (): Promise<

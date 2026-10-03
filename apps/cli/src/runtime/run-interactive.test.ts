@@ -3,6 +3,7 @@ import type { Config } from "../utils/types";
 import {
 	applyInteractiveModelChange,
 	assertHistorySessionIsDeletable,
+	createSessionPolicyRefresher,
 	resolveReasoningForModelChange,
 	resumeInteractiveSession,
 } from "./run-interactive";
@@ -194,5 +195,48 @@ describe("resumeInteractiveSession", () => {
 		).rejects.toThrow("resume failed");
 
 		expect(process.env.CLINE_HOOK_AGENT_RESUME).toBeUndefined();
+	});
+});
+
+describe("createSessionPolicyRefresher", () => {
+	const make = () => {
+		const state = { uiRunning: false, turnInFlight: false };
+		const restart = vi.fn(async () => {});
+		const refresher = createSessionPolicyRefresher({
+			isTurnBusy: () => state.uiRunning || state.turnInFlight,
+			isShutdownRequested: () => false,
+			ensureReady: async () => {},
+			restart,
+			onError: vi.fn(),
+		});
+		return { state, restart, refresher };
+	};
+
+	it("defers a mid-turn refresh until the turn has fully returned", async () => {
+		const { state, restart, refresher } = make();
+		state.uiRunning = true;
+		state.turnInFlight = true;
+		await refresher.refresh(); // e.g. auto-approve toggled during the turn
+		expect(restart).not.toHaveBeenCalled();
+
+		// The TUI marks the turn stopped as soon as the agent's last event
+		// arrives, while onSubmit is still reading usage for that session.
+		state.uiRunning = false;
+		refresher.refreshIfPending();
+		await Promise.resolve();
+		expect(restart).not.toHaveBeenCalled();
+
+		state.turnInFlight = false;
+		refresher.refreshIfPending();
+		await vi.waitFor(() => expect(restart).toHaveBeenCalledOnce());
+	});
+
+	it("restarts right away when idle and does nothing extra afterwards", async () => {
+		const { restart, refresher } = make();
+		await refresher.refresh();
+		expect(restart).toHaveBeenCalledOnce();
+		refresher.refreshIfPending();
+		await Promise.resolve();
+		expect(restart).toHaveBeenCalledOnce();
 	});
 });
