@@ -5,11 +5,6 @@ export type ConnectorCatalogEntry = {
 
 export const CONNECTOR_CATALOG: ConnectorCatalogEntry[] = [
 	{
-		name: "discord",
-		description:
-			"Discord interactions and gateway bridge backed by RPC runtime sessions",
-	},
-	{
 		name: "gchat",
 		description: "Google Chat webhook bridge backed by RPC runtime sessions",
 	},
@@ -423,47 +418,6 @@ export const CONNECTOR_PLATFORMS: ConnectorPlatformDef[] = [
 				`jq -r ".payload.actor.participantKey" | grep -qx "slack:team:${teamId}:user:${userId}" && echo '{"action":"allow"}' || echo '{"action":"deny"}'`,
 			],
 		},
-	},
-	{
-		id: "discord",
-		name: "Discord",
-		type: "webhook",
-		hint: "Requires a Discord app and public URL.",
-		fields: [
-			{
-				flag: "--application-id",
-				aliases: ["--app-id"],
-				label: "Application ID",
-				required: true,
-				help: [
-					"Go to discord.com/developers/applications",
-					"Create a new app, copy the Application ID",
-				],
-			},
-			{
-				flag: "--bot-token",
-				aliases: ["--token"],
-				label: "Bot token",
-				required: true,
-				help: ["Go to Bot section, create a bot, copy the token"],
-			},
-			{
-				flag: "--public-key",
-				label: "Public key",
-				required: true,
-				help: ["Found in General Information of your app"],
-			},
-			{
-				flag: "--base-url",
-				label: "Public base URL",
-				placeholder: "https://example.com",
-				required: true,
-				help: [
-					"Base URL for the connector",
-					"For Discord, set the Interactions Endpoint URL to <base-url>/api/webhooks/discord",
-				],
-			},
-		],
 	},
 	{
 		id: "whatsapp",

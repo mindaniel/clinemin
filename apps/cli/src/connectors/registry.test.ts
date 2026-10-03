@@ -1,14 +1,10 @@
 import { describe, expect, it } from "vitest";
-import { getConnector, listConnectors } from "./registry";
+import { listConnectors } from "./registry";
 
 describe("connector registry", () => {
-	it("registers the Discord connector", async () => {
-		expect(listConnectors().map((connector) => connector.name)).toContain(
-			"discord",
-		);
-
-		await expect(getConnector("discord")).resolves.toMatchObject({
-			name: "discord",
-		});
+	it("lists the supported connectors and no Discord", () => {
+		const names = listConnectors().map((connector) => connector.name);
+		expect(names).toContain("telegram");
+		expect(names).not.toContain("discord");
 	});
 });

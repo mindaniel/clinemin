@@ -68,7 +68,6 @@
 	},
 	"dependencies": {
 		"@agentclientprotocol/sdk": "^0.16.1",
-		"@chat-adapter/discord": "^4.23.0",
 		"@chat-adapter/gchat": "^4.23.0",
 		"@chat-adapter/linear": "^4.23.0",
 		"@chat-adapter/slack": "^4.23.0",
