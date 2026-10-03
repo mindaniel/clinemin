@@ -5,7 +5,7 @@ import { tmpdir } from "node:os";
 import * as path from "node:path";
 import { join } from "node:path";
 import type { LanguageModelV2Prompt } from "@ai-sdk/provider";
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { estimateDeepSeekWebUsage } from "../deepseek-web";
 import {
 	DEFAULT_CONTINUATION_NOTE,
@@ -230,6 +230,18 @@ describe("deepseek-web-v2 parseFallbackToolUses", () => {
 });
 
 describe("deepseek-web-v2 resolveDeepSeekWebV2Config", () => {
+	// Point both stores at files that do not exist, so the user's own
+	// config.json and active browser profile (which shifts the debug port)
+	// cannot leak into the expected defaults.
+	beforeEach(() => {
+		const missing = join(tmpdir(), `cline-dsv2-none-${process.pid}`);
+		vi.stubEnv("DEEPSEEK_WEB_V2_CONFIG_FILE", join(missing, "config.json"));
+		vi.stubEnv(
+			"CLINE_BROWSER_PROFILES_FILE",
+			join(missing, "browser-profiles.json"),
+		);
+	});
+
 	it("uses env overrides for the browser runtime", () => {
 		vi.stubEnv("DEEPSEEK_WEB_V2_DEBUG_PORT", "9333");
 		vi.stubEnv("DEEPSEEK_WEB_V2_CHROME_PATH", "C:\\chrome\\chrome.exe");

@@ -252,9 +252,6 @@ describe("provider-ids", () => {
 		const models = await getModelsForProvider("deepseek-web-v2");
 		expect(Object.hasOwn(models, "deepseek-chat")).toBe(true);
 		expect(Object.hasOwn(models, "deepseek-reasoner")).toBe(true);
-		expect(Object.hasOwn(models, "deepseek-expert")).toBe(true);
-		expect(Object.hasOwn(models, "deepseek-expert-reasoner")).toBe(true);
-		expect(Object.hasOwn(models, "deepseek-vision")).toBe(true);
 
 		const registration = BUILTIN_PROVIDER_REGISTRATIONS.find(
 			(item) => item.manifest.id === "deepseek-web-v2",

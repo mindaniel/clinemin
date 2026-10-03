@@ -104,10 +104,17 @@ export interface DeepSeekWebV2RuntimeConfig {
 	rateLimitMaxRetries: number;
 }
 
+/**
+ * Read per call so a test or scripted run can point it elsewhere with
+ * `DEEPSEEK_WEB_V2_CONFIG_FILE` instead of picking up the user's own file.
+ */
 function readConfigFile(): Partial<DeepSeekWebV2RuntimeConfig> {
 	try {
 		return JSON.parse(
-			fs.readFileSync(CONFIG_FILE, "utf-8"),
+			fs.readFileSync(
+				process.env.DEEPSEEK_WEB_V2_CONFIG_FILE || CONFIG_FILE,
+				"utf-8",
+			),
 		) as Partial<DeepSeekWebV2RuntimeConfig>;
 	} catch {
 		return {};

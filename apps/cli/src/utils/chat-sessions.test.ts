@@ -141,7 +141,8 @@ describe("/attach", () => {
 				sessions: { list: async () => [ZEN, TUI], attach },
 			}),
 		);
-		expect(attach).toHaveBeenCalledWith(ZEN.sessionId);
+		// ZEN is live, so attach must not try to revive it.
+		expect(attach).toHaveBeenCalledWith(ZEN.sessionId, { revive: false });
 		expect(replyText(reply)).toContain("Attached to 01JB4FAA");
 	});
 
