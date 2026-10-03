@@ -164,6 +164,59 @@ export interface MessagesToPromptOptions {
 	 * placeholder text.
 	 */
 	keepTaskVisible?: boolean;
+	/**
+	 * Carry a digest of the turns that scrolled out of `historyWindow`. Off by
+	 * default; DeepSeek Web turns it on.
+	 *
+	 * DeepSeek Web opens a brand-new chat for every request, so the flat prompt
+	 * is its whole memory. Without this, a chat-style session (user and
+	 * assistant taking turns, no tools) loses everything older than the window
+	 * after about ten exchanges — the original task, facts the user stated, the
+	 * answers already given. The digest keeps every earlier user message and a
+	 * short head of each earlier assistant reply; old tool output is left out,
+	 * since it is bulky and the replies that followed it already say what it
+	 * showed. Newest dropped turns win when the digest hits its size cap.
+	 */
+	earlierDigest?: boolean;
+}
+
+/** Per-turn and total caps for the `earlierDigest` section. */
+const DIGEST_USER_MAX_CHARS = 1500;
+const DIGEST_ASSISTANT_MAX_CHARS = 400;
+const DIGEST_TOTAL_MAX_CHARS = 12_000;
+
+function clip(text: string, max: number): string {
+	const flat = text.replace(/\s+/g, " ").trim();
+	return flat.length <= max ? flat : `${flat.slice(0, max)}…`;
+}
+
+/**
+ * One line per dropped user/assistant turn, oldest first, keeping the newest
+ * lines that fit `DIGEST_TOTAL_MAX_CHARS`. Empty when nothing worth keeping.
+ */
+function buildEarlierDigest(
+	dropped: Array<{ role: string; text: string; synthetic?: boolean }>,
+	userLabel: string,
+): string {
+	const lines: string[] = [];
+	let total = 0;
+	for (let i = dropped.length - 1; i >= 0; i--) {
+		const turn = dropped[i];
+		if (turn.synthetic || turn.role === "tool") continue;
+		const line =
+			turn.role === "user"
+				? `${userLabel}: ${clip(turn.text, DIGEST_USER_MAX_CHARS)}`
+				: `Assistant: ${clip(turn.text, DIGEST_ASSISTANT_MAX_CHARS)}`;
+		if (total + line.length > DIGEST_TOTAL_MAX_CHARS) break;
+		lines.unshift(line);
+		total += line.length;
+	}
+	if (lines.length === 0) return "";
+	return [
+		"Earlier in this conversation (older turns, shortened; tool output omitted):",
+		...lines,
+		"--- Recent conversation ---",
+	].join("\n");
 }
 
 /**
@@ -299,10 +352,16 @@ export function messagesToPrompt(
 		// it. Rendered as its own part rather than spliced into `recent`, whose
 		// `isLastUser` check below indexes back into `conversation` by position.
 		const windowStart = conversation.length - recent.length;
+		const digest =
+			options.earlierDigest && windowStart > 0
+				? buildEarlierDigest(conversation.slice(0, windowStart), userLabel)
+				: "";
+		if (digest) outputParts.push(digest);
 		// Only needed when the trailing note is not already carrying the task —
 		// otherwise this would state it twice in one prompt.
 		if (
 			taskText &&
+			!digest &&
 			trailingNoteIndex === -1 &&
 			lastRealUserIndex >= 0 &&
 			lastRealUserIndex < windowStart
@@ -392,5 +451,6 @@ export function buildPrompt(
 	return messagesToPrompt(prompt, {
 		toolResultMaxLines: DEEPSEEK_WEB_TOOL_RESULT_MAX_LINES,
 		keepTaskVisible: true,
+		earlierDigest: true,
 	});
 }

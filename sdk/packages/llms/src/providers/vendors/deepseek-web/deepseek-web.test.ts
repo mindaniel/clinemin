@@ -20,6 +20,7 @@ import {
 	sha3_256Hex,
 	solveDeepSeekPow,
 } from "./index";
+import { buildPrompt } from "./prompt";
 
 // DeepSeekHashV1 digests (SHA3-256 with the Keccak-f[1600] permutation running
 // only rounds 1..23 — validated against OmniRoute's working solver).
@@ -686,6 +687,88 @@ describe("deepseek-web history window", () => {
 		// Once in place, once on the trailing note — never a third copy from
 		// the above-window restatement as well.
 		expect(countOccurrences(prompt, "ORIGINAL REQUEST")).toBe(2);
+	});
+});
+
+describe("deepseek-web earlier-conversation digest", () => {
+	// A chat-style session: the user and the model take turns, no tools.
+	function longChat(rounds: number): LanguageModelV2Message[] {
+		const messages: LanguageModelV2Message[] = [
+			{ role: "system", content: "SYSTEM PROMPT" },
+			{
+				role: "user",
+				content: [{ type: "text", text: "TASK count the RICs" }],
+			},
+			{
+				role: "assistant",
+				content: [{ type: "text", text: "ANSWER checkpoint done=1250" }],
+			},
+		];
+		for (let index = 0; index < rounds; index++) {
+			messages.push({
+				role: "user",
+				content: [{ type: "text", text: `question ${index}` }],
+			});
+			messages.push({
+				role: "assistant",
+				content: [{ type: "text", text: `answer ${index}` }],
+			});
+		}
+		messages.push({
+			role: "user",
+			content: [{ type: "text", text: "what did you find earlier?" }],
+		});
+		return messages;
+	}
+
+	it("loses the early turns without it", () => {
+		const prompt = messagesToPrompt(longChat(15), {
+			historyWindow: 20,
+			keepTaskVisible: true,
+		});
+		expect(prompt).not.toContain("TASK count the RICs");
+		expect(prompt).not.toContain("done=1250");
+	});
+
+	it("keeps early user messages and assistant replies once they scroll out", () => {
+		const prompt = buildPrompt(longChat(15), []);
+		expect(prompt).toContain("Earlier in this conversation");
+		expect(prompt).toContain("TASK count the RICs");
+		expect(prompt).toContain("done=1250");
+		// The digest sits between the system prompt and the recent window.
+		expect(prompt.indexOf("SYSTEM PROMPT")).toBeLessThan(
+			prompt.indexOf("Earlier in this conversation"),
+		);
+		expect(prompt.indexOf("--- Recent conversation ---")).toBeLessThan(
+			prompt.indexOf("what did you find earlier?"),
+		);
+	});
+
+	it("adds nothing while the window still holds every turn", () => {
+		const prompt = buildPrompt(longChat(3), []);
+		expect(prompt).not.toContain("Earlier in this conversation");
+	});
+
+	it("leaves old tool output out and caps its own size", () => {
+		const messages = longChat(15);
+		messages.splice(3, 0, {
+			role: "tool",
+			content: [
+				{
+					type: "tool-result",
+					toolCallId: "call_old",
+					toolName: "run_commands",
+					output: { type: "text", value: "OLD TOOL OUTPUT" },
+				},
+			],
+		});
+		messages.splice(1, 0, {
+			role: "user",
+			content: [{ type: "text", text: "x".repeat(50_000) }],
+		});
+		const prompt = buildPrompt(messages, []);
+		expect(prompt).not.toContain("OLD TOOL OUTPUT");
+		expect(prompt.length).toBeLessThan(20_000);
 	});
 });
 
