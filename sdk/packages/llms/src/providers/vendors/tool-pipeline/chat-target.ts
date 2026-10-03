@@ -116,6 +116,28 @@ function readPins(): PinsFile {
 	return pins;
 }
 
+/**
+ * Where the last ordinary turn's chat key is written so the OTHER PROCESS can
+ * read it. Ordinary turns run in the hub daemon, but a manual `/compact` builds
+ * its own handler in the CLI process — whose in-memory map is empty. Without
+ * this file the armed override found no chat, the summarize request hashed its
+ * way into a brand-new empty chat, and the model's "nothing to summarize" reply
+ * was stored as the summary.
+ *
+ * `{ "deepseek-web-v2": "b92d63df78076b1340c03089" }` -- provider id to chat key.
+ */
+const ACTIVE_FILE = clineStateFile("chat-active.json");
+
+function readActiveKeys(): PinsFile {
+	const parsed = readStateFile<PinsFile>(ACTIVE_FILE);
+	if (!parsed || Array.isArray(parsed)) return {};
+	const keys: PinsFile = {};
+	for (const [providerId, chatKey] of Object.entries(parsed)) {
+		if (typeof chatKey === "string" && chatKey) keys[providerId] = chatKey;
+	}
+	return keys;
+}
+
 // Process-wide so every copy of `@cline/llms` in the process shares one view of
 // which chat is active; see `process-global.ts`.
 const state = () =>
@@ -137,9 +159,24 @@ export function getActiveChatKey(providerId: string): string | undefined {
 	return state().lastActiveChatKeys.get(providerId);
 }
 
-/** Record the chat an ordinary turn just used. */
+/** Record the chat an ordinary turn just used (in memory and on disk). */
 export function recordActiveChatKey(providerId: string, chatKey: string): void {
 	state().lastActiveChatKeys.set(providerId, chatKey);
+	const keys = readActiveKeys();
+	if (keys[providerId] !== chatKey) {
+		writeStateFile(ACTIVE_FILE, { ...keys, [providerId]: chatKey });
+	}
+}
+
+/**
+ * The last ordinary turn's chat across processes: the file wins (the hub
+ * writes it every turn), the in-memory map is the fallback for when the file
+ * could not be written.
+ */
+function lastChatKeyAnyProcess(providerId: string): string | undefined {
+	return (
+		readActiveKeys()[providerId] ?? state().lastActiveChatKeys.get(providerId)
+	);
 }
 
 /**
@@ -161,7 +198,15 @@ export function consumeChatKeyOverride(providerId: string): string | undefined {
 		return undefined;
 	}
 	slot.reuseLastChat = false;
-	return slot.lastActiveChatKeys.get(providerId);
+	const chatKey = lastChatKeyAnyProcess(providerId);
+	if (!chatKey) {
+		// Falling back to the prompt hash here would open an empty chat and
+		// store the model's "nothing to summarize" reply as the summary.
+		throw new Error(
+			`Cannot compact: no active ${providerId} chat found. Send a message first, then compact.`,
+		);
+	}
+	return chatKey;
 }
 
 /** Drop a pending override (e.g. compaction bailed before sending). */

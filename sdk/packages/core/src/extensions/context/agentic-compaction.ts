@@ -1,4 +1,8 @@
-import { createHandlerAsync, useLastChatForNextCall } from "@cline/llms";
+import {
+	clearChatKeyOverride,
+	createHandlerAsync,
+	useLastChatForNextCall,
+} from "@cline/llms";
 import type { BasicLogger, Message } from "@cline/shared";
 import { countUserRunMessages } from "../../session/user-run-messages";
 import type {
@@ -81,15 +85,23 @@ async function generateSummary(options: {
 		useLastChatForNextCall();
 	}
 	let text = "";
-	// The request itself already carries the summarize instruction; a system
-	// prompt repeating it just makes the model read the same ask twice.
-	for await (const chunk of handler.createMessage("", messages)) {
-		if (chunk.type === "text") {
-			text += chunk.text;
-			continue;
+	try {
+		// The request itself already carries the summarize instruction; a system
+		// prompt repeating it just makes the model read the same ask twice.
+		for await (const chunk of handler.createMessage("", messages)) {
+			if (chunk.type === "text") {
+				text += chunk.text;
+				continue;
+			}
+			if (chunk.type === "done" && !chunk.success && chunk.error) {
+				throw new Error(chunk.error);
+			}
 		}
-		if (chunk.type === "done" && !chunk.success && chunk.error) {
-			throw new Error(chunk.error);
+	} finally {
+		// A call that failed before routing must not leave the override armed,
+		// or the next ordinary turn would be misrouted as a compaction.
+		if (options.reuseActiveChat) {
+			clearChatKeyOverride();
 		}
 	}
 	options.logger?.debug("Generated compaction summary", {

@@ -36,6 +36,7 @@ async function inAFreshProcess<T>(loader: () => Promise<T>): Promise<T> {
 beforeEach(() => {
 	for (const name of [
 		"chat-pins.json",
+		"chat-active.json",
 		"pending-paste.json",
 		"continuation-note.json",
 	]) {
@@ -61,6 +62,37 @@ describe("cross-process state", () => {
 		expect(
 			await inAFreshProcess(async () => getBoundChatKey("chatgpt-web")),
 		).toBeUndefined();
+	});
+
+	it("routes a CLI-side /compact into the chat the hub's last turn used", async () => {
+		// The hub runs the ordinary turn and records its chat.
+		await inAFreshProcess(async () => {
+			const { resolveChatKey } = await import("./chat-target");
+			return resolveChatKey("deepseek-web-v2", () => "hub-chat-key");
+		});
+
+		// The CLI process arms the override with an empty in-memory map; the
+		// summarize request must still land in the hub's chat, not a hashed one.
+		const routed = await inAFreshProcess(async () => {
+			const { useLastChatForNextCall, resolveChatKey } = await import(
+				"./chat-target"
+			);
+			useLastChatForNextCall();
+			return resolveChatKey("deepseek-web-v2", () => "hash-of-summary-request");
+		});
+		expect(routed).toBe("hub-chat-key");
+	});
+
+	it("refuses to compact into a fresh chat when no turn has run", async () => {
+		await inAFreshProcess(async () => {
+			const { useLastChatForNextCall, resolveChatKey, clearChatKeyOverride } =
+				await import("./chat-target");
+			useLastChatForNextCall();
+			expect(() =>
+				resolveChatKey("qwen-web", () => "hash-of-summary-request"),
+			).toThrow(/no active qwen-web chat/);
+			clearChatKeyOverride();
+		});
 	});
 
 	it("carries a /paste reply to the provider that consumes it", async () => {
