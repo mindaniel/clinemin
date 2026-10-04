@@ -678,7 +678,10 @@ export function useLocalCommandActions(input: {
 
 	// `/workers` — edit the roster a manager delegates to.
 	const openWorkers = useCallback(async (): Promise<boolean> => {
-		const rosterPath = resolveTeamRosterSearchPaths(cwd)[0];
+		// A new roster goes in the user-global file, so the same workers are there
+		// whichever folder cline is opened in. A workspace roster that already
+		// exists still wins (it is what `loadTeamRoster` reads) and is edited in place.
+		const rosterPath = resolveTeamRosterSearchPaths(cwd).at(-1);
 		if (!rosterPath) {
 			session.appendEntry({
 				kind: "error",
