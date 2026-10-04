@@ -1,3 +1,4 @@
+import { readFileSync } from "node:fs";
 import type { AgentResult } from "@cline/shared";
 import {
 	type AgentTool,
@@ -71,6 +72,7 @@ import {
 	validateWithZod,
 	zodToJsonSchema,
 } from "@cline/shared";
+import { resolveProviderSettingsPath } from "@cline/shared/storage";
 import { type AskQuestionInput, AskQuestionInputSchema } from "../schemas";
 import {
 	buildDelegatedAgentConfig,
@@ -619,13 +621,62 @@ function spawnTeamTeammate(
 			// so `deepseek-work` and `deepseek-personal` are two logins rather than
 			// two names for one. A worker with no profile resolves to its legacy
 			// provider/model fields and behaves exactly as before.
-			connectionOverrides: Object.fromEntries(
-				Object.entries(resolveWorkerConnection(options.spec)).filter(
-					([key, value]) => key !== "warning" && value !== undefined,
-				),
+			connectionOverrides: workerConnectionOverrides(
+				options.spec,
+				options.teammateConfigProvider.getRuntimeConfig().providerId,
 			),
 		}),
 	});
+}
+
+/**
+ * A worker's connection, with its own provider's saved credentials filled in.
+ *
+ * A worker that names only a `providerId` otherwise inherits the lead's
+ * `apiKey` — another provider's key, or none. Providers that log in through a
+ * browser never notice, but one that authenticates with a stored token (v1
+ * DeepSeek Web's userToken) fails on every turn. A profile's own key still wins.
+ */
+function workerConnectionOverrides(
+	spec: TeamTeammateSpec,
+	leadProviderId: string,
+): Partial<DelegatedAgentRuntimeConfig> {
+	const overrides: Partial<DelegatedAgentRuntimeConfig> = Object.fromEntries(
+		Object.entries(resolveWorkerConnection(spec)).filter(
+			([key, value]) => key !== "warning" && value !== undefined,
+		),
+	);
+	const providerId = overrides.providerId;
+	if (!providerId || providerId === leadProviderId || overrides.apiKey) {
+		return overrides;
+	}
+	try {
+		// Read the file directly: `ProviderSettingsManager` imports the core
+		// index, which imports this module, and the cycle breaks module load.
+		const state = JSON.parse(
+			readFileSync(resolveProviderSettingsPath(), "utf8"),
+		) as {
+			providers?: Record<
+				string,
+				{
+					settings?: {
+						apiKey?: string;
+						baseUrl?: string;
+						auth?: { accessToken?: string };
+					};
+				}
+			>;
+		};
+		const stored = state.providers?.[providerId]?.settings;
+		const apiKey = stored?.apiKey ?? stored?.auth?.accessToken;
+		if (apiKey) overrides.apiKey = apiKey;
+		if (!overrides.baseUrl && stored?.baseUrl) {
+			overrides.baseUrl = stored.baseUrl;
+		}
+	} catch {
+		// Unreadable settings: keep the inherited connection, as before.
+	}
+	return overrides;
 }
 
 export function bootstrapAgentTeams(

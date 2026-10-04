@@ -1,3 +1,5 @@
+import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { AgentTool } from "@cline/shared";
 import { resolveTeamDataDir } from "@cline/shared/storage";
@@ -660,6 +662,58 @@ describe("createAgentTeamsTools runtime behavior", () => {
 			providerId: "deepseek-web-v2",
 			modelId: "deepseek-reasoner",
 		});
+	});
+
+	it("gives a worker on another provider that provider's saved key, not the lead's", async () => {
+		const dir = mkdtempSync(join(tmpdir(), "cline-worker-key-"));
+		const settingsPath = join(dir, "providers.json");
+		writeFileSync(
+			settingsPath,
+			JSON.stringify({
+				providers: {
+					"deepseek-web": { settings: { apiKey: "stored-user-token" } },
+				},
+			}),
+		);
+		vi.stubEnv("CLINE_PROVIDER_SETTINGS_PATH", settingsPath);
+		try {
+			const spawnTeammate = vi.fn();
+			const runtime = {
+				getMemberRole: vi.fn(() => "lead"),
+				isTeammateActive: vi.fn(() => false),
+				spawnTeammate,
+			} as unknown as AgentTeamsRuntime;
+			const tools = createAgentTeamsTools({
+				runtime,
+				requesterId: "lead",
+				teammateConfigProvider: makeTeammateConfigProvider({
+					providerId: "qwen-web",
+					modelId: "qwen-auto",
+				}),
+				createBaseTools: vi.fn(() => []),
+				includeManagementTools: false,
+			});
+
+			await tools
+				.find((tool) => tool.name === "team_spawn_teammate")
+				?.execute(
+					{
+						agentId: "ds1",
+						rolePrompt: "Read files.",
+						providerId: "deepseek-web",
+						modelId: "deepseek-reasoner",
+					},
+					{ agentId: "lead", conversationId: "conv-1", iteration: 1 },
+				);
+
+			expect(spawnTeammate.mock.calls[0]?.[0]?.config).toMatchObject({
+				providerId: "deepseek-web",
+				apiKey: "stored-user-token",
+			});
+		} finally {
+			vi.unstubAllEnvs();
+			rmSync(dir, { recursive: true, force: true });
+		}
 	});
 
 	it("injects workspace metadata into cline teammate system prompt", async () => {

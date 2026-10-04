@@ -39,7 +39,7 @@ export const SIMPLE_WEB_SYSTEM_PROMPT = [
 	"",
 	"Before helping me with my task, you must first help me understand the project folder structure and read the relevant files — send me PowerShell commands to do that, and I will paste you the results. but send 1 powershell command at a time to prevent long outputs.",
 	"",
-	"Always put a PowerShell command in a fence tagged ```powershell. An untagged ``` fence is treated as quoted text and will not run.",
+	"Always put a PowerShell command in a fence tagged ```powershell. An untagged ``` fence is treated as quoted text and will not run. So when a summary or report mentions a command you already ran, write it as `inline code` or in an untagged fence — a ```powershell fence runs it again.",
 	"",
 	"Commands stop after 120 seconds. For longer, use ```powershell -timeout 600 (max 3600), or ```powershell -echo to run it in the background and I paste the output when it finishes.",
 	"",
