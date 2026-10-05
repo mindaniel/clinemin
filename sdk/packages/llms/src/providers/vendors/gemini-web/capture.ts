@@ -120,6 +120,11 @@ export async function sendAndCapture(
 		);
 		await abortableSleep(sendDelay, signal);
 
+		// The send script waits on the composer taking the text and the submit
+		// landing. In a long chat (many earlier turns rendered on the page) that
+		// runs past the 30s CDP default and failed the turn with
+		// `CDP timeout: Runtime.evaluate`. Give it the reply's budget instead,
+		// as chatgpt-web does.
 		await cdp.send(
 			"Runtime.evaluate",
 			{
@@ -128,6 +133,7 @@ export async function sendAndCapture(
 				awaitPromise: true,
 			},
 			cdpSessionId,
+			config.responseTimeoutMs,
 		);
 
 		// A cancelled turn has to stop waiting here. Until this returns the CLI
