@@ -86,7 +86,7 @@ function createDeepSeekWebModel(
 			onText,
 			onReasoning,
 			isToolTurn: functionTools.length > 0,
-			// A throttle makes the turn sit idle for a minute at a time. Say so,
+			// A throttle makes the turn sit idle for 90 seconds at a time. Say so,
 			// or the CLI looks hung.
 			onRateLimitRetry: ({ attempt, maxRetries, waitMs }) => {
 				logger?.log?.(

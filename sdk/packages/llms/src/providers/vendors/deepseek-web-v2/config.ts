@@ -42,18 +42,18 @@ export function consumeThrottleRecoveryReload(): boolean {
 	return shouldReload;
 }
 
-const DEFAULT_MIN_SEND_DELAY_MS = 800;
-const DEFAULT_MAX_SEND_DELAY_MS = 2_800;
+const DEFAULT_MIN_SEND_DELAY_MS = 3_000;
+const DEFAULT_MAX_SEND_DELAY_MS = 7_000;
 /** Extra randomized delay added when the turn is itself a tool-call turn. */
-const DEFAULT_TOOL_TURN_EXTRA_MIN_MS = 1_500;
-const DEFAULT_TOOL_TURN_EXTRA_MAX_MS = 4_500;
+const DEFAULT_TOOL_TURN_EXTRA_MIN_MS = 3_000;
+const DEFAULT_TOOL_TURN_EXTRA_MAX_MS = 8_000;
 
 /**
  * A throttle ("Messages too frequent") is a server-side cooldown, not a bad
  * request: the same prompt succeeds once the window passes. Wait this long,
  * reload the blocked page, and resend, rather than failing the task.
  */
-const DEFAULT_RATE_LIMIT_RETRY_DELAY_MS = 60_000;
+const DEFAULT_RATE_LIMIT_RETRY_DELAY_MS = 90_000;
 const DEFAULT_RATE_LIMIT_MAX_RETRIES = 3;
 
 /** Whether the full `<tool>` contract + tool list is sent on every turn. */

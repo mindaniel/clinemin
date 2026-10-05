@@ -279,7 +279,7 @@ async function attemptCompletion(input: {
  * nothing about the request to change. Each retry is itself paced, and the
  * wait is abort-aware so Escape still ends the turn immediately.
  *
- * Defaults: 3 retries, 60s apart. `DEEPSEEK_WEB_RATE_LIMIT_MAX_RETRIES=0`
+ * Defaults: 3 retries, 90s apart. `DEEPSEEK_WEB_RATE_LIMIT_MAX_RETRIES=0`
  * restores the old fail-fast behavior.
  */
 export async function runCompletion(input: {

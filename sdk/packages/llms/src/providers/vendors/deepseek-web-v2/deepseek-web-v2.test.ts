@@ -294,9 +294,9 @@ describe("deepseek-web-v2 resolveDeepSeekWebV2Config", () => {
 		expect(overridden.maxSendDelayMs).toBe(1500);
 	});
 
-	it("retries a throttle after a minute by default, and 0 turns it off", () => {
+	it("retries a throttle after 90 seconds by default, and 0 turns it off", () => {
 		const config = resolveDeepSeekWebV2Config();
-		expect(config.rateLimitRetryDelayMs).toBe(60_000);
+		expect(config.rateLimitRetryDelayMs).toBe(90_000);
 		expect(config.rateLimitMaxRetries).toBe(3);
 
 		vi.stubEnv("DEEPSEEK_WEB_V2_RATE_LIMIT_MAX_RETRIES", "0");

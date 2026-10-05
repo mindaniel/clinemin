@@ -560,12 +560,12 @@ describe("deepseek-web send pacing", () => {
 		expect(resolved.minSendDelayMs).toBe(4_000);
 		expect(resolved.maxSendDelayMs).toBe(9_000);
 		// Unset keys keep their defaults rather than becoming NaN.
-		expect(resolved.toolTurnExtraMinMs).toBe(1_500);
+		expect(resolved.toolTurnExtraMinMs).toBe(3_000);
 	});
 
 	it("keeps the retry knobs at their defaults when nothing sets them", () => {
 		const resolved = resolveDeepSeekWebPacing({} as NodeJS.ProcessEnv);
-		expect(resolved.rateLimitRetryDelayMs).toBe(60_000);
+		expect(resolved.rateLimitRetryDelayMs).toBe(90_000);
 		expect(resolved.rateLimitMaxRetries).toBe(3);
 	});
 
@@ -1004,7 +1004,7 @@ describe("deepseek-web throttle retry", () => {
 		expect(fetchStub.completions()).toBe(2);
 		// The retry was announced before the wait, so the CLI can say why it
 		// is idle for a minute.
-		expect(waits).toContain(-60_000);
+		expect(waits).toContain(-90_000);
 	});
 
 	it("gives up with an actionable error once the retries run out", async () => {

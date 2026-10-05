@@ -70,10 +70,10 @@ export interface PowChallenge {
  * Mirrors the pacing `deepseek-web-v2` already applies before typing into the
  * composer; this provider posts over HTTP and had none.
  */
-const DEFAULT_MIN_SEND_DELAY_MS = 800;
-const DEFAULT_MAX_SEND_DELAY_MS = 2_800;
-const DEFAULT_TOOL_TURN_EXTRA_MIN_MS = 1_500;
-const DEFAULT_TOOL_TURN_EXTRA_MAX_MS = 4_500;
+const DEFAULT_MIN_SEND_DELAY_MS = 3_000;
+const DEFAULT_MAX_SEND_DELAY_MS = 7_000;
+const DEFAULT_TOOL_TURN_EXTRA_MIN_MS = 3_000;
+const DEFAULT_TOOL_TURN_EXTRA_MAX_MS = 8_000;
 
 /**
  * Pacing lowers the odds of a throttle but cannot remove them — the window is
@@ -81,7 +81,7 @@ const DEFAULT_TOOL_TURN_EXTRA_MAX_MS = 4_500;
  * does fire, the turn is recoverable by simply waiting: sleep this long, then
  * send the identical prompt again.
  */
-const DEFAULT_RATE_LIMIT_RETRY_DELAY_MS = 60_000;
+const DEFAULT_RATE_LIMIT_RETRY_DELAY_MS = 90_000;
 const DEFAULT_RATE_LIMIT_MAX_RETRIES = 3;
 
 export interface DeepSeekWebPacingConfig {
