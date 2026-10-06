@@ -405,6 +405,20 @@ describe("deepseek-web consumeDeepSeekSse (accumulated_token_usage)", () => {
 	});
 });
 
+describe("deepseek-web consumeDeepSeekSse (TIP fragment)", () => {
+	it("drops the closing AI-generated TIP so it cannot glue onto the last line", async () => {
+		const sse = [
+			'data: {"v":{"response":{"thinking_enabled":false,"fragments":[{"id":3,"type":"RESPONSE","content":"*** Begin Patch\\n"}]}}}\n\n',
+			'data: {"v":"***"}\n\n',
+			'data: {"v":" End Patch"}\n\n',
+			'data: {"p":"response/fragments","v":[{"id":4,"type":"TIP","content":"This response is AI-generated and for reference purposes only.","style":"WARNING","hide_on_wip":true}]}\n\n',
+			"data: [DONE]\n\n",
+		].join("");
+		const { text } = await consumeDeepSeekSse(sseStream(sse));
+		expect(text).toBe("*** Begin Patch\n*** End Patch");
+	});
+});
+
 function sseStream(body: string): ReadableStream<Uint8Array> {
 	return new ReadableStream<Uint8Array>({
 		start(controller) {

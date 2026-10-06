@@ -122,6 +122,11 @@ export async function consumeDeepSeekSse(
 
 	const handleFragment = (fragment: SseFragment): void => {
 		const type = String(fragment?.type ?? "").toUpperCase();
+		// UI chrome, not model output: DeepSeek closes a reply with a TIP
+		// fragment ("This response is AI-generated..."). Appended to the text it
+		// glued onto the last line, so a trailing `*** End Patch` no longer
+		// matched and the whole patch was dropped as prose.
+		if (type === "TIP") return;
 		if (type === "THINK") thinking = true;
 		else if (type === "ANSWER" || type === "RESPONSE") thinking = false;
 		if (

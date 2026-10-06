@@ -802,6 +802,9 @@ function createDeepSeekWebV2Model(
 		// resending a correction into the chat would be meaningless here.
 		const injectedReply = consumePendingInjectedReply("deepseek-web-v2");
 		if (injectedReply) {
+			// doStream rebuilds the reply from onText chunks, not from this
+			// return value; skipping it made every /paste an empty response.
+			onText?.(injectedReply);
 			return buildCompletionFromText(injectedReply, options, functionTools);
 		}
 
