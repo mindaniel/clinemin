@@ -309,9 +309,25 @@ export class PatchParser {
 	}
 }
 
+/**
+ * Above this many characters, similarity is measured over whole lines rather
+ * than characters. The fuzzy search scores every position in the file, and a
+ * character-level edit distance is O(n*m) per position: a 60-line hunk (~4KB)
+ * against a 2,000-line file is ~40 billion steps, run synchronously, which
+ * froze the hub with the tool call stuck "running".
+ */
+const CHAR_SIMILARITY_MAX_LENGTH = 200;
+
 function calculateSimilarity(str1: string, str2: string): number {
-	const longer = str1.length > str2.length ? str1 : str2;
-	const shorter = str1.length > str2.length ? str2 : str1;
+	if (Math.max(str1.length, str2.length) > CHAR_SIMILARITY_MAX_LENGTH) {
+		return sequenceSimilarity(str1.split("\n"), str2.split("\n"));
+	}
+	return sequenceSimilarity(str1, str2);
+}
+
+function sequenceSimilarity<T>(a: ArrayLike<T>, b: ArrayLike<T>): number {
+	const longer = a.length > b.length ? a : b;
+	const shorter = a.length > b.length ? b : a;
 	if (longer.length === 0) {
 		return 1;
 	}
@@ -319,29 +335,37 @@ function calculateSimilarity(str1: string, str2: string): number {
 	return (longer.length - editDistance) / longer.length;
 }
 
-function levenshteinDistance(str1: string, str2: string): number {
-	const rows = str2.length + 1;
+function levenshteinDistance<T>(
+	str1: ArrayLike<T>,
+	str2: ArrayLike<T>,
+): number {
+	// Two rolling rows instead of the full matrix: this runs once per file
+	// position during the fuzzy search, so allocation and indexing dominate.
 	const cols = str1.length + 1;
-	const matrix = new Array<number>(rows * cols).fill(0);
-	const at = (r: number, c: number): number => matrix[r * cols + c] ?? 0;
-	const set = (r: number, c: number, value: number): void => {
-		matrix[r * cols + c] = value;
-	};
-
-	for (let i = 0; i <= str2.length; i++) set(i, 0, i);
-	for (let j = 0; j <= str1.length; j++) set(0, j, j);
+	let prev = new Int32Array(cols);
+	let curr = new Int32Array(cols);
+	for (let j = 0; j < cols; j++) prev[j] = j;
 
 	for (let i = 1; i <= str2.length; i++) {
-		for (let j = 1; j <= str1.length; j++) {
-			if (str2[i - 1] === str1[j - 1]) {
-				set(i, j, at(i - 1, j - 1));
+		curr[0] = i;
+		const ch = str2[i - 1];
+		for (let j = 1; j < cols; j++) {
+			if (ch === str1[j - 1]) {
+				curr[j] = prev[j - 1] as number;
 			} else {
-				set(i, j, 1 + Math.min(at(i - 1, j - 1), at(i, j - 1), at(i - 1, j)));
+				curr[j] =
+					1 +
+					Math.min(
+						prev[j - 1] as number,
+						curr[j - 1] as number,
+						prev[j] as number,
+					);
 			}
 		}
+		[prev, curr] = [curr, prev];
 	}
 
-	return at(str2.length, str1.length);
+	return prev[str1.length] as number;
 }
 
 function findContext(
@@ -364,10 +388,6 @@ function findContext(
 			);
 			if (segment === canonicalContext) {
 				return [i, 0, 1];
-			}
-			const similarity = calculateSimilarity(segment, canonicalContext);
-			if (similarity > bestSimilarity) {
-				bestSimilarity = similarity;
 			}
 		}
 
