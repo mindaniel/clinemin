@@ -936,7 +936,6 @@ export async function runInteractive(
 			// (maxInputTokens ?? contextWindow, else the 128k SDK default). Override
 			// the model's maxInputTokens in knownModels so the effective context limit
 			// drives both the compaction trigger and the status bar's used/total readout.
-			// The change takes effect immediately for the next turn; no session restart needed.
 			await sessionRuntime.ensureReady();
 			const existing = config.knownModels?.[config.modelId];
 			if (existing) {
@@ -950,7 +949,11 @@ export async function runInteractive(
 					[config.modelId]: { id: config.modelId, maxInputTokens: tokens },
 				};
 			}
-			// No restart needed — the new limit is read on each turn.
+			// The live session holds its own copy of the config (in the hub daemon,
+			// a different process), so mutating ours changed nothing it reads: the
+			// limit was reported as set and compaction never fired. Restart it on
+			// the current transcript, like a plan/act toggle, to hand it over.
+			await sessionRuntime.restartWithCurrentMessages();
 		},
 		onFork: async () => {
 			await sessionRuntime.ensureReady();
