@@ -8,7 +8,7 @@ import * as path from "node:path";
 // fork is git-clone-from-source (not published), so there's no package
 // manager doing this step for us.
 const MARKER = "# cline-cli-alias (auto-added by bun install, safe to remove)";
-const COMMAND_NAMES = ["cline", "clinemin"];
+const COMMAND_NAMES = ["cline", "clinemin", "minh"];
 
 const repoRoot = path.resolve(import.meta.dir, "..", "..");
 const entryPath = path.join(repoRoot, "apps", "cli", "src", "index.ts");
@@ -23,17 +23,23 @@ const bridgeScript = path.join(
 	"start-telegram-bridge.ps1",
 );
 
-function alreadyInstalled(filePath: string): boolean {
+/** Names not yet defined in the profile. Checked per name, not by MARKER, so
+ *  a profile written before a name was added to COMMAND_NAMES still gets it. */
+function missingNames(
+	filePath: string,
+	definition: (name: string) => string,
+): string[] {
+	let content = "";
 	try {
-		return fs.readFileSync(filePath, "utf-8").includes(MARKER);
-	} catch {
-		return false;
-	}
+		content = fs.readFileSync(filePath, "utf-8");
+	} catch {}
+	return COMMAND_NAMES.filter((name) => !content.includes(definition(name)));
 }
 
 function appendBlock(filePath: string, block: string): void {
 	fs.mkdirSync(path.dirname(filePath), { recursive: true });
-	const prefix = fs.existsSync(filePath) && fs.statSync(filePath).size > 0 ? "\n" : "";
+	const prefix =
+		fs.existsSync(filePath) && fs.statSync(filePath).size > 0 ? "\n" : "";
 	fs.appendFileSync(filePath, `${prefix}${block}\n`);
 }
 
@@ -45,21 +51,32 @@ function resolvePowerShellProfilePath(): string {
 	try {
 		const out = execFileSync(
 			"powershell.exe",
-			["-NoProfile", "-NonInteractive", "-Command", "[Console]::Out.Write($PROFILE)"],
+			[
+				"-NoProfile",
+				"-NonInteractive",
+				"-Command",
+				"[Console]::Out.Write($PROFILE)",
+			],
 			{ encoding: "utf-8" },
 		).trim();
 		if (out) return out;
 	} catch {}
 	// Fallback if powershell.exe couldn't be spawned (shouldn't normally happen on win32).
-	return path.join(os.homedir(), "Documents", "WindowsPowerShell", "Microsoft.PowerShell_profile.ps1");
+	return path.join(
+		os.homedir(),
+		"Documents",
+		"WindowsPowerShell",
+		"Microsoft.PowerShell_profile.ps1",
+	);
 }
 
 function setupPowerShell(): string | undefined {
 	const profilePath = resolvePowerShellProfilePath();
-	if (alreadyInstalled(profilePath)) return undefined;
+	const missing = missingNames(profilePath, (name) => `function ${name} {`);
+	if (missing.length === 0) return undefined;
 	const block = [
 		MARKER,
-		...COMMAND_NAMES.map((name) =>
+		...missing.map((name) =>
 			[
 				`function ${name} {`,
 				`    & "${bridgeScript}"`,
@@ -76,11 +93,13 @@ function setupPosixRc(): string | undefined {
 	const shell = process.env.SHELL ?? "";
 	const rcName = shell.includes("zsh") ? ".zshrc" : ".bashrc";
 	const rcPath = path.join(os.homedir(), rcName);
-	if (alreadyInstalled(rcPath)) return undefined;
+	const missing = missingNames(rcPath, (name) => `${name}() {`);
+	if (missing.length === 0) return undefined;
 	const block = [
 		MARKER,
-		...COMMAND_NAMES.map(
-			(name) => `${name}() { bun --conditions=development "${entryPath}" -i "$@"; }`,
+		...missing.map(
+			(name) =>
+				`${name}() { bun --conditions=development "${entryPath}" -i "$@"; }`,
 		),
 	].join("\n");
 	appendBlock(rcPath, block);
@@ -92,16 +111,23 @@ try {
 		// Shouldn't happen mid-install, but never block install over this.
 		process.exit(0);
 	}
-	const updated = process.platform === "win32" ? setupPowerShell() : setupPosixRc();
+	const updated =
+		process.platform === "win32" ? setupPowerShell() : setupPosixRc();
 	if (updated) {
-		console.log(`\nAdded "cline" / "clinemin" shell commands to ${updated}`);
 		console.log(
-			'Open a new terminal (or reload your profile) and run "cline" (or "clinemin") from any project folder.\n',
+			`\nAdded ${COMMAND_NAMES.join(" / ")} shell commands to ${updated}`,
+		);
+		console.log(
+			'Open a new terminal (or reload your profile) and run "cline" (or "clinemin" / "minh") from any project folder.\n',
 		);
 	}
 } catch (error) {
 	// Best-effort — never fail `bun install` over a shell profile edit (e.g. a
 	// locked-down PowerShell execution policy, or a read-only profile path).
-	console.warn(`Could not set up the "cline" shell alias automatically: ${String(error)}`);
-	console.warn(`Run it manually instead: bun --conditions=development "${entryPath}" -i`);
+	console.warn(
+		`Could not set up the "cline" shell alias automatically: ${String(error)}`,
+	);
+	console.warn(
+		`Run it manually instead: bun --conditions=development "${entryPath}" -i`,
+	);
 }

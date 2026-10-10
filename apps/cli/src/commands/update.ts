@@ -1,5 +1,6 @@
-import { type ChildProcess, spawn } from "node:child_process";
-import { realpathSync } from "node:fs";
+import { type ChildProcess, execFileSync, spawn } from "node:child_process";
+import { existsSync, realpathSync } from "node:fs";
+import { join, resolve } from "node:path";
 import {
 	clearHubDiscovery,
 	isAutoUpdateEnabledGlobally,
@@ -11,6 +12,7 @@ import {
 } from "@cline/core";
 import { resolveClineBuildEnv } from "@cline/shared";
 import { version } from "../../package.json";
+import type { ConnectIo } from "../connectors/types";
 import { ensureCliHubServer } from "../utils/hub-runtime";
 import { c, writeErr, writeln } from "../utils/output";
 
@@ -463,4 +465,89 @@ export async function checkForUpdates(
 		writeErr(`Error checking for updates: ${message}`);
 		return 1;
 	}
+}
+
+/**
+ * Root of the git checkout this CLI is running from, when it runs from source
+ * (this fork is git-cloned, not installed from npm). Undefined for packaged
+ * installs, which update through their package manager instead.
+ */
+export function findSourceCheckoutRoot(): string | undefined {
+	const root = resolve(import.meta.dir, "..", "..", "..", "..");
+	return existsSync(join(root, ".git")) &&
+		existsSync(join(root, "sdk", "packages"))
+		? root
+		: undefined;
+}
+
+function runInCheckout(
+	command: string,
+	args: string[],
+	cwd: string,
+): Promise<number> {
+	return waitForProcessExit(
+		spawn(command, args, { cwd, stdio: "inherit", windowsHide: true }),
+	);
+}
+
+function gitHead(cwd: string): string | undefined {
+	try {
+		return execFileSync("git", ["rev-parse", "HEAD"], {
+			cwd,
+			encoding: "utf-8",
+		}).trim();
+	} catch {
+		return undefined;
+	}
+}
+
+export interface SourceUpdateOptions {
+	/** Rebuild and restart even when the pull brought no new commits. */
+	force?: boolean;
+}
+
+/**
+ * Update a source checkout in one step: pull, stop every running Cline
+ * process (the hub keeps the old SDK build loaded), reinstall, rebuild the
+ * SDK. The hub comes back with the new build on the next `cline` launch.
+ */
+export async function updateFromSource(
+	root: string,
+	io: ConnectIo,
+	options: SourceUpdateOptions = {},
+): Promise<number> {
+	writeln(`${c.cyan}Updating Cline from source at ${root}…${c.reset}`);
+	const before = gitHead(root);
+	const pullCode = await runInCheckout("git", ["pull", "--ff-only"], root);
+	if (pullCode !== 0) {
+		writeErr(
+			`git pull failed (exit code ${pullCode}). Resolve it in ${root}, then run "cline update" again.`,
+		);
+		return 1;
+	}
+	if (before !== undefined && before === gitHead(root) && !options.force) {
+		writeln(
+			`${c.green}✓${c.reset} Already up to date. Use "cline update --force" to rebuild anyway.`,
+		);
+		return 0;
+	}
+
+	const { runStopEverything } = await import("./stop-all");
+	await runStopEverything(io, { cwd: root });
+
+	// process.execPath is the bun running this CLI, so this works even when
+	// "bun" on PATH is a .cmd shim that spawn() cannot start without a shell.
+	for (const args of [["install"], ["run", "build:sdk"]]) {
+		writeln(`${c.cyan}bun ${args.join(" ")}${c.reset}`);
+		const code = await runInCheckout(process.execPath, args, root);
+		if (code !== 0) {
+			writeErr(`bun ${args.join(" ")} failed (exit code ${code}).`);
+			return 1;
+		}
+	}
+
+	writeln(
+		`${c.green}✓${c.reset} Updated. The hub starts with the new build next time you run cline.`,
+	);
+	return 0;
 }

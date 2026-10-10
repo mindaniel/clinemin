@@ -649,8 +649,20 @@ export async function runCli(): Promise<void> {
 		.allowExcessArguments()
 		.option("-v, --verbose", "Show verbose output")
 		.option("--config <dir>", "configuration directory")
+		.option(
+			"--force",
+			"From a source checkout: rebuild even with no new commits",
+		)
 		.action(async () => {
-			const { checkForUpdates } = await import("./commands/update");
+			const { checkForUpdates, findSourceCheckoutRoot, updateFromSource } =
+				await import("./commands/update");
+			const sourceRoot = findSourceCheckoutRoot();
+			if (sourceRoot) {
+				ctx.exitCode = await updateFromSource(sourceRoot, io, {
+					force: updateCmd.opts().force === true,
+				});
+				return;
+			}
 			ctx.exitCode = await checkForUpdates({
 				verbose: updateCmd.opts().verbose === true,
 			});

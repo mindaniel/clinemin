@@ -67,6 +67,8 @@ const connectMocks = vi.hoisted(() => ({
 const updateMocks = vi.hoisted(() => ({
 	autoUpdateOnStartup: vi.fn(),
 	checkForUpdates: vi.fn(async () => 0),
+	findSourceCheckoutRoot: vi.fn(() => undefined),
+	updateFromSource: vi.fn(async () => 0),
 }));
 const runtimeMocks = vi.hoisted(() => ({
 	runAgent: vi.fn(async () => {
