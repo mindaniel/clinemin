@@ -38,7 +38,15 @@ import { processGlobal } from "./process-global";
 
 /** Note used when a project has not customised one. */
 export const DEFAULT_CONTINUATION_NOTE =
-	"Use tool to continue the task or if finish, then tell 'finish'.";
+	"Use tool to continue the task or if finish, then tell 'finish'. Slow shell command: add -timeout 10m after the fence language; long-running (server, watcher): add -echo.";
+
+/**
+ * Earlier defaults. Still recognised so transcripts written before the default
+ * changed keep being trimmed (see the note on resumed sessions above).
+ */
+const LEGACY_CONTINUATION_NOTES: ReadonlySet<string> = new Set([
+	"Use tool to continue the task or if finish, then tell 'finish'.",
+]);
 
 /**
  * The active note, mirrored to disk for the OTHER PROCESS.
@@ -128,5 +136,9 @@ export function isSyntheticUserText(text: string): boolean {
  */
 export function isContinuationNoteText(text: string): boolean {
 	const trimmed = text.trim();
-	return trimmed === state().active || trimmed === DEFAULT_CONTINUATION_NOTE;
+	return (
+		trimmed === state().active ||
+		trimmed === DEFAULT_CONTINUATION_NOTE ||
+		LEGACY_CONTINUATION_NOTES.has(trimmed)
+	);
 }
