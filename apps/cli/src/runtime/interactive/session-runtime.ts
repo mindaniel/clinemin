@@ -641,6 +641,27 @@ export function createInteractiveSessionRuntime(input: {
 		};
 	};
 
+	const removePendingPrompt = async (
+		promptId: string,
+	): Promise<PendingPromptMutationResult> => {
+		if (!sessionManager) {
+			throw startupError instanceof Error
+				? startupError
+				: new Error("interactive session manager is unavailable");
+		}
+		const result = await sessionManager.pendingPrompts.delete({
+			sessionId: activeSessionId,
+			promptId,
+		});
+		return {
+			sessionId: result.sessionId,
+			prompts: result.prompts,
+			prompt: result.prompt,
+			updated: result.updated,
+			removed: result.removed,
+		};
+	};
+
 	const getAccumulatedUsage = async (
 		fallback: NonNullable<CurrentTurnResult>["usage"],
 	) => {
@@ -974,6 +995,7 @@ export function createInteractiveSessionRuntime(input: {
 		ensureReady,
 		sendCurrentTurn,
 		updatePendingPrompt,
+		removePendingPrompt,
 		getAccumulatedUsage,
 		readCurrentMessages,
 		restartEmpty,

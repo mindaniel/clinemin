@@ -31,6 +31,7 @@ function makeActions(
 		setNote: vi.fn(() => true),
 		switchProfile: vi.fn(async () => true),
 		configureTelegram: vi.fn(async () => true),
+		setKeepAwake: vi.fn(async () => true),
 		...overrides,
 	};
 }

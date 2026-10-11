@@ -548,6 +548,21 @@ function App(props: TuiProps) {
 		[props, showToast],
 	);
 
+	const removeQueuedPrompt = useCallback(
+		(promptId: string) => {
+			setEditingQueuedPromptId(null);
+			setSelectedQueuedPromptId(null);
+			refocusTextareaRef.current();
+			void props.onRemovePendingPrompt(promptId).catch((error) => {
+				showToast(
+					`Could not remove queued message: ${error instanceof Error ? error.message : String(error)}`,
+					"error",
+				);
+			});
+		},
+		[props, showToast],
+	);
+
 	const {
 		appendEntry: appendSessionEntry,
 		replaceEntries: replaceSessionEntries,
@@ -850,6 +865,7 @@ function App(props: TuiProps) {
 			beginEdit: beginQueuedPromptEdit,
 			cancelEdit: cancelQueuedPromptEdit,
 			promote: promoteQueuedPrompt,
+			remove: removeQueuedPrompt,
 		},
 		syncInputFromTextarea: promptInput.syncInputFromTextarea,
 		getCurrentInputText: promptInput.getCurrentInputText,

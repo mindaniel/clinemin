@@ -61,6 +61,11 @@ import {
 import { writeChatBinding } from "../../utils/chat-binding";
 import { readClipboardText } from "../../utils/clipboard";
 import { writeProjectContinuationNote } from "../../utils/continuation-note";
+import {
+	isKeepAwakeOn,
+	startKeepAwake,
+	stopKeepAwake,
+} from "../../utils/keep-awake";
 import { isManagerOffRequest } from "../../utils/manager-command";
 
 export type WebChatEntry =
@@ -1216,6 +1221,37 @@ export function useLocalCommandActions(input: {
 		return true;
 	}, [dialog, refocusTextarea, session, termHeight]);
 
+	/**
+	 * `/awake` — keep the computer from sleeping while this Cline process runs.
+	 * The lock dies with the process, so it never outlives the session.
+	 */
+	const setKeepAwake = useCallback(
+		async (arg: string): Promise<boolean> => {
+			const lowered = arg.toLowerCase();
+			const turnOn =
+				lowered === "on" ? true : lowered === "off" ? false : !isKeepAwakeOn();
+			if (!turnOn) {
+				stopKeepAwake();
+				session.appendEntry({
+					kind: "status",
+					text: "/awake: off — the computer can sleep normally again.",
+				});
+				return true;
+			}
+			const error = await startKeepAwake();
+			session.appendEntry(
+				error
+					? { kind: "error", text: `/awake: could not keep awake — ${error}` }
+					: {
+							kind: "status",
+							text: "/awake: on — the computer stays awake until /awake off or Cline exits.",
+						},
+			);
+			return true;
+		},
+		[session],
+	);
+
 	const handleSlashCommand = useCallback(
 		(command: string, invocation?: LocalSlashCommandInvocation) => {
 			const resolved = resolveSlashCommand(slashCommandRegistry, command);
@@ -1247,6 +1283,7 @@ export function useLocalCommandActions(input: {
 				setNote,
 				switchProfile,
 				configureTelegram,
+				setKeepAwake,
 			});
 		},
 		[
@@ -1271,6 +1308,7 @@ export function useLocalCommandActions(input: {
 			setNote,
 			switchProfile,
 			configureTelegram,
+			setKeepAwake,
 			session.isRunning,
 			slashCommandRegistry,
 		],

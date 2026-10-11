@@ -800,6 +800,17 @@ export async function runInteractive(
 				removed: result.removed,
 			};
 		},
+		onRemovePendingPrompt: async (promptId) => {
+			await sessionRuntime.ensureReady();
+			const result = await sessionRuntime.removePendingPrompt(promptId);
+			return {
+				sessionId: result.sessionId,
+				prompts: result.prompts.map(toQueuedPromptItem),
+				prompt: result.prompt ? toQueuedPromptItem(result.prompt) : undefined,
+				updated: result.updated,
+				removed: result.removed,
+			};
+		},
 		onAbort: () => {
 			return sessionRuntime.abortAll();
 		},

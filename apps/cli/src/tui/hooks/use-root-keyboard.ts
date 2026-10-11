@@ -51,6 +51,7 @@ export function useRootKeyboard(input: {
 		beginEdit: (id: string) => void;
 		cancelEdit: () => void;
 		promote: (id: string) => void;
+		remove: (id: string) => void;
 	};
 	syncInputFromTextarea: () => void;
 	getCurrentInputText: () => string;
@@ -209,6 +210,16 @@ export function useRootKeyboard(input: {
 		if (
 			selectedQueuedPromptId &&
 			!queuedSelection.editingId &&
+			key.name === "delete"
+		) {
+			key.preventDefault();
+			queuedSelection.remove(selectedQueuedPromptId);
+			return;
+		}
+
+		if (
+			selectedQueuedPromptId &&
+			!queuedSelection.editingId &&
 			(key.name === "enter" || key.name === "return")
 		) {
 			key.preventDefault();
@@ -233,9 +244,15 @@ export function useRootKeyboard(input: {
 			return;
 		}
 
-		// Ctrl+X always halts the active run, regardless of queued-message
-		// state, so halting never depends on (or collides with) Escape.
+		// Ctrl+X targets what is selected: with a queued message selected (or
+		// being edited) it drops only that message and the run keeps going;
+		// with nothing selected it halts the active run.
 		if (key.ctrl && key.name === "x") {
+			if (selectedQueuedPromptId) {
+				key.preventDefault();
+				queuedSelection.remove(selectedQueuedPromptId);
+				return;
+			}
 			if (session.isRunning) {
 				key.preventDefault();
 				const abortStarted = input.onAbort();

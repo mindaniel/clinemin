@@ -195,6 +195,10 @@ export interface TuiProps {
 		prompt?: string;
 		delivery?: "queue" | "steer";
 	}) => Promise<PendingPromptMutationResult>;
+	/** Drop one queued message without touching the active run. */
+	onRemovePendingPrompt: (
+		promptId: string,
+	) => Promise<PendingPromptMutationResult>;
 	onAbort: () => boolean;
 	onExit: () => void;
 	onRunningChange: (isRunning: boolean) => void;

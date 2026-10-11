@@ -60,6 +60,11 @@ export interface LocalSlashCommandActionInput {
 	 * persist the token, chat ID, and on/off toggle.
 	 */
 	configureTelegram: () => Promise<boolean>;
+	/**
+	 * `/awake`: hold a wake lock so the computer does not sleep. `arg` is
+	 * "on", "off", or empty to toggle.
+	 */
+	setKeepAwake: (arg: string) => Promise<boolean>;
 }
 
 /**
@@ -176,6 +181,9 @@ export function runLocalSlashCommandAction(
 	}
 	if (normalized === "telegram") {
 		return input.configureTelegram();
+	}
+	if (normalized === "awake") {
+		return input.setKeepAwake(commandArgument(input.invocation?.text));
 	}
 	if (normalized === "quit") {
 		setTimeout(input.exitCline, 0);

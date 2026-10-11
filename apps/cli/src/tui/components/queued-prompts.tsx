@@ -26,20 +26,17 @@ export function QueuedPrompts(props: {
 		? props.items.find((item) => item.id === props.selectedId)
 		: undefined;
 	const selectedIsEditing = selected?.id === props.editingId;
-	const escapeHint = session.isRunning ? "Ctrl+X halts run" : "Esc back";
-	// Esc no longer halts while a queued message is in play, so every hint shown
-	// during a run has to name Ctrl+X -- including the editing one, which is the
-	// state you are most likely to be in when you decide to stop the agent.
+	// With a message selected, Ctrl+X removes that message only; halting the
+	// run needs nothing selected (Esc clears the selection first).
+	const removeHint = "Ctrl+X/Del removes it, Esc back";
 	const hint = selected
 		? selectedIsEditing
-			? session.isRunning
-				? "Enter confirm, Esc discards this edit (run keeps going), Ctrl+X halts run"
-				: "Enter confirm, Esc discards this edit"
+			? "Enter confirm, Esc discards this edit, Ctrl+X removes the message (run keeps going)"
 			: selected.steer
 				? session.isRunning
-					? `Waiting. Up/Down navigate, Tab edit, ${escapeHint}`
-					: `Steered next. Up/Down navigate, Tab edit, ${escapeHint}`
-				: `Up/Down navigate, Enter steer, Tab edit, ${escapeHint}`
+					? `Waiting. Up/Down navigate, Tab edit, ${removeHint}`
+					: `Steered next. Up/Down navigate, Tab edit, ${removeHint}`
+				: `Up/Down navigate, Enter steer, Tab edit, ${removeHint}`
 		: session.isRunning
 			? "Select a message to steer or edit, Ctrl+X halts run"
 			: "Select a message to steer or edit";

@@ -20,6 +20,7 @@ export type CommandPaletteAction =
 	| "note"
 	| "profile"
 	| "telegram"
+	| "awake"
 	| "help"
 	| "quit";
 
@@ -204,6 +205,13 @@ const ACTION_ITEMS: Array<{
 		shortcut: "Opt+T",
 		description: "Set the Telegram connector token, chat ID, and on/off",
 		keywords: ["telegram", "connector", "bot", "chat id"],
+	},
+	{
+		action: "awake",
+		label: "Keep Computer Awake",
+		shortcut: "Opt+Y",
+		description: "Toggle keeping the computer awake while Cline runs",
+		keywords: ["awake", "sleep", "caffeinate", "power"],
 	},
 	{
 		action: "help",

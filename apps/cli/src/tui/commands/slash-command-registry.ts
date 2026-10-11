@@ -32,6 +32,7 @@ export type LocalSlashCommandName =
 	| "note"
 	| "profile"
 	| "telegram"
+	| "awake"
 	| "quit"
 	| "help";
 
@@ -154,6 +155,11 @@ const TUI_LOCAL_COMMANDS: Array<{
 		description: "Configure the Telegram connector (token, chat ID, on/off)",
 	},
 	{
+		name: "awake",
+		description:
+			"Keep the computer awake while Cline runs (/awake on|off, bare /awake toggles)",
+	},
+	{
 		name: "help",
 		description: "Show help",
 	},
@@ -204,6 +210,7 @@ const SYSTEM_COMMAND_ORDER = [
 	"note",
 	"profile",
 	"telegram",
+	"awake",
 	GUIDE_AI_COMMAND,
 	"help",
 	"quit",

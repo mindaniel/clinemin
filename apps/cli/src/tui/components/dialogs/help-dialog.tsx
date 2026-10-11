@@ -81,7 +81,7 @@ const HELP_ROWS: HelpRow[] = [
 		kind: "entry",
 		id: "k-ctrl-x",
 		key: "Ctrl+X",
-		desc: "Halt the running agent (always aborts the active run)",
+		desc: "Remove the selected queued message (run keeps going); with no queued message selected, halt the running agent",
 	},
 	{
 		kind: "entry",
