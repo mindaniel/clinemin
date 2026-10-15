@@ -8,9 +8,13 @@
  */
 
 /**
- * A prompt may hold this line to say which part is the attachment: the text
- * before it is typed as the message, the text after it goes in as the file.
- * Without it the whole prompt is the file and `PASTED_FILE_MESSAGE` is typed.
+ * A prompt holds this line to say which part is the attachment: the text
+ * before it is typed as the message, the text after it goes in as the file
+ * (`PASTED_FILE_MESSAGE` is typed when nothing comes before it). Only marked
+ * text is ever attached: an agent's opening turn carries its system prompt and
+ * tool contract, and a model that finds those in an attachment reads them as
+ * a document and decides it has no tools. `attachToolResults` marks tool
+ * output; scripts mark the documents they send.
  */
 export const ATTACH_MARKER = "<<<ATTACH>>>";
 
@@ -47,6 +51,36 @@ export function typedMessage(
 	return split.marked
 		? [split.head, split.body].filter(Boolean).join("\n\n")
 		: prompt;
+}
+
+/** Labels that start a segment in the flat web prompt (see deepseek-web/prompt.ts). */
+const SEGMENT_LABELS =
+	"Tool result|Assistant|Note|My last message|Previous user message|User";
+
+/**
+ * Move this turn's `Tool result: …` segments behind the attach marker, so a
+ * long file read or command output goes in as an attachment while the note
+ * that follows it is still typed. Left as is when the prompt already has a
+ * marker or the tool results are shorter than `minChars`.
+ */
+export function attachToolResults(prompt: string, minChars: number): string {
+	if (minChars <= 0 || prompt.includes(ATTACH_MARKER)) return prompt;
+	const segment = new RegExp(
+		`(?:^|\\n\\n)Tool result:[\\s\\S]*?(?=\\n\\n(?:${SEGMENT_LABELS}):|$)`,
+		"g",
+	);
+	const results = (prompt.match(segment) ?? []).map((s) => s.trim());
+	const body = results.join("\n\n");
+	if (body.length < minChars) return prompt;
+	const head = prompt.replace(segment, "").trim();
+	return [
+		head,
+		"The tool results for this turn are in the attached file.",
+		ATTACH_MARKER,
+		body,
+	]
+		.filter(Boolean)
+		.join("\n\n");
 }
 
 /** Page expression: paste `text` into `editorExpr` like Ctrl+V. True when the page handled it. */

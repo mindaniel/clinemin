@@ -39,6 +39,7 @@ import { logConversationTurn } from "../tool-pipeline/conversation-logger";
 import { consumePendingInjectedReply } from "../tool-pipeline/injected-reply";
 import { parseInvokeStyleToolCalls } from "../tool-pipeline/invoke-parser";
 import { parseManagerBlocks } from "../tool-pipeline/manager-block";
+import { attachToolResults } from "../tool-pipeline/paste-attachment";
 import {
 	parsePatchBlocks,
 	unappliedPatchNotice,
@@ -466,7 +467,9 @@ export function createChatGPTWebModel(
 		const captured = await sendAndCapture(
 			cdp,
 			cdpSessionId,
-			promptText,
+			// Big tool results go in as a "Pasted text" attachment while the note
+			// after them is still typed.
+			attachToolResults(promptText, runtimeConfig.pasteAsFileChars),
 			runtimeConfig,
 			logger,
 			sendOptions,

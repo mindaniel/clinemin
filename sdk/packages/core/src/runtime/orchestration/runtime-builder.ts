@@ -51,6 +51,7 @@ import type {
 	RuntimeBuilderInput,
 	BuiltRuntime as RuntimeEnvironment,
 } from "./session-runtime";
+import { resolveToolOutputLimits } from "./tool-output-limits";
 
 /**
  * Command timeout (ms) for the Claude Web provider. Claude Web asks the user to
@@ -213,6 +214,9 @@ function createBuiltinToolsList(
 			...preset,
 			enableSkills: !!skillsExecutor,
 			...toolRoutingConfig,
+			// A web chat that attaches long text as a file can take a whole
+			// file read or build log; everyone else keeps the default caps.
+			outputLimits: resolveToolOutputLimits(providerId),
 			// One command timeout for every provider (DEFAULT_COMMAND_TIMEOUT_MS,
 			// 120s). A command that needs longer asks for it with
 			// `timeout_seconds`, or runs in the background with `echo`.

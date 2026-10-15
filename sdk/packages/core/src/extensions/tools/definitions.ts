@@ -272,16 +272,18 @@ async function executeShellCommands(
  */
 export function createReadFilesTool(
 	executor: FileReadExecutor,
-	config: Pick<DefaultToolsConfig, "fileReadTimeoutMs"> = {},
+	config: Pick<DefaultToolsConfig, "fileReadTimeoutMs" | "outputLimits"> = {},
 ): AgentTool<ReadFilesInput, ToolOperationResult[]> {
 	const timeoutMs = config.fileReadTimeoutMs ?? 10000;
+	const readLines = config.outputLimits?.readLines ?? MAX_READ_LINES;
+	const readChars = config.outputLimits?.readChars ?? MAX_READ_OUTPUT_CHARS;
 
 	return createTool<ReadFilesInput, ToolOperationResult[]>({
 		name: "read_files",
 		description:
 			"Read the content of text or image files at the provided absolute paths, or return only an inclusive one-based line range when start_line/end_line are provided on the same file entry as its path. " +
 			"When you already know multiple files you need, read them together in one call, and call this tool in the same response as other independent tool calls. " +
-			`Each read returns at most ${MAX_READ_LINES} lines / ~${Math.round(MAX_READ_OUTPUT_CHARS / 1024)}k characters; longer files report their total line count, page through them with start_line/end_line on that file's entry. ` +
+			`Each read returns at most ${readLines} lines / ~${Math.round(readChars / 1024)}k characters; longer files report their total line count, page through them with start_line/end_line on that file's entry. ` +
 			"Binary files that are not image and large files are not supported. " +
 			"Returns file contents or error messages for each path. ",
 		inputSchema: zodToJsonSchema(ReadFilesInputSchema),
@@ -368,9 +370,14 @@ export function createReadFilesTool(
  */
 export function createSearchTool(
 	executor: SearchExecutor,
-	config: Pick<DefaultToolsConfig, "cwd" | "searchTimeoutMs"> = {},
+	config: Pick<
+		DefaultToolsConfig,
+		"cwd" | "searchTimeoutMs" | "outputLimits"
+	> = {},
 ): AgentTool<SearchCodebaseInput, ToolOperationResult[]> {
 	const timeoutMs = config.searchTimeoutMs ?? 30000;
+	const searchChars =
+		config.outputLimits?.searchChars ?? MAX_SEARCH_OUTPUT_CHARS;
 	const cwd = config.cwd ?? process.cwd();
 
 	return createTool<SearchCodebaseInput, ToolOperationResult[]>({
@@ -379,7 +386,7 @@ export function createSearchTool(
 			"Perform regex pattern searches across the codebase. " +
 			"Supports multiple parallel searches. When several search patterns could be useful and do not depend on each other, run them together in one call, and call this tool in the same response as other independent tool calls. " +
 			"Use for finding code patterns, function definitions, class names, imports, etc. " +
-			`Output beyond ~${Math.round(MAX_SEARCH_OUTPUT_CHARS / 1000)}k characters per query is middle-truncated; narrow patterns beat broad ones.`,
+			`Output beyond ~${Math.round(searchChars / 1000)}k characters per query is middle-truncated; narrow patterns beat broad ones.`,
 		inputSchema: zodToJsonSchema(SearchCodebaseInputSchema),
 		timeoutMs: timeoutMs * 2,
 		retryable: true,
@@ -486,6 +493,7 @@ export function readRunCommandsOptions(input: unknown): {
 export function buildRunCommandsDescription(
 	shellKind: ShellKind,
 	isWindows: boolean,
+	commandChars: number = MAX_COMMAND_OUTPUT_CHARS,
 ): string {
 	if (shellKind === "powershell" || shellKind === "cmd") {
 		const shellName = shellKind === "powershell" ? "PowerShell" : "cmd.exe";
@@ -493,7 +501,7 @@ export function buildRunCommandsDescription(
 		return (
 			"Run non-interactive shell commands from the root of the workspace in Windows environment. " +
 			RUN_COMMANDS_SHARED_INSTRUCTIONS +
-			`Output beyond ~${Math.round(MAX_COMMAND_OUTPUT_CHARS / 1000)}k characters is middle-truncated (start and end preserved); filter output when you need specific sections. ` +
+			`Output beyond ~${Math.round(commandChars / 1000)}k characters is middle-truncated (start and end preserved); filter output when you need specific sections. ` +
 			`Commands run through ${shellName}; quote paths and arguments for ${shellName} and use ${sequencingOperator} to sequence commands. ` +
 			"Include multiple commands in the same call when they are independent and safe to run concurrently. When independent reads, searches, or edits are also needed, call those tools in the same response."
 		);
@@ -510,7 +518,7 @@ export function buildRunCommandsDescription(
 		RUN_COMMANDS_SHARED_INSTRUCTIONS +
 		environmentNote +
 		"Commands should be properly shell-escaped and targeted to avoid error or timeout. Include multiple commands in the same call when they are independent complete shell commands and safe to run concurrently; multiline scripts and heredocs must be a single command string. When independent reads, searches, or edits are also needed, call those tools in the same response. " +
-		`Output beyond ~${Math.round(MAX_COMMAND_OUTPUT_CHARS / 1000)}k characters is middle-truncated (start and end preserved); pipe through grep/head/tail when you need specific sections of large output. ` +
+		`Output beyond ~${Math.round(commandChars / 1000)}k characters is middle-truncated (start and end preserved); pipe through grep/head/tail when you need specific sections of large output. ` +
 		"For long-running commands, run them in background and redirect output to a tmp file that you can read from later."
 	);
 }
@@ -532,7 +540,10 @@ export function buildRunCommandsDescription(
  */
 export function createShellTool(
 	executor: ShellExecutor,
-	config: Pick<DefaultToolsConfig, "cwd" | "bashTimeoutMs" | "telemetry"> & {
+	config: Pick<
+		DefaultToolsConfig,
+		"cwd" | "bashTimeoutMs" | "telemetry" | "outputLimits"
+	> & {
 		shell?: string | (() => string);
 	} = {},
 ): AgentTool<unknown, ToolOperationResult[]> {
@@ -549,7 +560,11 @@ export function createShellTool(
 			? configShell
 			: () => configShell ?? getDefaultShell(process.platform);
 	const describe = () =>
-		buildRunCommandsDescription(getShellKind(resolveShell()), isWindows);
+		buildRunCommandsDescription(
+			getShellKind(resolveShell()),
+			isWindows,
+			config.outputLimits?.commandChars,
+		);
 
 	const tool = createTool<unknown, ToolOperationResult[]>({
 		name: "run_commands",

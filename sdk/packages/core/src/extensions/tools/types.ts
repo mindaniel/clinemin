@@ -10,6 +10,7 @@ import type {
 	ITelemetryService,
 	TextContent,
 } from "@cline/shared";
+import type { ToolOutputLimits } from "./executors/output-limits";
 import type {
 	ApplyPatchInput,
 	EditFileInput,
@@ -325,6 +326,13 @@ export interface DefaultToolsConfig {
 	 * @default 60000
 	 */
 	bashTimeoutMs?: number;
+
+	/**
+	 * Output caps the tool descriptions announce. Pass the same set the
+	 * executors enforce (createBuiltinTools does both).
+	 * @default DEFAULT_TOOL_OUTPUT_LIMITS
+	 */
+	outputLimits?: ToolOutputLimits;
 
 	/**
 	 * Timeout for web fetch operations in milliseconds

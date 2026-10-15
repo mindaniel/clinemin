@@ -26,6 +26,7 @@ import { isSyntheticUserText } from "../tool-pipeline/continuation-note";
 import { logConversationTurn } from "../tool-pipeline/conversation-logger";
 import { consumePendingInjectedReply } from "../tool-pipeline/injected-reply";
 import { parseInvokeStyleToolCalls } from "../tool-pipeline/invoke-parser";
+import { attachToolResults } from "../tool-pipeline/paste-attachment";
 import {
 	parsePatchBlocks,
 	unappliedPatchNotice,
@@ -877,7 +878,12 @@ function createDeepSeekWebV2Model(
 		// forever.
 		const MAX_TOOL_REJECTION_RETRIES = 2;
 		const toolNames = functionTools.map((t) => t.name);
-		let sendPrompt = dedupedPrompt;
+		// Big tool results (a whole file read, long command output) go in as an
+		// attached file while the note after them is still typed.
+		let sendPrompt = attachToolResults(
+			dedupedPrompt,
+			resolveDeepSeekWebV2Config().pasteAsFileChars,
+		);
 		let text = "";
 		let reasoning = "";
 		let accumulatedTokenUsage: number | undefined;

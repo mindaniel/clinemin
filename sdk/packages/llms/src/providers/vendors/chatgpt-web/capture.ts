@@ -330,6 +330,7 @@ export async function sendAndCapture(
 		const split = splitAttachment(prompt);
 		const attached =
 			config.pasteAsFileChars > 0 &&
+			split.marked &&
 			split.body.length > config.pasteAsFileChars &&
 			(await attachPromptToChatGPT({
 				cdp,

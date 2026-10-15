@@ -229,4 +229,6 @@ export {
 // Per-provider prompt overrides: which providers word the default / worker /
 // manager prompt differently from the shared text.
 export { getWebProviderPrompts } from "./providers/vendors/tool-pipeline/prompt-registry";
+// Web chats that attach long text as a file get wider tool-output caps (core).
+export { webChatAttachesLongText } from "./providers/vendors/web-attachments";
 export { disposeLangfuseTelemetry } from "./services/langfuse-telemetry";

@@ -76,6 +76,7 @@ import {
 import { LoopDetectionTracker } from "../safety/loop-detection";
 import { MistakeTracker } from "../safety/mistake-tracker";
 import { RuntimeEventAdapter } from "./runtime-event-adapter";
+import { resolveToolOutputLimits } from "./tool-output-limits";
 
 function formatToolResultError(output: unknown): string {
 	if (typeof output === "string") {
@@ -377,6 +378,9 @@ export class SessionRuntime {
 
 		this.conversation = new ConversationStore(config.initialMessages);
 		const messageBuilderOptions = getMessageBuilderOptionsFromEnv();
+		// A web chat that attaches long text keeps whole tool results; the
+		// executors were given the same caps (runtime-builder).
+		const outputLimits = resolveToolOutputLimits(config.providerId);
 		this.messageBuilder = new MessageBuilder({
 			...messageBuilderOptions,
 			// A manager reads whole reports written by its workers, so the default
@@ -384,7 +388,11 @@ export class SessionRuntime {
 			// An explicit env override still wins.
 			maxToolResultChars:
 				messageBuilderOptions.maxToolResultChars ??
+				outputLimits.toolResultChars ??
 				(config.managerMode ? MANAGER_MAX_TOOL_RESULT_CHARS : undefined),
+			maxFileContentChars:
+				messageBuilderOptions.maxFileContentChars ??
+				outputLimits.fileContentChars,
 		});
 		this.contributionRegistry = createContributionRegistry<
 			AgentExtension,

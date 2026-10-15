@@ -94,10 +94,11 @@ export interface ChatGPTWebV2RuntimeConfig {
 	toolTurnExtraMinMs: number;
 	toolTurnExtraMaxMs: number;
 	/**
-	 * Prompts longer than this many chars are pasted into the composer, which
-	 * chatgpt.com turns into a "Pasted text" attachment once the paste is long
-	 * enough (somewhere between 6k and 20k chars), and a one-line pointer is
-	 * typed as the message. 0 (the default) always types the prompt.
+	 * The part of a prompt after an `<<<ATTACH>>>` line (tool results, or a
+	 * document a script sends) is pasted into the composer when longer than
+	 * this many chars; chatgpt.com turns it into a "Pasted text" attachment
+	 * once the paste is long enough (somewhere between 6k and 20k chars). 0
+	 * (the default) always types the prompt.
 	 * Env: CHATGPT_WEB_PASTE_AS_FILE_CHARS.
 	 */
 	pasteAsFileChars: number;

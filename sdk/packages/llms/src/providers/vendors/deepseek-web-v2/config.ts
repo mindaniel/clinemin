@@ -103,10 +103,11 @@ export interface DeepSeekWebV2RuntimeConfig {
 	/** Extra sends attempted after a throttle before the error is surfaced. */
 	rateLimitMaxRetries: number;
 	/**
-	 * Prompts longer than this many chars are pasted into the composer, which
-	 * chat.deepseek.com turns into an attached .txt file (what Ctrl+V of a long
-	 * text does), and a one-line pointer to it is typed as the message. 0 (the
-	 * default) always types the prompt. Env: DEEPSEEK_WEB_V2_PASTE_AS_FILE_CHARS.
+	 * The part of a prompt after an `<<<ATTACH>>>` line (tool results, or a
+	 * document a script sends) is pasted into the composer when longer than
+	 * this many chars; chat.deepseek.com turns it into an attached .txt file,
+	 * what Ctrl+V of a long text does. 0 (the default) always types the prompt.
+	 * Env: DEEPSEEK_WEB_V2_PASTE_AS_FILE_CHARS.
 	 */
 	pasteAsFileChars: number;
 }

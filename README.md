@@ -167,7 +167,7 @@ model keeps its memory and only the new message is sent. Notes:
 - `-s "<system prompt>"` replaces the coding system prompt, which makes cline a
   plain chat client (no tool contract).
 - Worked example: the PDF idea-map scripts in
-  `OneDrive/.../Data/docs/brainstorm/` (`common.py` drives this).
+  `OneDrive - University of St Andrews/idea-map/` (`common.py` drives this).
 
 ### Long prompts as attached files (DeepSeek and ChatGPT web)
 
@@ -179,14 +179,32 @@ person does, and the page turns a long paste (over ~4k chars) into an attached
 DEEPSEEK_WEB_V2_PASTE_AS_FILE_CHARS=4000 cline -P deepseek-web-v2 "..."   # or "pasteAsFileChars" in ~/.cline/deepseek-web-v2/config.json
 ```
 
-Prompts longer than that are pasted (a synthetic `ClipboardEvent`), the
-provider waits until `file/upload_file` / `file/fetch_files` report the file as
-`SUCCESS`, then types a one-line pointer and sends. A line `<<<ATTACH>>>` in the
-prompt splits it: text before is typed as the message, text after becomes the
-file (nothing after it = type everything). Default is 0 (off): always type.
-Code: `sdk/packages/llms/src/providers/vendors/deepseek-web-v2/capture.ts`
-(`attachPromptAsFile`); the marker and paste helpers are shared in
-`tool-pipeline/paste-attachment.ts`.
+Only text after a `<<<ATTACH>>>` line is attached; text before it is typed as
+the message (nothing after it = type everything). Two things add the marker:
+
+- **Tool results.** When a turn's `Tool result:` blocks together pass the
+  threshold, they move behind the marker and the continuation note stays typed
+  (`attachToolResults`). The session also gets wide tool-output caps — 200k
+  chars per file read (8,000 lines), command, search and tool result, instead
+  of 48k / 2,000 lines and the 8k per-result cap in the request builder
+  (`WEB_ATTACH_TOOL_OUTPUT_LIMITS` in
+  `sdk/packages/core/src/extensions/tools/executors/output-limits.ts`, chosen
+  per provider by `resolveToolOutputLimits`). A web chat sends only the new
+  message each turn, so the API-cost reason for the tight caps does not apply.
+- **Scripts.** A script puts its document after the marker (the idea-map
+  scripts send each paper that way).
+
+An unmarked prompt is always typed. Attaching a whole opening turn was tried
+and dropped: the model read its own system prompt and tool contract as a
+document and answered that it could not run tools.
+
+The paste is a synthetic `ClipboardEvent`; the provider waits until
+`file/upload_file` / `file/fetch_files` report the file as `SUCCESS`, then types
+the message and sends. Default is 0 (off): always type, default caps. Set it in
+`config.json` rather than the environment for TUI sessions, since those run in
+the hub process. Code: `deepseek-web-v2/capture.ts` (`attachPromptAsFile`),
+shared helpers in `tool-pipeline/paste-attachment.ts`,
+`vendors/web-attachments.ts` (`webChatAttachesLongText`).
 
 ChatGPT web does the same with `CHATGPT_WEB_PASTE_AS_FILE_CHARS` (or
 `"pasteAsFileChars"` in `~/.cline/chatgpt-web/config.json`). chatgpt.com turns a

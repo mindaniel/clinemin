@@ -47,12 +47,26 @@ export interface FileReadExecutorOptions {
 	 * @default false
 	 */
 	includeLineNumbers?: boolean;
+
+	/**
+	 * Max lines returned per read window.
+	 * @default MAX_READ_LINES (2_000) — see output-limits.ts
+	 */
+	maxReadLines?: number;
+
+	/**
+	 * Max characters returned per read window.
+	 * @default MAX_READ_OUTPUT_CHARS (48_000) — see output-limits.ts
+	 */
+	maxReadChars?: number;
 }
 
 const DEFAULT_FILE_READ_OPTIONS: Required<FileReadExecutorOptions> = {
 	maxFileSizeBytes: 10_000_000, // 10MB default limit
 	encoding: "utf-8", // Default to UTF-8 encoding
 	includeLineNumbers: true, // Include line numbers by default
+	maxReadLines: MAX_READ_LINES,
+	maxReadChars: MAX_READ_OUTPUT_CHARS,
 };
 
 const MAX_TEXT_STREAM_BYTES = 100_000_000;
@@ -80,8 +94,10 @@ async function readTextWindow(
 	includeLineNumbers: boolean,
 	startLine: number | null | undefined,
 	endLine: number | null | undefined,
+	limits: { maxReadLines: number; maxReadChars: number },
 	signal?: AbortSignal,
 ): Promise<string> {
+	const { maxReadLines, maxReadChars } = limits;
 	if (signal?.aborted) {
 		throw getAbortError(signal);
 	}
@@ -98,8 +114,8 @@ async function readTextWindow(
 	let capped = false;
 	let approximateTotalLines = false;
 	const maxCapturedLineNumber = Number.isFinite(requestedEndLine)
-		? Math.min(requestedEndLine, requestedStartLine + MAX_READ_LINES - 1)
-		: requestedStartLine + MAX_READ_LINES - 1;
+		? Math.min(requestedEndLine, requestedStartLine + maxReadLines - 1)
+		: requestedStartLine + maxReadLines - 1;
 	const lineNumberPrefixChars = includeLineNumbers
 		? String(maxCapturedLineNumber).length + 3
 		: 0;
@@ -131,7 +147,7 @@ async function readTextWindow(
 			if (totalLines < requestedStartLine || capped) {
 				continue;
 			}
-			if (captured.length >= MAX_READ_LINES) {
+			if (captured.length >= maxReadLines) {
 				capped = true;
 				continue;
 			}
@@ -142,7 +158,7 @@ async function readTextWindow(
 			}
 
 			const nextChars = chars + line.length + lineNumberPrefixChars + 1;
-			if (nextChars > MAX_READ_OUTPUT_CHARS && captured.length > 0) {
+			if (nextChars > maxReadChars && captured.length > 0) {
 				capped = true;
 				continue;
 			}
@@ -208,6 +224,12 @@ export function createFileReadExecutor(
 		...DEFAULT_FILE_READ_OPTIONS,
 		...options,
 	};
+	// `??`, not the spread above: callers pass these through as `undefined`
+	// when no session-specific limit applies.
+	const maxReadLines =
+		options.maxReadLines ?? DEFAULT_FILE_READ_OPTIONS.maxReadLines;
+	const maxReadChars =
+		options.maxReadChars ?? DEFAULT_FILE_READ_OPTIONS.maxReadChars;
 
 	return async (request: ReadFileRequest, context: AgentToolContext) => {
 		const { path: filePath, start_line, end_line } = request;
@@ -263,6 +285,7 @@ export function createFileReadExecutor(
 			includeLineNumbers,
 			start_line,
 			end_line,
+			{ maxReadLines, maxReadChars },
 			context.signal,
 		);
 	};

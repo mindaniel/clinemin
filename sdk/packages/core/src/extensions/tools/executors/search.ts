@@ -45,6 +45,12 @@ export interface SearchExecutorOptions {
 	 * @default 20
 	 */
 	maxDepth?: number;
+
+	/**
+	 * Max characters returned per query; beyond this the middle is elided.
+	 * @default MAX_SEARCH_OUTPUT_CHARS (48_000) — see output-limits.ts
+	 */
+	maxOutputChars?: number;
 }
 
 const DEFAULT_INCLUDE_EXTENSIONS = [
@@ -316,6 +322,7 @@ export function createSearchExecutor(
 		maxResults = 100,
 		contextLines = 2,
 		maxDepth = 20,
+		maxOutputChars = MAX_SEARCH_OUTPUT_CHARS,
 	} = options;
 	const excludeDirsSet = new Set(excludeDirs);
 	const includeExtensionsSet = new Set(
@@ -364,7 +371,7 @@ export function createSearchExecutor(
 				);
 			}
 
-			return capSearchOutput(resultLines.join("\n"));
+			return capSearchOutput(resultLines.join("\n"), maxOutputChars);
 		}
 
 		// Fallback to manual regex search
@@ -471,7 +478,7 @@ export function createSearchExecutor(
 			);
 		}
 
-		return capSearchOutput(resultLines.join("\n"));
+		return capSearchOutput(resultLines.join("\n"), maxOutputChars);
 	};
 }
 
@@ -482,12 +489,12 @@ export function createSearchExecutor(
  * are preserved and the middle is elided with a notice teaching the model
  * to narrow the pattern instead of retrying.
  */
-function capSearchOutput(text: string): string {
-	if (text.length <= MAX_SEARCH_OUTPUT_CHARS) {
+function capSearchOutput(text: string, maxChars: number): string {
+	if (text.length <= maxChars) {
 		return text;
 	}
-	const headLimit = Math.ceil(MAX_SEARCH_OUTPUT_CHARS / 2);
-	const tailLimit = Math.max(1, MAX_SEARCH_OUTPUT_CHARS - headLimit);
+	const headLimit = Math.ceil(maxChars / 2);
+	const tailLimit = Math.max(1, maxChars - headLimit);
 	return (
 		`${text.slice(0, headLimit)}\n` +
 		`[... search output truncated: ${text.length} chars total. ` +

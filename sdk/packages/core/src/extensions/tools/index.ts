@@ -193,9 +193,22 @@ export function createBuiltinTools(
 		toolsConfig.shell ??
 		executorOptions.bash?.shell ??
 		getDefaultShell(process.platform);
+	// `outputLimits` is what the tool descriptions announce; the executors
+	// enforce the same numbers unless a caller set an executor option itself.
+	const limits = toolsConfig.outputLimits;
 	const resolvedExecutorOptions: DefaultExecutorsOptions = {
 		...executorOptions,
+		fileRead: {
+			maxReadLines: limits?.readLines,
+			maxReadChars: limits?.readChars,
+			...executorOptions.fileRead,
+		},
+		search: {
+			maxOutputChars: limits?.searchChars,
+			...executorOptions.search,
+		},
 		bash: {
+			maxOutputChars: limits?.commandChars,
 			...executorOptions.bash,
 			shell,
 			// The tool-level `bashTimeoutMs` must also reach the shell
