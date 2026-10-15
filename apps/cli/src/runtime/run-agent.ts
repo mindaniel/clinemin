@@ -138,6 +138,12 @@ export async function runAgent(
 	options?: {
 		clineApiBaseUrl?: string;
 		clineProviderSettings?: ProviderSettings;
+		/**
+		 * `--id <session> "prompt"`: run one more turn of a stored session
+		 * instead of starting a new one. The transcript is loaded as the
+		 * session's history, so web providers reopen the same chat.
+		 */
+		resumeSessionId?: string;
 	},
 ): Promise<void> {
 	// A clean one-shot run should not inherit a stale nonzero process exit code
@@ -212,7 +218,19 @@ export async function runAgent(
 		}
 		handleEvent(event, config);
 	};
-	const plannedSessionId = createSessionId();
+	const resumeSessionId = options?.resumeSessionId?.trim() || undefined;
+	let resumeMessages: Awaited<ReturnType<typeof sessionManager.readMessages>> =
+		[];
+	if (resumeSessionId) {
+		resumeMessages = await sessionManager.readMessages(resumeSessionId);
+		if (resumeMessages.length === 0) {
+			writeErr(`Session not found or empty: ${resumeSessionId}`);
+			process.exitCode = 1;
+			await sessionManager.dispose("cli_run_shutdown").catch(() => {});
+			return;
+		}
+	}
+	const plannedSessionId = resumeSessionId ?? createSessionId();
 	const unsubscribe = subscribeToAgentEvents(sessionManager, onAgentEvent, {
 		sessionId: plannedSessionId,
 	});
@@ -300,6 +318,7 @@ export async function runAgent(
 			prompt: userInput,
 			userImages: userImages.length > 0 ? userImages : undefined,
 			userFiles: userFiles.length > 0 ? userFiles : undefined,
+			...(resumeSessionId ? { initialMessages: resumeMessages } : {}),
 			interactive: false,
 			localRuntime: {
 				onTeamRestored: () => emitTeamRestored(config),
@@ -364,6 +383,7 @@ export async function runAgent(
 		if (config.outputMode === "json") {
 			emitJsonLine("stdout", {
 				type: "run_result",
+				sessionId: started.sessionId,
 				finishReason: result.finishReason,
 				iterations: result.iterations,
 				usage,

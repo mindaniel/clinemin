@@ -102,6 +102,13 @@ export interface DeepSeekWebV2RuntimeConfig {
 	rateLimitRetryDelayMs: number;
 	/** Extra sends attempted after a throttle before the error is surfaced. */
 	rateLimitMaxRetries: number;
+	/**
+	 * Prompts longer than this many chars are pasted into the composer, which
+	 * chat.deepseek.com turns into an attached .txt file (what Ctrl+V of a long
+	 * text does), and a one-line pointer to it is typed as the message. 0 (the
+	 * default) always types the prompt. Env: DEEPSEEK_WEB_V2_PASTE_AS_FILE_CHARS.
+	 */
+	pasteAsFileChars: number;
 }
 
 /**
@@ -212,6 +219,11 @@ export function resolveDeepSeekWebV2Config(): DeepSeekWebV2RuntimeConfig {
 				fileConfig.rateLimitMaxRetries,
 			DEFAULT_RATE_LIMIT_MAX_RETRIES,
 		),
+		pasteAsFileChars:
+			Number(
+				process.env.DEEPSEEK_WEB_V2_PASTE_AS_FILE_CHARS ??
+					fileConfig.pasteAsFileChars,
+			) || 0,
 		chatsFile:
 			process.env.DEEPSEEK_WEB_V2_CHATS_FILE ||
 			fileConfig.chatsFile ||

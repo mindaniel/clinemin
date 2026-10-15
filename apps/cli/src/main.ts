@@ -58,6 +58,13 @@ import { runConnectWizard } from "./wizards/connect";
 import { runMcpWizard } from "./wizards/mcp";
 import { runScheduleWizard } from "./wizards/schedule";
 
+/** `runAgent`'s options when `--id` resumes a session; none otherwise. */
+function resumeArgs(
+	resumeSessionId: string | undefined,
+): [] | [{ resumeSessionId: string }] {
+	return resumeSessionId ? [{ resumeSessionId }] : [];
+}
+
 export function stdinHasPipedInput(): boolean {
 	if (process.stdin.isTTY) return false;
 	try {
@@ -726,7 +733,14 @@ export async function runCli(): Promise<void> {
 			return;
 		}
 		resumeSessionId = sessionId;
-		startupTarget = "chat";
+		// `--id <session> "prompt"` (or with piped stdin) runs one more turn of
+		// that session and exits, so scripts can hold a conversation. Bare
+		// `--id`, or `-i`, still opens the TUI on it.
+		const oneShotResume =
+			!args.interactive && (!!args.prompt || stdinHasPipedInput());
+		if (!oneShotResume) {
+			startupTarget = "chat";
+		}
 		process.env.CLINE_HOOK_AGENT_RESUME = "1";
 	} else {
 		delete process.env.CLINE_HOOK_AGENT_RESUME;
@@ -955,6 +969,13 @@ export async function runCli(): Promise<void> {
 
 		const isYoloMode = args.mode === "yolo";
 		const isZenMode = args.mode === "zen";
+		if (isZenMode && resumeSessionId) {
+			writeErr(
+				"--zen cannot resume a session; use `cline send <session-id>` to steer one.",
+			);
+			process.exitCode = 1;
+			return;
+		}
 		// Yolo is a tiny tool set with teams switched off, which is the exact
 		// opposite of a manager: it would have nothing to delegate with.
 		const isManagerMode = args.managerMode === true && !isYoloMode;
@@ -1139,7 +1160,12 @@ export async function runCli(): Promise<void> {
 					await runZen(pipedEffectivePrompt, config, userInstructionService);
 					return;
 				}
-				await runAgent(pipedEffectivePrompt, config, userInstructionService);
+				await runAgent(
+					pipedEffectivePrompt,
+					config,
+					userInstructionService,
+					...resumeArgs(resumeSessionId),
+				);
 				return;
 			}
 		}
@@ -1189,7 +1215,12 @@ export async function runCli(): Promise<void> {
 			return;
 		}
 
-		await runAgent(effectivePrompt, config, userInstructionService);
+		await runAgent(
+			effectivePrompt,
+			config,
+			userInstructionService,
+			...resumeArgs(resumeSessionId),
+		);
 		// Exit once agent is done in non-interactive mode
 		return;
 	} finally {

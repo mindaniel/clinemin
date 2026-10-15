@@ -146,6 +146,47 @@ git diff origin/main | cline "Review these changes for issues"
 cline --json "List all TODO comments" | jq -r 'select(.type == "agent_event" and .event.text) | .event.text'
 ```
 
+### Scripting a multi-turn conversation
+
+A script can hold one conversation across many runs. The first run's `run_result`
+line carries `sessionId`; pass it back with `--id` and the run continues that
+session (history reloaded, one turn, exit) instead of opening the TUI:
+
+```bash
+cline -P deepseek-web-v2 -m deepseek-chat --json "Remember: kiwi"          # -> run_result.sessionId
+echo "What did I ask you to remember?" | cline -P deepseek-web-v2 --json --id <sessionId> "Answer below."
+```
+
+On a web provider the resumed turn goes into the **same browser chat**, so the
+model keeps its memory and only the new message is sent. Notes:
+
+- Long input goes through stdin (Windows caps a command line at 32k chars). With
+  `--json`, cline still wants a quoted prompt argument of more than one word; it
+  is joined in front of stdin.
+- `--zen` + `--id` is refused; steer a zen session with `cline send` instead.
+- `-s "<system prompt>"` replaces the coding system prompt, which makes cline a
+  plain chat client (no tool contract).
+- Worked example: the PDF idea-map scripts in
+  `OneDrive/.../Data/docs/brainstorm/` (`common.py` drives this).
+
+### Long prompts as attached files (DeepSeek web)
+
+Typing a 100k-char prompt into chat.deepseek.com works, but pasting it is what a
+person does, and the page turns a long paste (over ~4k chars) into an attached
+`.txt` file. `deepseek-web-v2` can do the same:
+
+```bash
+DEEPSEEK_WEB_V2_PASTE_AS_FILE_CHARS=4000 cline -P deepseek-web-v2 "..."   # or "pasteAsFileChars" in ~/.cline/deepseek-web-v2/config.json
+```
+
+Prompts longer than that are pasted (a synthetic `ClipboardEvent`), the
+provider waits until `file/upload_file` / `file/fetch_files` report the file as
+`SUCCESS`, then types a one-line pointer and sends. A line `<<<ATTACH>>>` in the
+prompt splits it: text before is typed as the message, text after becomes the
+file (nothing after it = type everything). Default is 0 (off): always type.
+Code: `sdk/packages/llms/src/providers/vendors/deepseek-web-v2/capture.ts`
+(`attachPromptAsFile`).
+
 ## License
 
 [Apache 2.0 © 2026 Cline Bot Inc.](./LICENSE)

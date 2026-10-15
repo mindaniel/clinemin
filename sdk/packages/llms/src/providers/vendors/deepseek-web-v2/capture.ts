@@ -33,6 +33,132 @@ import {
 	sleep,
 } from "./config";
 import { buildSendScript, resolveV2ModelOptions } from "./send-script";
+
+// ── Long prompts as an attached file ──────────────────────────────────────────
+
+/**
+ * A prompt may hold this line to say which part is the attachment: the text
+ * before it is typed as the message, the text after it goes in as the file.
+ * Without it the whole prompt is the file and `PASTED_FILE_MESSAGE` is typed.
+ */
+export const ATTACH_MARKER = "<<<ATTACH>>>";
+
+/** Typed as the message when the prompt itself went in as an attached file. */
+export const PASTED_FILE_MESSAGE =
+	"My full message is in the attached file. Read all of it and follow the instructions in it.";
+
+/** How long DeepSeek gets to upload and parse a pasted file. */
+const PASTE_FILE_READY_TIMEOUT_MS = 90_000;
+
+/** Every `{ id: "file-…", status }` pair anywhere in a file API response. */
+function collectFileStatuses(value: unknown, out: Map<string, string>): void {
+	if (Array.isArray(value)) {
+		for (const item of value) collectFileStatuses(item, out);
+		return;
+	}
+	if (!value || typeof value !== "object") return;
+	const record = value as Record<string, unknown>;
+	if (
+		typeof record.id === "string" &&
+		record.id.startsWith("file-") &&
+		typeof record.status === "string"
+	) {
+		out.set(record.id, record.status);
+	}
+	for (const child of Object.values(record)) collectFileStatuses(child, out);
+}
+
+/**
+ * Paste `text` into the composer the way Ctrl+V does. chat.deepseek.com turns
+ * a pasted text over a few thousand chars into an attached .txt file: it
+ * uploads it (`file/upload_file`) and polls `file/fetch_files` until the file
+ * is parsed. Resolves true once every pasted file reports SUCCESS, false when
+ * the page kept the paste as plain text (nothing attached, nothing changed),
+ * so the caller can type the prompt instead. Requires `Network.enable`.
+ */
+async function attachPromptAsFile(input: {
+	cdp: CdpClient;
+	sessionId: string;
+	text: string;
+	debugLog: (message: string) => void;
+}): Promise<boolean> {
+	const { cdp, sessionId, text, debugLog } = input;
+	const fileRequests = new Set<string>();
+	const statuses = new Map<string, string>();
+	const onResponse = (event: any, eventSessionId?: string) => {
+		if (eventSessionId !== sessionId) return;
+		const url: string = event.response?.url ?? "";
+		if (/\/api\/v0\/file\/(upload_file|fetch_files)/.test(url)) {
+			fileRequests.add(event.requestId);
+		}
+	};
+	const onFinished = async (event: any, eventSessionId?: string) => {
+		if (eventSessionId !== sessionId || !fileRequests.has(event.requestId)) {
+			return;
+		}
+		try {
+			const { body, base64Encoded } = await cdp.send(
+				"Network.getResponseBody",
+				{ requestId: event.requestId },
+				sessionId,
+			);
+			const raw = base64Encoded
+				? Buffer.from(body, "base64").toString("utf-8")
+				: body;
+			collectFileStatuses(JSON.parse(raw), statuses);
+		} catch {
+			// A body we cannot read just means waiting for the next poll.
+		}
+	};
+	cdp.on("Network.responseReceived", onResponse);
+	cdp.on("Network.loadingFinished", onFinished);
+	try {
+		const pasted = await cdp.send(
+			"Runtime.evaluate",
+			{
+				expression: `(() => {
+  const areas = [...document.querySelectorAll('textarea')];
+  const ta = areas.find((t) => t.getAttribute('placeholder')) || areas[0];
+  if (!ta) return false;
+  ta.focus();
+  const dt = new DataTransfer();
+  dt.setData('text/plain', ${JSON.stringify(text)});
+  return !ta.dispatchEvent(new ClipboardEvent('paste', { clipboardData: dt, bubbles: true, cancelable: true }));
+})()`,
+				returnByValue: true,
+			},
+			sessionId,
+		);
+		if (pasted.result?.value !== true) {
+			debugLog("paste was not turned into a file; typing the prompt instead");
+			return false;
+		}
+		const deadline = Date.now() + PASTE_FILE_READY_TIMEOUT_MS;
+		while (Date.now() < deadline) {
+			const all = [...statuses.values()];
+			const failed = all.find((s) => /fail|error/i.test(s));
+			if (failed) {
+				throw new Error(
+					`DeepSeek Web v2: the pasted prompt file could not be read (status ${failed}).`,
+				);
+			}
+			if (all.length > 0 && all.every((s) => s === "SUCCESS")) {
+				debugLog(`prompt attached as a file (${text.length} chars)`);
+				return true;
+			}
+			await sleep(250);
+		}
+		// Nothing was sent; the caller's recovery reloads the chat and resends.
+		throw new ComposerSendNotStartedError(
+			"DeepSeek Web v2: the pasted prompt file was not ready within " +
+				`${PASTE_FILE_READY_TIMEOUT_MS / 1000}s.`,
+		);
+	} finally {
+		cdp.off("Network.responseReceived", onResponse);
+		cdp.off("Network.loadingFinished", onFinished);
+	}
+}
+
 // ── Completion capture (Network domain — mirrors browser.py page.on("response")) ─
 
 /**
@@ -173,13 +299,31 @@ export async function streamCompletionFromPage(input: {
 		debugLog(
 			`sending prompt (${prompt.length} chars, model=${modelType}, deepThinking=${String(deepThinking)})`,
 		);
+		// A long prompt goes in as an attached file and only a pointer to it is
+		// typed — the same thing a person gets by pasting a whole paper.
+		const markerAt = prompt.indexOf(ATTACH_MARKER);
+		const head = markerAt >= 0 ? prompt.slice(0, markerAt).trim() : "";
+		const body =
+			markerAt >= 0
+				? prompt.slice(markerAt + ATTACH_MARKER.length).trim()
+				: prompt;
+		const attached =
+			config.pasteAsFileChars > 0 &&
+			body.length > config.pasteAsFileChars &&
+			(await attachPromptAsFile({ cdp, sessionId, text: body, debugLog }));
+		const typed = attached
+			? head || PASTED_FILE_MESSAGE
+			: markerAt >= 0
+				? // A trailing marker with nothing after it means "type all of this".
+					[head, body].filter(Boolean).join("\n\n")
+				: prompt;
 		// Fire-and-forget page script (mirrors the reference sendmessage.js) —
 		// typing and the send click happen in setTimeout callbacks after this
 		// evaluate returns, so we verify from the Node side below.
 		await cdp.send(
 			"Runtime.evaluate",
 			{
-				expression: buildSendScript(prompt, { modelType, deepThinking }),
+				expression: buildSendScript(typed, { modelType, deepThinking }),
 				returnByValue: true,
 				awaitPromise: true,
 			},
@@ -200,7 +344,7 @@ export async function streamCompletionFromPage(input: {
 				sessionId,
 			);
 			const value: string = r.result?.value ?? "";
-			if (value === prompt) sawTyped = true;
+			if (value === typed) sawTyped = true;
 			if (sawTyped && value === "") break; // typed, then submitted (cleared)
 			await sleep(100);
 		}
@@ -211,7 +355,7 @@ export async function streamCompletionFromPage(input: {
 			// Throwing here is what produced the "browser answered, terminal hung"
 			// reports, so confirm against the page before giving up: if the prompt's
 			// own tail is on screen, it was sent and the reply is on its way.
-			const tail = prompt.trim().slice(-80).replace(/\s+/g, " ").trim();
+			const tail = typed.trim().slice(-80).replace(/\s+/g, " ").trim();
 			if (tail.length >= 16) {
 				const onPage = await cdp.send(
 					"Runtime.evaluate",
