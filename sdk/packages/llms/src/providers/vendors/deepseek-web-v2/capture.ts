@@ -9,6 +9,11 @@ import {
 import { isAbortError } from "../tool-pipeline/abort";
 import { confirmChatLocation } from "../tool-pipeline/confirm-chat-location";
 import {
+	buildPasteScript,
+	splitAttachment,
+	typedMessage,
+} from "../tool-pipeline/paste-attachment";
+import {
 	type CdpClient,
 	connectBrowser,
 	ensureDeepSeekPage,
@@ -35,17 +40,6 @@ import {
 import { buildSendScript, resolveV2ModelOptions } from "./send-script";
 
 // ── Long prompts as an attached file ──────────────────────────────────────────
-
-/**
- * A prompt may hold this line to say which part is the attachment: the text
- * before it is typed as the message, the text after it goes in as the file.
- * Without it the whole prompt is the file and `PASTED_FILE_MESSAGE` is typed.
- */
-export const ATTACH_MARKER = "<<<ATTACH>>>";
-
-/** Typed as the message when the prompt itself went in as an attached file. */
-export const PASTED_FILE_MESSAGE =
-	"My full message is in the attached file. Read all of it and follow the instructions in it.";
 
 /** How long DeepSeek gets to upload and parse a pasted file. */
 const PASTE_FILE_READY_TIMEOUT_MS = 90_000;
@@ -116,15 +110,10 @@ async function attachPromptAsFile(input: {
 		const pasted = await cdp.send(
 			"Runtime.evaluate",
 			{
-				expression: `(() => {
-  const areas = [...document.querySelectorAll('textarea')];
-  const ta = areas.find((t) => t.getAttribute('placeholder')) || areas[0];
-  if (!ta) return false;
-  ta.focus();
-  const dt = new DataTransfer();
-  dt.setData('text/plain', ${JSON.stringify(text)});
-  return !ta.dispatchEvent(new ClipboardEvent('paste', { clipboardData: dt, bubbles: true, cancelable: true }));
-})()`,
+				expression: buildPasteScript(
+					"[...document.querySelectorAll('textarea')].find((t) => t.getAttribute('placeholder')) || document.querySelector('textarea')",
+					text,
+				),
 				returnByValue: true,
 			},
 			sessionId,
@@ -301,22 +290,17 @@ export async function streamCompletionFromPage(input: {
 		);
 		// A long prompt goes in as an attached file and only a pointer to it is
 		// typed — the same thing a person gets by pasting a whole paper.
-		const markerAt = prompt.indexOf(ATTACH_MARKER);
-		const head = markerAt >= 0 ? prompt.slice(0, markerAt).trim() : "";
-		const body =
-			markerAt >= 0
-				? prompt.slice(markerAt + ATTACH_MARKER.length).trim()
-				: prompt;
+		const split = splitAttachment(prompt);
 		const attached =
 			config.pasteAsFileChars > 0 &&
-			body.length > config.pasteAsFileChars &&
-			(await attachPromptAsFile({ cdp, sessionId, text: body, debugLog }));
-		const typed = attached
-			? head || PASTED_FILE_MESSAGE
-			: markerAt >= 0
-				? // A trailing marker with nothing after it means "type all of this".
-					[head, body].filter(Boolean).join("\n\n")
-				: prompt;
+			split.body.length > config.pasteAsFileChars &&
+			(await attachPromptAsFile({
+				cdp,
+				sessionId,
+				text: split.body,
+				debugLog,
+			}));
+		const typed = typedMessage(prompt, split, attached);
 		// Fire-and-forget page script (mirrors the reference sendmessage.js) —
 		// typing and the send click happen in setTimeout callbacks after this
 		// evaluate returns, so we verify from the Node side below.

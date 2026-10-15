@@ -7,6 +7,11 @@ import type { BasicLogger } from "@cline/shared";
 import { estimateTokens } from "@cline/shared";
 import { computeSendDelay, isRateLimitText } from "../deepseek-web-v2";
 import { abortableSleep, abortRace } from "../tool-pipeline/abort";
+import {
+	buildPasteScript,
+	splitAttachment,
+	typedMessage,
+} from "../tool-pipeline/paste-attachment";
 import type { CdpClient } from "./browser";
 import { chatgptNetworkEnabledSessions } from "./browser";
 import {
@@ -30,6 +35,145 @@ interface NetworkResponseEvent {
 
 interface LoadingFinishedEvent {
 	requestId?: string;
+}
+
+interface LoadingFailedEvent {
+	requestId?: string;
+	errorText?: string;
+}
+
+interface DataReceivedEvent {
+	requestId?: string;
+	/** Base64 chunk; present only once `Network.streamResourceContent` is on. */
+	data?: string;
+}
+
+function decodeBase64(data: string | undefined): string {
+	return data ? Buffer.from(data, "base64").toString("utf-8") : "";
+}
+
+interface RequestWillBeSentEvent {
+	request?: { url?: string };
+	requestId?: string;
+}
+
+// ── Long prompts as a "Pasted text" attachment ────────────────────────────────
+
+/** The composer: div#prompt-textarea before 2026, a ProseMirror textbox since. */
+const CHATGPT_EDITOR_EXPR =
+	"document.querySelector('#prompt-textarea') || document.querySelector('.ProseMirror[contenteditable=\"true\"]') || document.querySelector('div[contenteditable=\"true\"][role=\"textbox\"]')";
+
+/** How long chatgpt.com gets to start uploading a paste before it counts as plain text. */
+const PASTE_UPLOAD_START_MS = 4_000;
+/** How long the upload and processing of a pasted attachment may take. */
+const PASTE_FILE_READY_TIMEOUT_MS = 120_000;
+
+/**
+ * Paste `text` into the composer the way Ctrl+V does. Past some length (6k
+ * chars stays text, 20k does not) chatgpt.com turns the paste into a "Pasted
+ * text" attachment: `POST /backend-api/files`, a PUT of the blob, then
+ * `POST /backend-api/files/process_upload_stream`, whose stream ends when the
+ * file is processed. Resolves true once that stream finishes, false when no
+ * upload started — the paste went into the editor as text, and the send
+ * script's select-all-and-type replaces it with the full prompt.
+ */
+async function attachPromptToChatGPT(input: {
+	cdp: CdpClient;
+	cdpSessionId: string;
+	text: string;
+	debugLog: (message: string) => void;
+}): Promise<boolean> {
+	const { cdp, cdpSessionId, text, debugLog } = input;
+	let uploadStarted = false;
+	let processRequestId: string | undefined;
+	let processed = false;
+	let failure: string | undefined;
+	const onRequest = (
+		event: RequestWillBeSentEvent,
+		eventSessionId?: string,
+	) => {
+		if (eventSessionId !== cdpSessionId) return;
+		const url: string = event.request?.url ?? "";
+		if (url.includes("/backend-api/files")) uploadStarted = true;
+		if (url.includes("/backend-api/files/process_upload_stream")) {
+			processRequestId = event.requestId;
+		}
+	};
+	const onResponse = (event: NetworkResponseEvent, eventSessionId?: string) => {
+		if (eventSessionId !== cdpSessionId) return;
+		const url: string = event.response?.url ?? "";
+		const status: number = event.response?.status ?? 0;
+		if (url.includes("/backend-api/files") && status >= 400) {
+			failure = `HTTP ${status} from ${url.split("?")[0]}`;
+		}
+	};
+	const onFinished = async (
+		event: LoadingFinishedEvent,
+		eventSessionId?: string,
+	) => {
+		if (eventSessionId !== cdpSessionId) return;
+		if (!processRequestId || event.requestId !== processRequestId) return;
+		try {
+			const { body, base64Encoded } = await cdp.send(
+				"Network.getResponseBody",
+				{ requestId: event.requestId },
+				cdpSessionId,
+			);
+			const raw = base64Encoded
+				? Buffer.from(body, "base64").toString("utf-8")
+				: body;
+			const failedEvent = /"event"\s*:\s*"[^"]*(fail|error)[^"]*"/i.exec(raw);
+			if (failedEvent) failure = failedEvent[0];
+		} catch {
+			// The stream ending is the signal; an unreadable body is not a failure.
+		}
+		processed = true;
+	};
+	cdp.on("Network.requestWillBeSent", onRequest);
+	cdp.on("Network.responseReceived", onResponse);
+	cdp.on("Network.loadingFinished", onFinished);
+	try {
+		const pasted = await cdp.send(
+			"Runtime.evaluate",
+			{
+				expression: buildPasteScript(CHATGPT_EDITOR_EXPR, text),
+				returnByValue: true,
+			},
+			cdpSessionId,
+		);
+		if (pasted.result?.value !== true) {
+			debugLog("paste not handled by the page; typing the prompt instead");
+			return false;
+		}
+		const startDeadline = Date.now() + PASTE_UPLOAD_START_MS;
+		while (!uploadStarted && Date.now() < startDeadline) {
+			await new Promise((r) => setTimeout(r, 200));
+		}
+		if (!uploadStarted) {
+			debugLog("paste stayed as text (no upload); typing the prompt instead");
+			return false;
+		}
+		const deadline = Date.now() + PASTE_FILE_READY_TIMEOUT_MS;
+		while (!processed && !failure && Date.now() < deadline) {
+			await new Promise((r) => setTimeout(r, 250));
+		}
+		if (failure) {
+			throw new Error(
+				`ChatGPT Web: the pasted prompt attachment failed (${failure}).`,
+			);
+		}
+		if (!processed) {
+			throw new Error(
+				`ChatGPT Web: the pasted prompt attachment was not ready within ${PASTE_FILE_READY_TIMEOUT_MS / 1000}s.`,
+			);
+		}
+		debugLog(`prompt attached as pasted text (${text.length} chars)`);
+		return true;
+	} finally {
+		cdp.off("Network.requestWillBeSent", onRequest);
+		cdp.off("Network.responseReceived", onResponse);
+		cdp.off("Network.loadingFinished", onFinished);
+	}
 }
 
 // ── Send and capture (CDP Network domain — mirrors deepseek-web-v2) ────────────
@@ -57,6 +201,8 @@ export async function sendAndCapture(
 
 	let completionRequestId: string | undefined;
 	let capturedBody = "";
+	let streamedHead = "";
+	const streamedChunks: string[] = [];
 	let bodyResolve: (() => void) | undefined;
 	const bodyCaptured = new Promise<void>((resolve) => {
 		bodyResolve = resolve;
@@ -80,35 +226,77 @@ export async function sendAndCapture(
 		if (!mimeType.includes("text/event-stream")) return;
 		completionRequestId = event.requestId;
 		debugLog(`completion response received (${url})`);
+		// Since late 2026 chatgpt.com ends the stream by ABORTING it
+		// (`loadingFailed net::ERR_ABORTED`) once its WebSocket reports the turn
+		// complete, so `loadingFinished` never fires and the body may be gone.
+		// Ask Chrome to hand over the stream as it arrives, so the reply is in
+		// hand however the request ends.
+		cdp
+			.send(
+				"Network.streamResourceContent",
+				{ requestId: event.requestId },
+				cdpSessionId,
+			)
+			.then((r: { bufferedData?: string }) => {
+				streamedHead = decodeBase64(r?.bufferedData);
+			})
+			.catch(() => {
+				// Older Chrome: only the getResponseBody path below is available.
+			});
+	};
+	// Chunks delivered after `streamResourceContent` took over the stream.
+	const onDataReceived = (
+		event: DataReceivedEvent,
+		eventSessionId?: string,
+	) => {
+		if (eventSessionId !== cdpSessionId) return;
+		if (event.requestId !== completionRequestId || !event.data) return;
+		streamedChunks.push(decodeBase64(event.data));
+	};
+	const finishCapture = async (requestId: string, how: string) => {
+		debugLog(`completion stream ${how} — reading it`);
+		try {
+			const { body, base64Encoded } = await cdp.send(
+				"Network.getResponseBody",
+				{ requestId },
+				cdpSessionId,
+			);
+			capturedBody = base64Encoded
+				? Buffer.from(body, "base64").toString("utf-8")
+				: body;
+		} catch (err) {
+			capturedBody = streamedHead + streamedChunks.join("");
+			if (!capturedBody) {
+				logger?.error?.(
+					`[chatgpt-web] failed to read response body: ${err instanceof Error ? err.message : String(err)}`,
+				);
+			}
+		} finally {
+			debugLog(`completion body captured (${capturedBody.length} chars)`);
+			bodyResolve?.();
+		}
 	};
 	const onLoadingFinished = async (
 		event: LoadingFinishedEvent,
 		eventSessionId?: string,
 	) => {
 		if (eventSessionId !== cdpSessionId) return;
-		if (event.requestId !== completionRequestId) return;
-		debugLog("completion body fully written — reading it");
-		try {
-			const { body, base64Encoded } = await cdp.send(
-				"Network.getResponseBody",
-				{ requestId: event.requestId },
-				cdpSessionId,
-			);
-			capturedBody = base64Encoded
-				? Buffer.from(body, "base64").toString("utf-8")
-				: body;
-			debugLog(`completion body captured (${capturedBody.length} chars)`);
-		} catch (err) {
-			logger?.error?.(
-				`[chatgpt-web] failed to read response body: ${err instanceof Error ? err.message : String(err)}`,
-			);
-		} finally {
-			bodyResolve?.();
-		}
+		if (!event.requestId || event.requestId !== completionRequestId) return;
+		await finishCapture(event.requestId, "finished");
+	};
+	const onLoadingFailed = async (
+		event: LoadingFailedEvent,
+		eventSessionId?: string,
+	) => {
+		if (eventSessionId !== cdpSessionId) return;
+		if (!event.requestId || event.requestId !== completionRequestId) return;
+		await finishCapture(event.requestId, `ended (${event.errorText})`);
 	};
 
 	cdp.on("Network.responseReceived", onResponseReceived);
+	cdp.on("Network.dataReceived", onDataReceived);
 	cdp.on("Network.loadingFinished", onLoadingFinished);
+	cdp.on("Network.loadingFailed", onLoadingFailed);
 
 	try {
 		// Enable the Network domain ONCE per CDP session and leave it on for
@@ -137,10 +325,23 @@ export async function sendAndCapture(
 		// 30s default and failed the turn with `CDP timeout: Runtime.evaluate`.
 		// Give it the same budget as the reply itself, so the one knob a user
 		// can turn (CHATGPT_WEB_RESPONSE_TIMEOUT_MS) covers both halves.
+		// A long prompt goes in as a "Pasted text" attachment and only a
+		// pointer to it is typed — what a person gets by pasting a whole file.
+		const split = splitAttachment(prompt);
+		const attached =
+			config.pasteAsFileChars > 0 &&
+			split.body.length > config.pasteAsFileChars &&
+			(await attachPromptToChatGPT({
+				cdp,
+				cdpSessionId,
+				text: split.body,
+				debugLog,
+			}));
+		const typed = typedMessage(prompt, split, attached);
 		await cdp.send(
 			"Runtime.evaluate",
 			{
-				expression: buildSendScript(prompt, sendOptions),
+				expression: buildSendScript(typed, sendOptions),
 				returnByValue: true,
 				awaitPromise: true,
 			},
@@ -247,7 +448,9 @@ export async function sendAndCapture(
 		// enabled for the session — disabling it here was the other half of the
 		// per-turn toggle that made capture flaky.
 		cdp.off("Network.responseReceived", onResponseReceived);
+		cdp.off("Network.dataReceived", onDataReceived);
 		cdp.off("Network.loadingFinished", onLoadingFinished);
+		cdp.off("Network.loadingFailed", onLoadingFailed);
 	}
 }
 

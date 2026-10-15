@@ -29,11 +29,19 @@ async function setChatGPTThink(enable) {
 }
 
 // ---------- 2. Set text in ProseMirror contenteditable ----------
+// The composer used to be div#prompt-textarea; the 2026 UI dropped the id and
+// left a ProseMirror div with role="textbox" (aria-label "Ask ChatGPT").
+function findChatGPTEditor() {
+    return document.querySelector('#prompt-textarea')
+        || document.querySelector('.ProseMirror[contenteditable="true"]')
+        || document.querySelector('div[contenteditable="true"][role="textbox"]');
+}
+
 async function setChatGPTInput(message) {
     console.log('🔍 Step 1: Looking for input editor...');
-    const editor = document.querySelector('#prompt-textarea');
+    const editor = findChatGPTEditor();
     if (!editor) {
-        console.error('❌ Input editor #prompt-textarea not found');
+        console.error('❌ Input editor not found');
         return false;
     }
     console.log('✅ Found editor:', editor);
@@ -124,7 +132,7 @@ async function clickChatGPTSend() {
 
     if (!sendBtn || sendBtn.disabled) {
         console.warn('⚠️ Send button not found or disabled, trying Enter key');
-        const editor = document.querySelector('#prompt-textarea') || document.querySelector('div[contenteditable="true"]');
+        const editor = findChatGPTEditor() || document.querySelector('div[contenteditable="true"]');
         if (editor) {
             // Try both keydown and keypress events
             editor.dispatchEvent(new KeyboardEvent('keydown', {

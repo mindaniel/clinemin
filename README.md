@@ -169,7 +169,7 @@ model keeps its memory and only the new message is sent. Notes:
 - Worked example: the PDF idea-map scripts in
   `OneDrive/.../Data/docs/brainstorm/` (`common.py` drives this).
 
-### Long prompts as attached files (DeepSeek web)
+### Long prompts as attached files (DeepSeek and ChatGPT web)
 
 Typing a 100k-char prompt into chat.deepseek.com works, but pasting it is what a
 person does, and the page turns a long paste (over ~4k chars) into an attached
@@ -185,7 +185,28 @@ provider waits until `file/upload_file` / `file/fetch_files` report the file as
 prompt splits it: text before is typed as the message, text after becomes the
 file (nothing after it = type everything). Default is 0 (off): always type.
 Code: `sdk/packages/llms/src/providers/vendors/deepseek-web-v2/capture.ts`
-(`attachPromptAsFile`).
+(`attachPromptAsFile`); the marker and paste helpers are shared in
+`tool-pipeline/paste-attachment.ts`.
+
+ChatGPT web does the same with `CHATGPT_WEB_PASTE_AS_FILE_CHARS` (or
+`"pasteAsFileChars"` in `~/.cline/chatgpt-web/config.json`). chatgpt.com turns a
+paste into a "Pasted text" attachment only past ~6-20k chars, and only while the
+account has `file_upload` allowance left: a Free account gets 5 a day, after
+which a long paste stays plain text. The provider notices that (no
+`/backend-api/files` upload starts) and types the prompt instead. Ready signal:
+the `files/process_upload_stream` response ends. Code:
+`chatgpt-web/capture.ts` (`attachPromptToChatGPT`).
+
+Things chatgpt.com changed in late 2026 that the provider now handles: the
+composer lost its `#prompt-textarea` id (now a `.ProseMirror` div with
+`role="textbox"`), and the reply stream is ended by an abort
+(`loadingFailed net::ERR_ABORTED`) instead of finishing, so the body is read via
+`Network.streamResourceContent` chunks.
+
+To see what a page does, the probes used during development attach to the
+provider's Chrome over CDP (`http://127.0.0.1:<debugPort>/json`, DeepSeek 9232,
+ChatGPT 9234 with the default profile offsets) and log `Network.*` events while
+pasting, without sending.
 
 ## License
 

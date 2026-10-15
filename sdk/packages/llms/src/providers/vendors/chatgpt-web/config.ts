@@ -71,6 +71,11 @@ export function resolveChatGPTWebV2Config(): ChatGPTWebV2RuntimeConfig {
 			fileConfig.toolTurnExtraMinMs ?? DEFAULT_TOOL_TURN_EXTRA_MIN_MS,
 		toolTurnExtraMaxMs:
 			fileConfig.toolTurnExtraMaxMs ?? DEFAULT_TOOL_TURN_EXTRA_MAX_MS,
+		pasteAsFileChars:
+			Number(
+				process.env.CHATGPT_WEB_PASTE_AS_FILE_CHARS ??
+					fileConfig.pasteAsFileChars,
+			) || 0,
 	};
 }
 
@@ -88,6 +93,14 @@ export interface ChatGPTWebV2RuntimeConfig {
 	maxSendDelayMs: number;
 	toolTurnExtraMinMs: number;
 	toolTurnExtraMaxMs: number;
+	/**
+	 * Prompts longer than this many chars are pasted into the composer, which
+	 * chatgpt.com turns into a "Pasted text" attachment once the paste is long
+	 * enough (somewhere between 6k and 20k chars), and a one-line pointer is
+	 * typed as the message. 0 (the default) always types the prompt.
+	 * Env: CHATGPT_WEB_PASTE_AS_FILE_CHARS.
+	 */
+	pasteAsFileChars: number;
 }
 
 export interface ChatSessionRecord {
