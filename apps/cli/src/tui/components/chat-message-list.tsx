@@ -52,6 +52,26 @@ function useElapsedSeconds(active: boolean): number {
 	return elapsedSec;
 }
 
+/**
+ * Entries drawn at once. Every entry is re-laid-out (markdown included) on each
+ * render, so a long session made the TUI lag; older entries are left out and
+ * a line says how many. The full history stays in the session file.
+ */
+export const MAX_RENDERED_ENTRIES = 80;
+
+// Its own component so the 200 ms tick re-renders this line, not the transcript.
+function ThinkingLine(props: { accent: string }) {
+	const elapsedSec = useElapsedSeconds(true);
+	return (
+		<box flexDirection="row" gap={1}>
+			<spinner name="dots" color={props.accent} />
+			<text fg="gray">
+				Thinking... {elapsedSec.toFixed(1)}s (esc to cancel)
+			</text>
+		</box>
+	);
+}
+
 export const ChatMessageList = forwardRef<
 	TranscriptScrollHandle,
 	ChatMessageListProps
@@ -62,7 +82,9 @@ export const ChatMessageList = forwardRef<
 	const accent = getModeAccent(props.uiMode ?? "act", terminalTheme);
 	const userSubmissionScrollKey =
 		lastEntry?.kind === "user_submitted" ? props.entries.length : 0;
-	const thinkingElapsedSec = useElapsedSeconds(!!props.isStreaming);
+	const hiddenCount = Math.max(0, props.entries.length - MAX_RENDERED_ENTRIES);
+	const visibleEntries =
+		hiddenCount > 0 ? props.entries.slice(hiddenCount) : props.entries;
 
 	const runTranscriptCommand = useCallback((command: TranscriptCommand) => {
 		const scrollbox = scrollboxRef.current;
@@ -122,8 +144,15 @@ export const ChatMessageList = forwardRef<
 			stickyStart="bottom"
 		>
 			<box flexDirection="column" paddingX={1} paddingY={1} gap={1}>
-				{props.entries.map((entry, i) => {
-					const key = `${i}:${entry.kind}`;
+				{hiddenCount > 0 && (
+					<text fg="gray">
+						{hiddenCount} earlier {hiddenCount === 1 ? "entry" : "entries"}{" "}
+						hidden
+					</text>
+				)}
+				{visibleEntries.map((entry, i) => {
+					// Absolute index, so keys stay put as the window slides.
+					const key = `${hiddenCount + i}:${entry.kind}`;
 					// Single source of truth for the entry's mode: the glyph accent
 					// and the markdown accent must never diverge.
 					const entryMode = entry.mode ?? props.uiMode ?? "act";
@@ -140,14 +169,7 @@ export const ChatMessageList = forwardRef<
 						/>
 					);
 				})}
-				{props.isStreaming && (
-					<box flexDirection="row" gap={1}>
-						<spinner name="dots" color={accent} />
-						<text fg="gray">
-							Thinking... {thinkingElapsedSec.toFixed(1)}s (esc to cancel)
-						</text>
-					</box>
-				)}
+				{props.isStreaming && <ThinkingLine accent={accent} />}
 			</box>
 		</scrollbox>
 	);
