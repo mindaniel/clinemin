@@ -199,6 +199,11 @@ export {
 	setActiveBrowserProfile,
 	WEB_PROVIDER_BROWSERS,
 } from "./providers/vendors/tool-pipeline/browser-profiles";
+// Hidden/visible Chrome for the web providers (the TUI's Tab key).
+export {
+	readHeadlessPreference,
+	writeHeadlessPreference,
+} from "./providers/vendors/tool-pipeline/browser-visibility";
 // Explicit chat routing (used by compaction to send its summarize request
 // into the web chat that actually holds the conversation).
 export {

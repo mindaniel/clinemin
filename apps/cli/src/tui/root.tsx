@@ -12,6 +12,7 @@ import {
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { RepoStatus } from "../utils/repo-status";
 import { readRepoStatus } from "../utils/repo-status";
+import { toggleBrowserHeadless } from "./browser-mode";
 import type { TranscriptScrollHandle } from "./components/chat-message-list";
 import {
 	CheckpointConfirmContent,
@@ -190,6 +191,17 @@ function App(props: TuiProps) {
 		session.toggleMode();
 		void props.onModeChange(newMode);
 	}, [props, session]);
+
+	// Tab: hidden or visible Chrome for the web providers (plan/act stays
+	// in the config panel).
+	const toggleBrowserMode = useCallback(() => {
+		const hidden = toggleBrowserHeadless();
+		showToast(
+			hidden
+				? "Browser: headless (applies next turn)"
+				: "Browser: normal (applies next turn)",
+		);
+	}, [showToast]);
 
 	const handleModelChange = useCallback(async () => {
 		await props.onModelChange();
@@ -873,7 +885,7 @@ function App(props: TuiProps) {
 		setInputValue: promptInput.setInputValue,
 		onAbort: props.onAbort,
 		onExit: exitCline,
-		onToggleMode: toggleMode,
+		onToggleMode: toggleBrowserMode,
 		onClearConversation: clearConversation,
 		onRestoreCheckpoint: openCheckpointRestore,
 		onOpenCommandPalette: openCommandPalette,
@@ -911,7 +923,7 @@ function App(props: TuiProps) {
 		onQueuedPromptEditConfirm: (id: string, prompt: string) => {
 			void saveQueuedPromptEdit(id, prompt);
 		},
-		onToggleMode: toggleMode,
+		onToggleMode: toggleBrowserMode,
 		runtimeInteraction,
 		onResolveToolApproval: runtimeBridge.resolveToolApproval,
 		onResolveAskQuestion: runtimeBridge.resolveAskQuestion,

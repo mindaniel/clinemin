@@ -4,6 +4,7 @@ import {
 	shouldShowCliUsageCost,
 	shouldShowCliUsageCoveredBySubscription,
 } from "../../utils/usage-cost-display";
+import { useBrowserHeadless } from "../browser-mode";
 import {
 	useTerminalBackground,
 	useTerminalTheme,
@@ -276,7 +277,6 @@ export function StatusBar(props: StatusBarProps) {
 		webSessionStatus,
 		ttftMs,
 		tokensPerSecond,
-		uiMode,
 		autoApproveAll,
 		workspaceName,
 		gitBranch,
@@ -285,6 +285,7 @@ export function StatusBar(props: StatusBarProps) {
 	} = props;
 
 	const { width } = useTerminalDimensions();
+	const headless = useBrowserHeadless();
 	const terminalBg = useTerminalBackground();
 	const terminalTheme = useTerminalTheme();
 	const defaultFg = getDefaultForeground(terminalBg);
@@ -324,10 +325,10 @@ export function StatusBar(props: StatusBarProps) {
 			? Math.min(width, HOME_VIEW_MAX_WIDTH) - 2
 			: width - 2;
 
-	// Row 1 layout: [model + context info] .... [Plan/Act toggle]
+	// Row 1 layout: [model + context info] .... [Normal/Headless browser toggle]
 	// When the full row doesn't fit, context info drops to its own row 2.
 	// Model ID truncates with "..." before wrapping; toggle stays right-aligned.
-	const toggleWidth = 20;
+	const toggleWidth = 26;
 	const usageText = formatStatusBarUsageText({
 		totalTokens,
 		totalCost,
@@ -388,11 +389,11 @@ export function StatusBar(props: StatusBarProps) {
 					flexShrink={0}
 					onMouseDown={onToggleMode}
 				>
-					<text fg={uiMode === "plan" ? planAccent : "gray"}>
-						{uiMode === "plan" ? "●" : "○"} Plan
+					<text fg={headless ? "gray" : actAccent}>
+						{headless ? "○" : "●"} Normal
 					</text>
-					<text fg={uiMode === "act" ? actAccent : "gray"}>
-						{uiMode === "act" ? "●" : "○"} Act
+					<text fg={headless ? planAccent : "gray"}>
+						{headless ? "●" : "○"} Headless
 					</text>
 					<text fg="gray">(Tab)</text>
 				</box>

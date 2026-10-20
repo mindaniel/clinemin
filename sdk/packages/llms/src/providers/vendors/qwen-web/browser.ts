@@ -8,12 +8,20 @@ import {
 } from "../tool-pipeline/browser-path";
 import { registerLaunchedBrowser } from "../tool-pipeline/browser-processes";
 import {
+	closeBrowserIfModeChanged,
+	resolveHeadless,
+} from "../tool-pipeline/browser-visibility";
+import {
 	CdpClient,
 	connectCdp,
 	isEndpointUp,
 	waitForEndpoint,
 } from "../tool-pipeline/cdp-client";
-import { getPooledCdp, setPooledCdp } from "../tool-pipeline/cdp-pool";
+import {
+	dropPooledCdp,
+	getPooledCdp,
+	setPooledCdp,
+} from "../tool-pipeline/cdp-pool";
 import {
 	CONFIG_DIR,
 	QWEN_WEB_URL,
@@ -30,6 +38,10 @@ export async function connectBrowser(
 	// Connections are pooled per port, so two sessions on two profiles each
 	// keep their own socket. A single cached slot made them close each
 	// other's on every turn. See tool-pipeline/cdp-pool.ts.
+	// Tab in the TUI switched hidden/visible: restart Chrome in the new mode.
+	if (await closeBrowserIfModeChanged(config.debugPort)) {
+		dropPooledCdp("qwen-web", config.debugPort);
+	}
 	const pooled = getPooledCdp<CdpClient>("qwen-web", config.debugPort);
 	if (pooled) return pooled;
 
@@ -69,7 +81,7 @@ export async function connectBrowser(
 		"--remote-allow-origins=*",
 		QWEN_WEB_URL,
 	];
-	if (config.headless) args.push("--headless=new");
+	if (resolveHeadless(config.headless)) args.push("--headless=new");
 
 	const child = spawn(executablePath, args, {
 		detached: true,

@@ -19,6 +19,10 @@ import {
 } from "../tool-pipeline/browser-path";
 import { registerLaunchedBrowser } from "../tool-pipeline/browser-processes";
 import {
+	closeBrowserIfModeChanged,
+	resolveHeadless,
+} from "../tool-pipeline/browser-visibility";
+import {
 	type CdpClient,
 	connectCdp as connectCdpForProvider,
 	isEndpointUp,
@@ -55,6 +59,11 @@ export async function connectBrowser(
 	config: GeminiWebV2RuntimeConfig,
 ): Promise<CdpClient> {
 	const key = `${config.debugPort}`;
+	// Tab in the TUI switched hidden/visible: restart Chrome in the new mode.
+	if (await closeBrowserIfModeChanged(config.debugPort)) {
+		cdpConnections.get(key)?.close();
+		cdpConnections.delete(key);
+	}
 	const existing = cdpConnections.get(key);
 	if (existing?.isOpen()) {
 		return existing;
@@ -92,7 +101,7 @@ export async function connectBrowser(
 		"--remote-allow-origins=*",
 		GEMINI_WEB_URL,
 	];
-	if (config.headless) args.push("--headless=new");
+	if (resolveHeadless(config.headless)) args.push("--headless=new");
 
 	const child = spawn(executablePath, args, {
 		detached: true,
