@@ -61,11 +61,15 @@ export function realUserMessageKey(prompt: LanguageModelV2Prompt): string {
  *
  * Matches anywhere rather than only at the start, because a turn that
  * re-injects the system prompt puts it in front of the block.
+ *
+ * The block ends at the next labelled segment, including the current `User:`
+ * ask and a `Context summary:` block; without those two the strip ran on to
+ * the end and took the user's new message with it.
  */
 export function stripPreviousUserBlock(prompt: string): string {
 	return prompt
 		.replace(
-			/(?:^|\n\n)My last message:[\s\S]*?(?=\n\n(?:Tool result|Assistant|Note|My last message):|$)/g,
+			/(?:^|\n\n)My last message:[\s\S]*?(?=\n\n(?:Tool result|Assistant|Note|My last message|User|Context summary):|$)/g,
 			"",
 		)
 		.replace(/\n{3,}/g, "\n\n")

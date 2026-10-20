@@ -13,6 +13,7 @@ export {
 export { sha3_256Hex, solveDeepSeekPow } from "./crypto";
 export { createDeepSeekWebProviderModule } from "./model";
 export {
+	COMPACTION_SUMMARY_PREFIX,
 	DEEPSEEK_WEB_TOOL_RESULT_MAX_LINES,
 	type MessagesToPromptOptions,
 	messagesToPrompt,

@@ -85,4 +85,9 @@ describe("stripPreviousUserBlock", () => {
 			"Assistant: sure\n\nUser: the new ask",
 		);
 	});
+
+	it("stops at a directly following User: block", () => {
+		const prompt = "My last message: an older ask\n\nUser: the new ask";
+		expect(stripPreviousUserBlock(prompt)).toBe("User: the new ask");
+	});
 });

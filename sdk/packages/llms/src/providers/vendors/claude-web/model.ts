@@ -454,7 +454,11 @@ function createClaudeWebModel(
 		let promptText = buildClaudePrompt(options.prompt, isNewChat, isNewChat);
 
 		const currentUserText = realUserMessageKey(options.prompt);
-		if (currentUserText && currentUserText === lastSentUserMessage) {
+		if (
+			!isNewChat &&
+			currentUserText &&
+			currentUserText === lastSentUserMessage
+		) {
 			promptText = stripPreviousUserBlock(promptText);
 		}
 		lastSentUserMessage = currentUserText;

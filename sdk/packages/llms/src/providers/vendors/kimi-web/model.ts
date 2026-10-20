@@ -287,7 +287,8 @@ export function createKimiWebModel(
 		// `My last message:` block is dropped, so an instruction is sent
 		// once and never re-sent on each round of a tool loop. Anything the user
 		// wants restated goes through `/note`.
-		promptText = stripPreviousUserBlock(promptText);
+		// A fresh chat (e.g. after compaction) never saw it, so keep it there.
+		if (!isNewChat) promptText = stripPreviousUserBlock(promptText);
 
 		const thinkingMode =
 			(options as any).thinking === true

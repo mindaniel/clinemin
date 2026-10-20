@@ -557,7 +557,8 @@ export function createGeminiWebModel(
 		// `My last message:` block is dropped, so an instruction is sent
 		// once and never re-sent on each round of a tool loop. Anything the user
 		// wants restated goes through `/note`.
-		promptText = stripPreviousUserBlock(promptText);
+		// A fresh chat (e.g. after compaction) never saw it, so keep it there.
+		if (!isNewChat) promptText = stripPreviousUserBlock(promptText);
 
 		const functionTools = (options.tools ?? []).filter(
 			(tool): tool is LanguageModelV2FunctionTool => tool.type === "function",

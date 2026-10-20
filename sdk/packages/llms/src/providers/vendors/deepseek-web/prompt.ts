@@ -9,6 +9,9 @@ import { isSyntheticUserText } from "../tool-pipeline/continuation-note";
 
 const DEFAULT_AUTO_HISTORY_WINDOW = 20;
 
+/** Opens the user message a context compaction leaves (`buildSummaryMessage` in core). */
+export const COMPACTION_SUMMARY_PREFIX = "Context summary:";
+
 /** Loose view over any LanguageModelV2 content part for text extraction. */
 type PromptPart = {
 	type?: string;
@@ -387,9 +390,12 @@ export function messagesToPrompt(
 					// label instead of the generic prior-user label.
 					const isLastUser =
 						lastUserIndex >= 0 && absoluteIndex === lastUserIndex;
-					return isLastUser && lastUserLabel
-						? `${lastUserLabel}: ${body}`
-						: `${userLabel}: ${body}`;
+					if (isLastUser && lastUserLabel) return `${lastUserLabel}: ${body}`;
+					// The /compact summary carries its own label. Under
+					// `My last message:` the providers' dedupe stripped it,
+					// and the fresh chat got the system prompt alone.
+					if (body.startsWith(COMPACTION_SUMMARY_PREFIX)) return body;
+					return `${userLabel}: ${body}`;
 				})
 				.join("\n\n"),
 		);

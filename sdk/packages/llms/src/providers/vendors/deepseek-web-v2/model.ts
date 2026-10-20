@@ -14,6 +14,7 @@ import type {
 	GatewayResolvedProviderConfig,
 } from "@cline/shared";
 import {
+	COMPACTION_SUMMARY_PREFIX,
 	type DeepSeekWebUsageEstimate,
 	estimateDeepSeekWebUsage,
 	messagesToPrompt,
@@ -327,24 +328,14 @@ export function parseFallbackToolUses(
 }
 
 /**
- * The prefix of the auto-generated context-compaction summary user message
- * (see `buildSummaryMessage` in compacton-shared.ts). After a manual `/compact`
- * or an auto-compaction, this message becomes the first user message of the
- * working context and must NOT be dropped by the lean-conversation trimmer,
- * otherwise the fresh DeepSeek web chat would lose all prior conversation
- * context.
- *
- * Note: `metadata.kind === "compaction_summary"` does NOT survive the runtime's
- * message formatting (it is stripped before the prompt reaches the provider),
- * so the leading user message's text is the reliable signal available here.
- */
-const COMPACTION_SUMMARY_PREFIX = "Context summary:";
-
-/**
  * True when the leading user message is the auto-generated context-compaction
  * summary (its text opens with `COMPACTION_SUMMARY_PREFIX`). This identifies a
  * compaction-transition turn, where the DeepSeek web chat was reopened/refreshed
  * and must be re-seeded with the compacted context.
+ *
+ * Note: `metadata.kind === "compaction_summary"` does NOT survive the runtime's
+ * message formatting (it is stripped before the prompt reaches the provider),
+ * so the leading user message's text is the reliable signal available here.
  */
 function hasLeadingCompactionSummary(prompt: LanguageModelV2Prompt): boolean {
 	for (const message of prompt) {
@@ -506,7 +497,13 @@ export function buildLeanConversation(
 		const anchorIndex = isToolContinuationMessage(nonSystem[prevUserIndex])
 			? findPriorRealUserIndex(nonSystem, prevUserIndex)
 			: prevUserIndex;
-		if (anchorIndex >= 0) kept.push(nonSystem[anchorIndex]);
+		// After an auto-compaction mid tool loop the nearest real user message
+		// is the summary itself, already pushed above.
+		if (
+			anchorIndex >= 0 &&
+			!(hasCompactionSummary && anchorIndex === firstUserIndex)
+		)
+			kept.push(nonSystem[anchorIndex]);
 		for (let i = prevUserIndex + 1; i < nonSystem.length; i++) {
 			if (nonSystem[i].role === "tool") kept.push(nonSystem[i]);
 		}
@@ -519,7 +516,11 @@ export function buildLeanConversation(
 		// every tool result that follows it, then append the queued message as
 		// the final turn so it is sent as the new ask instead of dropped.
 		const anchorIndex = findPriorRealUserIndex(nonSystem, lastUserIndex);
-		if (anchorIndex >= 0) kept.push(nonSystem[anchorIndex]);
+		if (
+			anchorIndex >= 0 &&
+			!(hasCompactionSummary && anchorIndex === firstUserIndex)
+		)
+			kept.push(nonSystem[anchorIndex]);
 		for (let i = anchorIndex + 1; i < lastUserIndex; i++) {
 			if (nonSystem[i].role === "tool") kept.push(nonSystem[i]);
 		}
@@ -866,7 +867,8 @@ function createDeepSeekWebV2Model(
 		// `Note:` on an iteration turn — and fresh tool results are untouched
 		// because they change each iteration. Anything the user wants restated
 		// goes through `/note`.
-		const dedupedPrompt = stripPreviousUserBlock(prompt);
+		// A fresh chat (e.g. after compaction) never saw it, so keep it there.
+		const dedupedPrompt = isNewChat ? prompt : stripPreviousUserBlock(prompt);
 
 		// Bounded retry: when EVERY tool call in a reply gets rejected (e.g.
 		// invalid Python in an `editor` call), the rejection note is OUR

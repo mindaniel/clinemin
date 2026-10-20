@@ -11,6 +11,7 @@ import {
 	DEFAULT_CONTINUATION_NOTE,
 	PASTE_CARRIER_PROMPT,
 } from "../tool-pipeline/continuation-note";
+import { stripPreviousUserBlock } from "../tool-pipeline/previous-user-dedupe";
 import {
 	buildPrompt,
 	buildSendScript,
@@ -827,6 +828,49 @@ describe("deepseek-web-v2 buildPrompt (lean conversation on follow-up turns)", (
 		expect(occurrences).toBe(1);
 		expect(built).toContain("Context summary:");
 		expect(built).toContain("continue");
+	});
+
+	it("keeps the summary and the new ask through the previous-message dedupe", () => {
+		// What the provider actually sends: buildPrompt, then the dedupe that
+		// drops `My last message:` blocks. Labeled that way, the summary and
+		// the new ask were both stripped and only the system prompt went out.
+		const prompt = [
+			msg("system", "sys"),
+			msg("user", "Context summary:\n\nWe listed the Downloads folder."),
+			msg("assistant", "Read the README next."),
+			msg("user", "continue"),
+		] as never;
+		const sent = stripPreviousUserBlock(
+			buildPrompt(prompt, undefined, true, true),
+		);
+		expect(sent).toBe(
+			"sys\n\nContext summary:\n\nWe listed the Downloads folder.\n\nUser: continue",
+		);
+	});
+
+	it("sends the summary once when auto-compaction fires mid tool loop", () => {
+		// The nearest real user message before the continuation note is the
+		// summary itself; it used to go out twice.
+		const prompt = [
+			msg("system", "sys"),
+			msg("user", "Context summary:\n\nSUM"),
+			msg("assistant", "reading"),
+			{
+				role: "tool",
+				content: [
+					{
+						type: "tool-result",
+						toolCallId: "t1",
+						toolName: "run_commands",
+						output: { type: "text", value: "R1" },
+					},
+				],
+			},
+			msg("user", DEFAULT_CONTINUATION_NOTE),
+		] as never;
+		const built = buildPrompt(prompt, undefined, true, true);
+		expect(built.match(/Context summary:/g)?.length).toBe(1);
+		expect(built).toContain("R1");
 	});
 });
 
