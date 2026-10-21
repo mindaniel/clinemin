@@ -346,6 +346,20 @@ export function autoUpdateOnStartup(): void {
 	if (process.env.CLINE_NO_AUTO_UPDATE === "1") return;
 	if (!isAutoUpdateEnabledGlobally()) return;
 
+	const sourceRoot = findSourceCheckoutRoot();
+	if (sourceRoot) {
+		setTimeout(() => {
+			void (async () => {
+				const { resolveClineDir } = await import("@cline/shared/storage");
+				const { startSourceAutoUpdate } = await import("./source-auto-update");
+				startSourceAutoUpdate(sourceRoot, resolveClineDir());
+			})().catch(() => {
+				// Best-effort, silently ignore
+			});
+		}, 3_000).unref();
+		return;
+	}
+
 	const { packageName, packageManager, updateCommand } =
 		getInstallationInfo(version);
 	if (!updateCommand) return;

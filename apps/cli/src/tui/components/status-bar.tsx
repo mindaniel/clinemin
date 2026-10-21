@@ -1,5 +1,6 @@
 import type { AgentMode } from "@cline/core";
 import { useTerminalDimensions } from "@opentui/react";
+import { useSourceUpdate } from "../../commands/source-auto-update";
 import {
 	shouldShowCliUsageCost,
 	shouldShowCliUsageCoveredBySubscription,
@@ -286,6 +287,7 @@ export function StatusBar(props: StatusBarProps) {
 
 	const { width } = useTerminalDimensions();
 	const headless = useBrowserHeadless();
+	const updatedTo = useSourceUpdate();
 	const terminalBg = useTerminalBackground();
 	const terminalTheme = useTerminalTheme();
 	const defaultFg = getDefaultForeground(terminalBg);
@@ -398,6 +400,15 @@ export function StatusBar(props: StatusBarProps) {
 					<text fg="gray">(Tab)</text>
 				</box>
 			</box>
+
+			{updatedTo && (
+				<box flexDirection="row" justifyContent="flex-end">
+					<text fg={successColor}>
+						Update {updatedTo} ready, applies when cline restarts with no other
+						session running
+					</text>
+				</box>
+			)}
 
 			{speedText && (
 				<box flexDirection="row" justifyContent="flex-end">
