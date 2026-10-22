@@ -1062,10 +1062,31 @@ export class AgentTeamsRuntime {
 				`Cannot start a new run while another run is already in progress`,
 			);
 		}
+		const signal = options?.signal;
+		if (signal?.aborted) {
+			throw new DOMException("Aborted", "AbortError");
+		}
 
 		member.runningCount++;
 		member.status = "running";
 		this.emitEvent({ type: TeamMessageType.TaskStart, agentId, message });
+
+		// The manager's Escape: stop the teammate's run, and stop waiting for it
+		// even if the run is slow to notice (a web provider mid-request), so the
+		// manager's turn ends now rather than when the worker finally replies.
+		let onAbort: (() => void) | undefined;
+		const aborted = new Promise<never>((_, reject) => {
+			onAbort = () => {
+				try {
+					member.agent?.abort(new Error("Cancelled by the manager"));
+				} catch {
+					// Already stopped.
+				}
+				reject(new DOMException("Aborted", "AbortError"));
+			};
+			signal?.addEventListener("abort", onAbort, { once: true });
+		});
+		aborted.catch(() => {});
 
 		try {
 			const unreadMail = this.listMailbox(agentId, {
@@ -1076,9 +1097,10 @@ export class AgentTeamsRuntime {
 				unreadMail.length > 0
 					? `${this.buildMailboxNotification(unreadMail)}\n\n${message}`
 					: message;
-			const result = options?.continueConversation
-				? await member.agent.continue(enrichedMessage)
-				: await member.agent.run(enrichedMessage);
+			const run = options?.continueConversation
+				? member.agent.continue(enrichedMessage)
+				: member.agent.run(enrichedMessage);
+			const result = signal ? await Promise.race([run, aborted]) : await run;
 			this.emitEvent({ type: TeamMessageType.TaskEnd, agentId, result });
 			this.recordProgressStep(
 				agentId,
@@ -1105,6 +1127,7 @@ export class AgentTeamsRuntime {
 			}
 			throw err;
 		} finally {
+			if (onAbort) signal?.removeEventListener("abort", onAbort);
 			member.runningCount--;
 			if (
 				member.runningCount <= 0 &&

@@ -211,6 +211,12 @@ export interface RouteToTeammateOptions {
 	taskId?: string;
 	fromAgentId?: string;
 	continueConversation?: boolean;
+	/**
+	 * The caller's abort (the manager's Escape). Aborting it aborts the
+	 * teammate's current run and rejects at once, so a sync wait never
+	 * outlives the turn that started it.
+	 */
+	signal?: AbortSignal;
 }
 
 export enum TeamMessageType {

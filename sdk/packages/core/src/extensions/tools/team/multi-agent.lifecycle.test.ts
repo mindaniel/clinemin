@@ -115,6 +115,43 @@ describe("AgentTeamsRuntime teammate lifecycle events", () => {
 		).toBe(false);
 	});
 
+	it("stops waiting and aborts the teammate when the caller aborts", async () => {
+		const abort = vi.fn();
+		// biome-ignore lint/complexity/useArrowFunction: `new SessionRuntime(...)` requires a non-arrow callable.
+		createSessionRuntimeMock.mockImplementationOnce(function () {
+			return {
+				abort,
+				// A web provider mid-request: the run never settles on its own.
+				run: vi.fn(() => new Promise(() => {})),
+				continue: vi.fn(),
+				canStartRun: vi.fn(() => true),
+				getAgentId: vi.fn(() => "teammate-1"),
+				getConversationId: vi.fn(() => "conv-1"),
+				getMessages: vi.fn(() => []),
+				subscribeEvents: vi.fn(() => () => {}),
+			};
+		});
+		const runtime = new AgentTeamsRuntime({ teamName: "test-team" });
+		runtime.spawnTeammate({
+			agentId: "slow-worker",
+			config: {
+				providerId: "anthropic",
+				modelId: "claude-sonnet-4-5-20250929",
+				systemPrompt: "Work slowly",
+				tools: [],
+			},
+		});
+
+		const controller = new AbortController();
+		const routed = runtime.routeToTeammate("slow-worker", "do it", {
+			signal: controller.signal,
+		});
+		controller.abort();
+
+		await expect(routed).rejects.toThrow("Aborted");
+		expect(abort).toHaveBeenCalledTimes(1);
+	});
+
 	it("emits teammate_spawned with lifecycle payload", () => {
 		const events: TeamEvent[] = [];
 		// biome-ignore lint/complexity/useArrowFunction: `new SessionRuntime(...)` requires a non-arrow callable.

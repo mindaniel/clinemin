@@ -928,7 +928,7 @@ export function createAgentTeamsTools(
 			description:
 				"Route a delegated task to a teammate. Choose sync (wait) or async (run in background).",
 			inputSchema: zodToJsonSchema(TeamRunTaskInputSchema),
-			execute: async (input) => {
+			execute: async (input, context) => {
 				const validatedInput = validateWithZod(TeamRunTaskInputSchema, input);
 				// A fresh TOOLS grant may name tools a web worker's prompt never
 				// taught it; the task carries the how-to for those.
@@ -988,6 +988,8 @@ export function createAgentTeamsTools(
 						fromAgentId: options.requesterId,
 						continueConversation:
 							validatedInput.continueConversation || undefined,
+						// Escape on the manager ends this wait and the worker's run.
+						signal: context?.signal,
 					})
 					.then((result) => {
 						const diagnostics = diagnoseRun(result, validatedInput.agentId);
