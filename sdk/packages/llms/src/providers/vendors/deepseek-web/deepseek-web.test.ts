@@ -1,8 +1,11 @@
+import { mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import type {
 	LanguageModelV2FunctionTool,
 	LanguageModelV2Message,
 } from "@ai-sdk/provider";
-import { describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { DEFAULT_CONTINUATION_NOTE } from "../tool-pipeline/continuation-note";
 import { runCompletion } from "./client";
 import {
@@ -579,7 +582,7 @@ describe("deepseek-web send pacing", () => {
 
 	it("keeps the retry knobs at their defaults when nothing sets them", () => {
 		const resolved = resolveDeepSeekWebPacing({} as NodeJS.ProcessEnv);
-		expect(resolved.rateLimitRetryDelayMs).toBe(90_000);
+		expect(resolved.rateLimitRetryDelayMs).toBe(120_000);
 		expect(resolved.rateLimitMaxRetries).toBe(3);
 	});
 
@@ -997,6 +1000,16 @@ describe("deepseek-web throttle retry", () => {
 	}
 
 	const noSleep = async () => {};
+	let logDir: string;
+
+	beforeEach(() => {
+		logDir = mkdtempSync(join(tmpdir(), "deepseek-send-log-"));
+		vi.stubEnv("DEEPSEEK_WEB_SEND_LOG", join(logDir, "sends.jsonl"));
+	});
+	afterEach(() => {
+		vi.unstubAllEnvs();
+		rmSync(logDir, { recursive: true, force: true });
+	});
 
 	it("waits and resends instead of failing the turn", async () => {
 		const fetchStub = fakeFetch(1);
@@ -1018,7 +1031,28 @@ describe("deepseek-web throttle retry", () => {
 		expect(fetchStub.completions()).toBe(2);
 		// The retry was announced before the wait, so the CLI can say why it
 		// is idle for a minute.
-		expect(waits).toContain(-90_000);
+		expect(waits).toContain(-120_000);
+		// Each outcome lands in the send log, so the throttle window can be
+		// measured from real use.
+		const log = readFileSync(join(logDir, "sends.jsonl"), "utf-8")
+			.trim()
+			.split("\n")
+			.map((line) => JSON.parse(line));
+		expect(log.map((entry) => entry.outcome)).toEqual(["throttled", "ok"]);
+	});
+
+	it("doubles the wait on each retry", async () => {
+		const fetchStub = fakeFetch(3);
+		const waits: number[] = [];
+		await runCompletion({
+			userToken: "token",
+			modelId: "deepseek-chat",
+			prompt: "hi",
+			fetchImpl: fetchStub.impl,
+			sleepImpl: noSleep,
+			onRateLimitRetry: ({ waitMs }) => waits.push(waitMs),
+		});
+		expect(waits).toEqual([120_000, 240_000, 480_000]);
 	});
 
 	it("gives up with an actionable error once the retries run out", async () => {

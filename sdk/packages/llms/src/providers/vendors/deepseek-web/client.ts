@@ -5,6 +5,7 @@ import {
 	DeepSeekRateLimitError,
 	FAKE_HEADERS,
 	type PowChallenge,
+	recordSendOutcome,
 	resolveDeepSeekWebPacing,
 	resolveModelOptions,
 	sleep,
@@ -279,8 +280,8 @@ async function attemptCompletion(input: {
  * nothing about the request to change. Each retry is itself paced, and the
  * wait is abort-aware so Escape still ends the turn immediately.
  *
- * Defaults: 3 retries, 90s apart. `DEEPSEEK_WEB_RATE_LIMIT_MAX_RETRIES=0`
- * restores the old fail-fast behavior.
+ * Defaults: 3 retries, waiting 2, 4, then 8 min (the delay doubles each
+ * time). `DEEPSEEK_WEB_RATE_LIMIT_MAX_RETRIES=0` restores fail-fast.
  */
 export async function runCompletion(input: {
 	userToken: string;
@@ -306,10 +307,27 @@ export async function runCompletion(input: {
 	const { rateLimitRetryDelayMs, rateLimitMaxRetries } =
 		resolveDeepSeekWebPacing();
 
+	const toolTurn = input.isToolTurn === true;
+	let waitedMs = 0;
 	for (let attempt = 0; ; attempt++) {
 		try {
-			return await attemptCompletion(input);
+			const result = await attemptCompletion(input);
+			recordSendOutcome({
+				provider: "deepseek-web",
+				outcome: "ok",
+				attempt,
+				toolTurn,
+			});
+			return result;
 		} catch (error) {
+			if (error instanceof DeepSeekRateLimitError) {
+				recordSendOutcome({
+					provider: "deepseek-web",
+					outcome: "throttled",
+					attempt,
+					toolTurn,
+				});
+			}
 			if (
 				!(error instanceof DeepSeekRateLimitError) ||
 				attempt >= rateLimitMaxRetries
@@ -320,7 +338,7 @@ export async function runCompletion(input: {
 					throw new DeepSeekRateLimitError(
 						`${error.message} Still throttled after ${attempt} retr${
 							attempt === 1 ? "y" : "ies"
-						} ${Math.round(rateLimitRetryDelayMs / 1000)}s apart. Raise ` +
+						} over ${Math.round(waitedMs / 1000)}s. Raise ` +
 							"DEEPSEEK_WEB_MIN_SEND_DELAY_MS / DEEPSEEK_WEB_MAX_SEND_DELAY_MS " +
 							"(or minSendDelayMs / maxSendDelayMs in " +
 							"~/.cline/deepseek-web/config.json) to slow sending further.",
@@ -328,16 +346,14 @@ export async function runCompletion(input: {
 				}
 				throw error;
 			}
+			const waitMs = rateLimitRetryDelayMs * 2 ** attempt;
+			waitedMs += waitMs;
 			input.onRateLimitRetry?.({
 				attempt: attempt + 1,
 				maxRetries: rateLimitMaxRetries,
-				waitMs: rateLimitRetryDelayMs,
+				waitMs,
 			});
-			await waitWithAbort(
-				rateLimitRetryDelayMs,
-				input.signal,
-				input.sleepImpl ?? sleep,
-			);
+			await waitWithAbort(waitMs, input.signal, input.sleepImpl ?? sleep);
 		}
 	}
 }

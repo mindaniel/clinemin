@@ -6,6 +6,7 @@ export {
 	type DeepSeekWebUsageEstimate,
 	estimateDeepSeekWebUsage,
 	randomInRange,
+	recordSendOutcome,
 	resolveDeepSeekWebPacing,
 	resolveModelOptions,
 	waitWithAbort,

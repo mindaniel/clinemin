@@ -78,10 +78,11 @@ const DEFAULT_TOOL_TURN_EXTRA_MAX_MS = 8_000;
 /**
  * Pacing lowers the odds of a throttle but cannot remove them — the window is
  * server-side and shared with any other client using the same account. When it
- * does fire, the turn is recoverable by simply waiting: sleep this long, then
- * send the identical prompt again.
+ * does fire, the turn is recoverable by simply waiting: sleep, then send the
+ * identical prompt again. The wait doubles each retry (2, 4, 8 min), since
+ * three flat 90s waits all landed inside the same cooldown.
  */
-const DEFAULT_RATE_LIMIT_RETRY_DELAY_MS = 90_000;
+const DEFAULT_RATE_LIMIT_RETRY_DELAY_MS = 120_000;
 const DEFAULT_RATE_LIMIT_MAX_RETRIES = 3;
 
 export interface DeepSeekWebPacingConfig {
@@ -89,7 +90,7 @@ export interface DeepSeekWebPacingConfig {
 	maxSendDelayMs: number;
 	toolTurnExtraMinMs: number;
 	toolTurnExtraMaxMs: number;
-	/** How long to wait after a throttle before resending the same prompt. */
+	/** Wait after the first throttle before resending; doubles each retry. */
 	rateLimitRetryDelayMs: number;
 	/** Extra sends attempted after a throttle before the error is surfaced. */
 	rateLimitMaxRetries: number;
@@ -101,6 +102,43 @@ const CONFIG_FILE = path.join(
 	"deepseek-web",
 	"config.json",
 );
+
+const SEND_LOG_FILE = path.join(
+	os.homedir(),
+	".cline",
+	"deepseek-web",
+	"sends.jsonl",
+);
+
+/**
+ * Append one completion outcome to `~/.cline/deepseek-web/sends.jsonl`.
+ * DeepSeek never says how long its throttle window is, so the gaps between
+ * these lines are the only way to measure it. Both DeepSeek providers write
+ * here: they share one account's limit. `DEEPSEEK_WEB_SEND_LOG` moves the
+ * file, or turns it off with `off`.
+ */
+export function recordSendOutcome(
+	entry: {
+		provider: "deepseek-web" | "deepseek-web-v2";
+		outcome: "ok" | "throttled";
+		/** 0 for the first send, then one more per throttle retry. */
+		attempt: number;
+		toolTurn: boolean;
+	},
+	env: NodeJS.ProcessEnv = process.env,
+): void {
+	const target = env.DEEPSEEK_WEB_SEND_LOG?.trim() || SEND_LOG_FILE;
+	if (target === "off") return;
+	try {
+		fs.mkdirSync(path.dirname(target), { recursive: true });
+		fs.appendFileSync(
+			target,
+			`${JSON.stringify({ at: new Date().toISOString(), ...entry })}\n`,
+		);
+	} catch {
+		// Best-effort: a missing log line never fails a turn.
+	}
+}
 
 function readPacingFile(): Partial<DeepSeekWebPacingConfig> {
 	try {

@@ -4,6 +4,7 @@ import {
 	type DeepSeekSseDiagnostics,
 	describeEmptyDeepSeekStream,
 	isRateLimitDiagnostic,
+	recordSendOutcome,
 	waitWithAbort,
 } from "../deepseek-web";
 import { isAbortError } from "../tool-pipeline/abort";
@@ -666,6 +667,7 @@ export async function runCompletion(input: {
 	// above: waiting out a server-side cooldown is not a failed attempt, and
 	// spending the retry budget on it would leave none for a real empty reply.
 	let rateLimitRetries = 0;
+	let rateLimitWaitedMs = 0;
 	let result: Awaited<ReturnType<typeof streamCompletionFromPage>> | null =
 		null;
 
@@ -696,15 +698,25 @@ export async function runCompletion(input: {
 					!result.reasoning.trim() &&
 					result.diagnostics !== undefined &&
 					isRateLimitDiagnostic(result.diagnostics));
+			if (throttled) {
+				recordSendOutcome({
+					provider: "deepseek-web-v2",
+					outcome: "throttled",
+					attempt: rateLimitRetries,
+					toolTurn: isToolTurn,
+				});
+			}
 			if (throttled && rateLimitRetries < config.rateLimitMaxRetries) {
+				const waitMs = config.rateLimitRetryDelayMs * 2 ** rateLimitRetries;
 				rateLimitRetries++;
+				rateLimitWaitedMs += waitMs;
 				logger?.log(
 					`[deepseek-web-v2] throttled ("Messages too frequent") — waiting ${Math.round(
-						config.rateLimitRetryDelayMs / 1000,
+						waitMs / 1000,
 					)}s, then resending (retry ${rateLimitRetries}/${config.rateLimitMaxRetries})`,
 					{ severity: "warn" },
 				);
-				await waitWithAbort(config.rateLimitRetryDelayMs, signal);
+				await waitWithAbort(waitMs, signal);
 				// The reload the throttle armed is ours to perform now, so clear
 				// the flag rather than leaving it to fire again next turn.
 				consumeThrottleRecoveryReload();
@@ -794,7 +806,7 @@ export async function runCompletion(input: {
 				'DeepSeek throttled the request: "Messages too frequent. Try again later." ' +
 					`Still throttled after ${rateLimitRetries} retr${
 						rateLimitRetries === 1 ? "y" : "ies"
-					} ${Math.round(config.rateLimitRetryDelayMs / 1000)}s apart. Raise ` +
+					} over ${Math.round(rateLimitWaitedMs / 1000)}s. Raise ` +
 					"DEEPSEEK_WEB_V2_MIN_SEND_DELAY_MS / DEEPSEEK_WEB_V2_MAX_SEND_DELAY_MS " +
 					"to slow sending further.",
 			);
@@ -805,6 +817,13 @@ export async function runCompletion(input: {
 				: "DeepSeek returned no content and the completion stream was never captured.",
 		);
 	}
+
+	recordSendOutcome({
+		provider: "deepseek-web-v2",
+		outcome: "ok",
+		attempt: rateLimitRetries,
+		toolTurn: isToolTurn,
+	});
 
 	// After sending, the SPA routes to `/a/chat/s/<session_id>`; capture it so
 	// the next turn (or a resume) can reopen this same DeepSeek chat.

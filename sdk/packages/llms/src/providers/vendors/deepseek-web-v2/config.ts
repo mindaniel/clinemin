@@ -50,10 +50,12 @@ const DEFAULT_TOOL_TURN_EXTRA_MAX_MS = 8_000;
 
 /**
  * A throttle ("Messages too frequent") is a server-side cooldown, not a bad
- * request: the same prompt succeeds once the window passes. Wait this long,
- * reload the blocked page, and resend, rather than failing the task.
+ * request: the same prompt succeeds once the window passes. Wait, reload the
+ * blocked page, and resend, rather than failing the task. The wait doubles
+ * each retry (2, 4, 8 min): three flat 90s waits all landed inside the same
+ * cooldown.
  */
-const DEFAULT_RATE_LIMIT_RETRY_DELAY_MS = 90_000;
+const DEFAULT_RATE_LIMIT_RETRY_DELAY_MS = 120_000;
 const DEFAULT_RATE_LIMIT_MAX_RETRIES = 3;
 
 /** Whether the full `<tool>` contract + tool list is sent on every turn. */
@@ -98,7 +100,7 @@ export interface DeepSeekWebV2RuntimeConfig {
 	toolTurnExtraMinMs: number;
 	/** Upper bound of the EXTRA random sleep added on tool-request turns. */
 	toolTurnExtraMaxMs: number;
-	/** How long to wait after a throttle before resending the same prompt. */
+	/** Wait after the first throttle before resending; doubles each retry. */
 	rateLimitRetryDelayMs: number;
 	/** Extra sends attempted after a throttle before the error is surfaced. */
 	rateLimitMaxRetries: number;
