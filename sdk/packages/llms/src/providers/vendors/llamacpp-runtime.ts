@@ -9,8 +9,10 @@ const execAsync = promisify(exec);
 
 const CONFIG_DIR = path.join(os.homedir(), ".cline", "llamacpp");
 const CONFIG_FILE = path.join(CONFIG_DIR, "config.json");
-const GITHUB_LATEST_RELEASE_API =
-	"https://api.github.com/repos/ggml-org/llama.cpp/releases/latest";
+// Not `releases/latest`: llama.cpp publishes its bNNNN builds as prereleases,
+// so "latest" lands on an old tag that carries no binaries.
+const GITHUB_RECENT_RELEASES_API =
+	"https://api.github.com/repos/ggml-org/llama.cpp/releases?per_page=20";
 
 // Small, fast, CPU-friendly default so a first run works with no GPU and modest RAM.
 export const DEFAULT_MODEL_NAME = "qwen2.5-0.5b-instruct-q4_k_m.gguf";
@@ -143,11 +145,16 @@ async function ensureLlamaServerBinary(
 	fs.mkdirSync(binDir, { recursive: true });
 	onProgress?.("Looking up latest llama.cpp release…");
 
-	const release = await fetchJson<{
-		assets: { name: string; browser_download_url: string }[];
-	}>(GITHUB_LATEST_RELEASE_API);
+	const releases = await fetchJson<
+		{
+			draft: boolean;
+			assets: { name: string; browser_download_url: string }[];
+		}[]
+	>(GITHUB_RECENT_RELEASES_API);
 	const suffix = pickAssetName();
-	const asset = release.assets.find((a) => a.name.endsWith(suffix));
+	const asset = releases
+		.filter((r) => !r.draft)
+		.flatMap((r) => r.assets.filter((a) => a.name.endsWith(suffix)))[0];
 	if (!asset)
 		throw new Error(
 			`No llama.cpp release asset found for this platform (${suffix})`,
