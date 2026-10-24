@@ -60,29 +60,29 @@ interface GatewayNormalizedUsage {
 }
 type ProviderModuleKind = AiSdkProviderOptionsTarget;
 
-/** llama.cpp is local (free) and its tool-calling is often weak, so lean mode is
- * the default: the tools[] param is only sent when the model actually needs it,
- * keeping a small local context window from being burned on repeated tool defs. */
 const DEFAULT_LLAMACPP_TOOL_PROMPT_THRESHOLD_CHARS = 20_000;
 
 /**
  * Whether the native `tools[]` param should be sent for this request.
  *
- * - API providers (deepseek API, openai-compatible, …): the tools[] param is
- *   required every call and cannot be recalled from message history, so it is
- *   always sent ("safe lean" — the AI SDK + provider caching keep it cheap).
- * - llama.cpp: "full lean" by default — skip tools[] on ordinary turns and only
- *   send them when the model actually needs them: the first message / right
- *   after a compaction (both look like a tiny conversation) or when the context
- *   has grown so long the earlier tool definitions may have fallen out.
- *   Override with `LLAMACPP_TOOL_PROMPT_MODE=always` (threshold: chars).
+ * Always, by default — llama.cpp included. llama-server renders the tool
+ * definitions into the prompt through the model's chat template only when
+ * tools[] is sent, and only then parses the model's native tool-call markup
+ * (DeepSeek's `<｜DSML｜tool_calls>`, Qwen's `<tool_call>`, …) into tool calls.
+ * A turn without tools[] leaves the model blind to its tools and hands its raw
+ * tool-call markup back as plain text. Toggling tools[] also changes the
+ * prompt prefix, which throws away llama.cpp's KV cache.
+ *
+ * `LLAMACPP_TOOL_PROMPT_MODE=lean` brings back the old llama.cpp lean mode: skip
+ * tools[] on ordinary turns, sending it only on a tiny conversation (first
+ * message / after compaction) or past `LLAMACPP_TOOL_PROMPT_THRESHOLD_CHARS`.
  */
 export function shouldSendNativeTools(request: GatewayStreamRequest): boolean {
 	const providerId = request.providerId;
 	const isLlamacpp = providerId.startsWith("llamacpp");
 	if (!isLlamacpp) return true;
 
-	if (process.env.LLAMACPP_TOOL_PROMPT_MODE === "always") return true;
+	if (process.env.LLAMACPP_TOOL_PROMPT_MODE !== "lean") return true;
 	const threshold =
 		Number(process.env.LLAMACPP_TOOL_PROMPT_THRESHOLD_CHARS) ||
 		DEFAULT_LLAMACPP_TOOL_PROMPT_THRESHOLD_CHARS;

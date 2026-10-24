@@ -432,19 +432,28 @@ describe("ai-sdk usage normalization", () => {
 				).toBe(true);
 			});
 
-			it("omits tools for llamacpp on an ordinary mid-length conversation", () => {
-				const messages = [
-					{ role: "system", content: "agent" },
-					{ role: "user", content: "first" },
-					{ role: "assistant", content: "ok" },
-					{ role: "user", content: "second" },
-					{ role: "assistant", content: "done" },
-					{ role: "user", content: "third" },
-				];
-				expect(shouldSendNativeTools(req({ messages }))).toBe(false);
+			const midLength = [
+				{ role: "system", content: "agent" },
+				{ role: "user", content: "first" },
+				{ role: "assistant", content: "ok" },
+				{ role: "user", content: "second" },
+				{ role: "assistant", content: "done" },
+				{ role: "user", content: "third" },
+			];
+
+			// Without tools[] llama-server neither shows the model its tools nor
+			// parses its tool-call markup (DeepSeek DSML came back as plain text).
+			it("sends tools for llamacpp on an ordinary mid-length conversation", () => {
+				expect(shouldSendNativeTools(req({ messages: midLength }))).toBe(true);
 			});
 
-			it("re-sends tools for llamacpp when the conversation is very long", () => {
+			it("omits tools mid-conversation under LLAMACPP_TOOL_PROMPT_MODE=lean", () => {
+				vi.stubEnv("LLAMACPP_TOOL_PROMPT_MODE", "lean");
+				expect(shouldSendNativeTools(req({ messages: midLength }))).toBe(false);
+			});
+
+			it("lean mode re-sends tools when the conversation is very long", () => {
+				vi.stubEnv("LLAMACPP_TOOL_PROMPT_MODE", "lean");
 				const messages = [
 					{ role: "user", content: "a".repeat(25_000) },
 					{ role: "user", content: "continue" },
@@ -452,18 +461,8 @@ describe("ai-sdk usage normalization", () => {
 				expect(shouldSendNativeTools(req({ messages }))).toBe(true);
 			});
 
-			it("respects LLAMACPP_TOOL_PROMPT_MODE=always", () => {
-				vi.stubEnv("LLAMACPP_TOOL_PROMPT_MODE", "always");
-				const messages = [
-					{ role: "system", content: "agent" },
-					{ role: "user", content: "first" },
-					{ role: "assistant", content: "ok" },
-					{ role: "user", content: "second" },
-				];
-				expect(shouldSendNativeTools(req({ messages }))).toBe(true);
-			});
-
-			it("respects the threshold env override", () => {
+			it("lean mode respects the threshold env override", () => {
+				vi.stubEnv("LLAMACPP_TOOL_PROMPT_MODE", "lean");
 				vi.stubEnv("LLAMACPP_TOOL_PROMPT_THRESHOLD_CHARS", "100");
 				const messages = [
 					{ role: "user", content: "short" },
