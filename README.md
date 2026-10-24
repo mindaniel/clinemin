@@ -1,78 +1,53 @@
-## Install (no admin required)
+## Install (Windows, no admin needed)
 
-Needs Node.js 22+ and [bun](https://bun.sh) (this repo's package manager/runtime — Node alone won't run it). If you already have both, skip to `git clone`.
-
-On Windows, PowerShell blocks script execution by default, which stops `bun`,
-`npm`, and the install scripts below from running. Allow signed scripts for your
-own account once (no admin needed):
+Paste this into PowerShell. It installs bun and a portable Node.js 22 for your account only, skipping
+any step that is already done, then builds clinemin.
 
 ```powershell
+# Allow scripts for your account, so bun and npm can run
 Set-ExecutionPolicy -Scope CurrentUser -ExecutionPolicy RemoteSigned -Force
-```
 
-```powershell
-npm install -g bun
+# bun (runs this repo)
+if (-not (Get-Command bun -ErrorAction SilentlyContinue)) { irm bun.sh/install.ps1 | iex }
+
+# Node.js 22+ as a portable zip in %USERPROFILE%\node (newer LTS versions: nodejs.org/en/download)
+if (-not (Get-Command node -ErrorAction SilentlyContinue)) {
+    $v = "v22.14.0"
+    Invoke-WebRequest "https://nodejs.org/dist/$v/node-$v-win-x64.zip" -OutFile "$env:TEMP\node.zip"
+    Expand-Archive "$env:TEMP\node.zip" $env:USERPROFILE -Force
+    Rename-Item "$env:USERPROFILE\node-$v-win-x64" "$env:USERPROFILE\node"
+    $userPath = [Environment]::GetEnvironmentVariable("Path", "User")
+    [Environment]::SetEnvironmentVariable("Path", "$userPath;$env:USERPROFILE\node", "User")
+}
+
+# Pick up the new PATH in this terminal
+$env:Path = [Environment]::GetEnvironmentVariable("Path", "User") + ";" + [Environment]::GetEnvironmentVariable("Path", "Machine")
+
+# Get and build clinemin
 git clone https://github.com/mindaniel/clinemin.git
 cd clinemin
 bun install
 bun run build:sdk
 ```
 
-### No admin rights (no Node/npm installed at all)
-
-If you can't install Node.js system-wide (no admin, locked-down machine), get both tools as portable, per-user installs. No winget, no separate npm download — npm ships inside the Node zip, you just need it on your `PATH`.
-
-**1. Install bun** (installer puts it in `%USERPROFILE%\.bun` and adds that to your user `PATH` on its own):
-
-```powershell
-irm bun.sh/install.ps1 | iex
-```
-
-**2. Download the Node.js zip** — not the `.msi`/`.exe` installer, that one needs admin to run. Check [nodejs.org/en/download](https://nodejs.org/en/download) for the current LTS version number, then either click the "Windows Binary (.zip)" (64-bit) link there, or download it from PowerShell (replace the version below with whatever's current):
-
-```powershell
-Invoke-WebRequest -Uri "https://nodejs.org/dist/v22.14.0/node-v22.14.0-win-x64.zip" -OutFile "$env:TEMP\node.zip"
-```
-
-**3. Extract it into your user profile.** The zip unpacks into a versioned folder name (`node-v22.14.0-win-x64`) — unzip it, then rename that folder to something stable so your `PATH` entry never has to change on a Node upgrade:
-
-```powershell
-Expand-Archive -Path "$env:TEMP\node.zip" -DestinationPath "$env:USERPROFILE" -Force
-Rename-Item "$env:USERPROFILE\node-v22.14.0-win-x64" "$env:USERPROFILE\node"
-```
-
-The `node` folder now has `node.exe`, `npm.cmd`, and `npx.cmd` sitting right in it — that's the whole Node+npm install, nothing else to run.
-
-**4. Add that folder to your user `PATH`** (this only touches your own account's environment, no admin prompt):
-
-```powershell
-[Environment]::SetEnvironmentVariable("Path", "$env:Path;$env:USERPROFILE\node", "User")
-```
-
-**5. Close the terminal and open a new one** (PATH changes only apply to new terminals), then verify all three:
-
-```powershell
-node -v
-npm -v
-bun -v
-```
-
-Continue with `git clone` above.
-
-`bun install` also adds `cline` and `clinemin` commands to your PowerShell profile (`$PROFILE`) automatically — open a new terminal and run either one from any project folder:
+`bun install` adds a `cline` command to your PowerShell profile. Open a new terminal, go to any
+project and run it:
 
 ```powershell
 cd path\to\your\project
 cline
 ```
 
-If that doesn't work (e.g. PowerShell's execution policy blocks profile scripts — check with `Get-ExecutionPolicy`, fix with `Set-ExecutionPolicy -Scope CurrentUser RemoteSigned`, no admin needed), run it directly instead:
+<details>
+<summary><code>cline</code> not found?</summary>
+
+Run it directly:
 
 ```powershell
 bun --conditions=development "C:\path\to\clinemin\apps\cli\src\index.ts" -i
 ```
 
-Or add the shortcut yourself — `notepad $PROFILE`, add:
+Or add the shortcut yourself: run `notepad $PROFILE`, paste this, then open a new terminal.
 
 ```powershell
 function cline {
@@ -80,7 +55,7 @@ function cline {
 }
 ```
 
-then reload (`. $PROFILE` or a new terminal).
+</details>
 
 ## Update
 
