@@ -60,6 +60,26 @@ describe("attachToolResults", () => {
 		expect(split.head).toContain("Note: go");
 	});
 
+	it("moves the unlabelled path/Output/Error results too", () => {
+		const out = attachToolResults(
+			[
+				"My last message: read it",
+				`path: src/a.ts\n${big}`,
+				"Output:\ndone",
+				"Error: not found",
+				"Note: go",
+			].join("\n\n"),
+			4000,
+		);
+		const split = splitAttachment(out);
+		expect(split.head).toContain("My last message: read it");
+		expect(split.head).toContain("Note: go");
+		expect(split.head).not.toContain("path:");
+		expect(split.body).toContain(`path: src/a.ts\n${big}`);
+		expect(split.body).toContain("Output:\ndone");
+		expect(split.body).toContain("Error: not found");
+	});
+
 	it("leaves short results, disabled mode and marked prompts alone", () => {
 		expect(attachToolResults(prompt, 100_000)).toBe(prompt);
 		expect(attachToolResults(prompt, 0)).toBe(prompt);

@@ -130,7 +130,11 @@ export interface MessagesToPromptOptions {
 	 * continuation, so the current directive is not framed as stale context.
 	 */
 	lastUserLabel?: string;
-	/** Label prefix for trailing tool results. Defaults to "Tool result". */
+	/**
+	 * Legacy label prefix for tool results: `<label>: (<tool>) <raw output>`.
+	 * Only claude-web sets it, because it rewrites those segments into prose.
+	 * Unset, each operation is rendered by `formatToolResult` instead.
+	 */
 	toolResultLabel?: string;
 	/**
 	 * Cap each tool result at this many lines. The whole flattened prompt goes
@@ -232,6 +236,73 @@ function noteWithTask(note: string, task: string): string {
 	return `${note}\n\nThe task you are working on: ${task}`;
 }
 
+/**
+ * Labels that open a tool-result segment in the flat prompt. Other parts of
+ * the tool pipeline split the prompt on segment labels, so they need these.
+ */
+export const TOOL_RESULT_SEGMENT_LABELS = ["path", "Output", "Error"] as const;
+
+const MARKDOWN_IMAGE = /!\[.*?\]\(.*?\)/g;
+
+/** Tools whose operation `query` names a file, shown as `path:`. */
+const PATH_TOOLS = new Set(["read_files", "editor"]);
+
+function operationOutput(result: unknown): string {
+	if (result == null) return "";
+	return typeof result === "string" ? result : JSON.stringify(result);
+}
+
+/**
+ * Render one tool round the way a person would paste it: the output itself,
+ * not the escaped JSON envelope, and not the tool's input, which the model
+ * wrote and already has. A file read keeps its path so several files stay
+ * apart; everything else opens with `Output:`.
+ */
+export function formatToolResult(
+	toolName: string,
+	text: string,
+	cap: (output: string) => string = (output) => output,
+): string {
+	let operations: unknown;
+	try {
+		operations = text.trimStart().startsWith("[") ? JSON.parse(text) : null;
+	} catch {
+		operations = null;
+	}
+	const isOperationList =
+		Array.isArray(operations) &&
+		operations.length > 0 &&
+		operations.every(
+			(op) =>
+				op !== null &&
+				typeof op === "object" &&
+				typeof (op as { query?: unknown }).query === "string" &&
+				"success" in op,
+		);
+	if (!isOperationList) return `Output:\n${cap(text)}`;
+	return (
+		operations as Array<{
+			query: string;
+			result?: unknown;
+			error?: string;
+			success: boolean;
+		}>
+	)
+		.map((op) => {
+			const output = op.success
+				? cap(operationOutput(op.result))
+				: `Error: ${op.error ?? (operationOutput(op.result) || "failed")}`;
+			if (PATH_TOOLS.has(toolName)) {
+				// editor queries are `<operation>:<path>`.
+				const path =
+					toolName === "editor" ? op.query.replace(/^[a-z_]+:/, "") : op.query;
+				return `path: ${path}\n${output}`;
+			}
+			return op.success ? `Output:\n${output}` : output;
+		})
+		.join("\n\n");
+}
+
 function truncateToolResultLines(text: string, maxLines: number): string {
 	const lines = text.split("\n");
 	if (lines.length <= maxLines) return text;
@@ -255,7 +326,7 @@ export function messagesToPrompt(
 	const historyWindow = options.historyWindow ?? DEFAULT_AUTO_HISTORY_WINDOW;
 	const userLabel = options.userLabel ?? "User";
 	const lastUserLabel = options.lastUserLabel;
-	const toolResultLabel = options.toolResultLabel ?? "Tool result";
+	const toolResultLabel = options.toolResultLabel;
 	const toolResultMaxLines = options.toolResultMaxLines;
 	const systemParts: string[] = [];
 	let conversation: Array<{
@@ -270,7 +341,7 @@ export function messagesToPrompt(
 
 	for (const message of messages) {
 		const parts = toPromptParts(message);
-		const text = parts
+		const rawText = parts
 			.map((part) =>
 				part.type === "text" ||
 				part.type === "tool-result" ||
@@ -280,6 +351,13 @@ export function messagesToPrompt(
 			)
 			.join("\n")
 			.trim();
+		// Markdown images are dropped from what people and the model wrote, but
+		// never from tool output: a file that contains `![a](b)` must reach the
+		// model as it is, or an edit aimed at that line cannot match.
+		const text =
+			message.role === "tool"
+				? rawText
+				: rawText.replace(MARKDOWN_IMAGE, "").trim();
 
 		if (message.role === "system") {
 			if (text) systemParts.push(text);
@@ -305,11 +383,16 @@ export function messagesToPrompt(
 					typeof toolResult?.toolName === "string"
 						? toolResult.toolName
 						: "tool";
-				const body =
+				const capped = (body: string) =>
 					toolResultMaxLines !== undefined
-						? truncateToolResultLines(text, toolResultMaxLines)
-						: text;
-				conversation.push({ role: "tool", text: `(${toolName}) ${body}` });
+						? truncateToolResultLines(body, toolResultMaxLines)
+						: body;
+				conversation.push({
+					role: "tool",
+					text: toolResultLabel
+						? `${toolResultLabel}: (${toolName}) ${capped(text)}`
+						: formatToolResult(toolName, text, capped),
+				});
 			}
 		}
 	}
@@ -378,7 +461,7 @@ export function messagesToPrompt(
 						return `Assistant: ${turn.text}`;
 					}
 					if (turn.role === "tool") {
-						return `${toolResultLabel}: ${turn.text}`;
+						return turn.text;
 					}
 					const absoluteIndex = windowStart + index;
 					const body =
@@ -403,7 +486,7 @@ export function messagesToPrompt(
 		outputParts.push(lastUserContent);
 	}
 
-	return outputParts.join("\n\n").replace(/!\[.*?\]\(.*?\)/g, "");
+	return outputParts.join("\n\n");
 }
 
 /**

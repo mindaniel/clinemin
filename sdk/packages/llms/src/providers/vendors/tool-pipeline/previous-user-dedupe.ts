@@ -69,7 +69,7 @@ export function realUserMessageKey(prompt: LanguageModelV2Prompt): string {
 export function stripPreviousUserBlock(prompt: string): string {
 	return prompt
 		.replace(
-			/(?:^|\n\n)My last message:[\s\S]*?(?=\n\n(?:Tool result|Assistant|Note|My last message|User|Context summary):|$)/g,
+			/(?:^|\n\n)My last message:[\s\S]*?(?=\n\n(?:path|Output|Error|Tool result|Assistant|Note|My last message|User|Context summary):|$)/g,
 			"",
 		)
 		.replace(/\n{3,}/g, "\n\n")

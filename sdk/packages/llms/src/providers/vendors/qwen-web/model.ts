@@ -99,7 +99,6 @@ function buildQwenPrompt(
 		historyWindow: 10,
 		userLabel: "My last message",
 		lastUserLabel: currentUserLabel(conversation),
-		toolResultLabel: "Tool result",
 	};
 	if (
 		reInjectSystem &&

@@ -589,14 +589,12 @@ export function buildPrompt(
 			historyWindow: 10,
 			userLabel: "My last message",
 			lastUserLabel: currentUserLabel(conversation),
-			toolResultLabel: "Tool result",
 		});
 	}
 	return messagesToPrompt(conversation, {
 		historyWindow: 10,
 		userLabel: "My last message",
 		lastUserLabel: currentUserLabel(conversation),
-		toolResultLabel: "Tool result",
 	});
 }
 

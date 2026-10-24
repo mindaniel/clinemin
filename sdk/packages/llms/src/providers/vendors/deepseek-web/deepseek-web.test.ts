@@ -275,7 +275,7 @@ describe("deepseek-web messagesToPrompt", () => {
 			},
 		];
 		const prompt = messagesToPrompt(messages);
-		expect(prompt).toContain("(weather)");
+		expect(prompt).toContain("Output:");
 		expect(prompt).toContain('"temp":21');
 	});
 
@@ -296,9 +296,92 @@ describe("deepseek-web messagesToPrompt", () => {
 			},
 		];
 		const prompt = messagesToPrompt(messages);
-		expect(prompt).toContain("(run_commands)");
+		expect(prompt).toContain("Output:");
 		expect(prompt).toContain("output line 1");
 		expect(prompt).toContain("output line 2");
+	});
+
+	it("renders tool operations as output, with a path for file reads and no inputs", () => {
+		const toolTurn = (
+			toolName: string,
+			value: unknown,
+		): LanguageModelV2Message => ({
+			role: "tool",
+			content: [
+				{
+					type: "tool-result",
+					toolCallId: `call_${toolName}`,
+					toolName,
+					output: { type: "json", value: value as never },
+				},
+			],
+		});
+		const prompt = messagesToPrompt([
+			{ role: "user", content: [{ type: "text", text: "look around" }] },
+			toolTurn("run_commands", [
+				{ query: "Get-ChildItem src", result: "a.ts\nb.ts", success: true },
+				{ query: "bad-cmd", result: "", error: "not found", success: false },
+			]),
+			toolTurn("read_files", [
+				{ query: "src/a.ts", result: "1 export {};", success: true },
+			]),
+			toolTurn("editor", [
+				{ query: "edit:src/b.ts", result: "Edited.", success: true },
+			]),
+		]);
+		expect(prompt).toContain("Output:\na.ts\nb.ts");
+		expect(prompt).toContain("Error: not found");
+		expect(prompt).toContain("path: src/a.ts\n1 export {};");
+		expect(prompt).toContain("path: src/b.ts\nEdited.");
+		expect(prompt).not.toContain("Get-ChildItem");
+		expect(prompt).not.toContain("Tool result");
+		expect(prompt).not.toContain("run_commands");
+		expect(prompt).not.toContain('"success"');
+	});
+
+	it("passes a file read through character for character, so an edit can match it", () => {
+		const source = [
+			'const s = "a\\\\b";\t// tab, quote, backslash',
+			"",
+			"  ![logo](img/logo.png) stays in the file",
+			"if (x) { return `${y}\\n`; }",
+			"",
+			"",
+			"User: not a turn label inside a file",
+			"   trailing spaces   ",
+		];
+		// The read tool's own `N | ` gutter.
+		const width = String(source.length).length;
+		const numbered = source
+			.map((line, i) => `${String(i + 1).padStart(width, " ")} | ${line}`)
+			.join("\n");
+		const prompt = messagesToPrompt([
+			{ role: "user", content: [{ type: "text", text: "fix it ![x](y.png)" }] },
+			{
+				role: "tool",
+				content: [
+					{
+						type: "tool-result",
+						toolCallId: "call_1",
+						toolName: "read_files",
+						output: {
+							type: "json",
+							value: [{ query: "src/a.ts", result: numbered, success: true }],
+						},
+					},
+				],
+			},
+		]);
+		// Images are still stripped from what the user wrote.
+		expect(prompt).not.toContain("![x](y.png)");
+		const header = "path: src/a.ts\n";
+		const start = prompt.indexOf(header) + header.length;
+		const recovered = prompt
+			.slice(start)
+			.split("\n")
+			.slice(0, source.length)
+			.map((line) => line.replace(/^\s*\d+ \| /, ""));
+		expect(recovered).toEqual(source);
 	});
 
 	it("extracts AI SDK v2 tool-result output (json)", () => {
@@ -690,8 +773,8 @@ describe("deepseek-web history window", () => {
 		// The freed slots go back to real content: the same window now reaches
 		// further into the tool history than it did with the notes in the way.
 		const before = messagesToPrompt(longToolLoop(12), { historyWindow: 20 });
-		expect(countOccurrences(prompt, "Tool result:")).toBeGreaterThan(
-			countOccurrences(before, "Tool result:"),
+		expect(countOccurrences(prompt, "Output:")).toBeGreaterThan(
+			countOccurrences(before, "Output:"),
 		);
 	});
 

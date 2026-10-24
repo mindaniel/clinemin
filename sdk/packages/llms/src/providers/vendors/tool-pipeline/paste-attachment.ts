@@ -53,20 +53,22 @@ export function typedMessage(
 		: prompt;
 }
 
+/** Labels that open a tool result (`formatToolResult` in deepseek-web/prompt.ts). */
+const TOOL_RESULT_LABELS = "path|Output|Error|Tool result";
+
 /** Labels that start a segment in the flat web prompt (see deepseek-web/prompt.ts). */
-const SEGMENT_LABELS =
-	"Tool result|Assistant|Note|My last message|Previous user message|User";
+const SEGMENT_LABELS = `${TOOL_RESULT_LABELS}|Assistant|Note|My last message|Previous user message|User`;
 
 /**
- * Move this turn's `Tool result: …` segments behind the attach marker, so a
- * long file read or command output goes in as an attachment while the note
- * that follows it is still typed. Left as is when the prompt already has a
- * marker or the tool results are shorter than `minChars`.
+ * Move this turn's tool-result segments behind the attach marker, so a long
+ * file read or command output goes in as an attachment while the note that
+ * follows it is still typed. Left as is when the prompt already has a marker
+ * or the tool results are shorter than `minChars`.
  */
 export function attachToolResults(prompt: string, minChars: number): string {
 	if (minChars <= 0 || prompt.includes(ATTACH_MARKER)) return prompt;
 	const segment = new RegExp(
-		`(?:^|\\n\\n)Tool result:[\\s\\S]*?(?=\\n\\n(?:${SEGMENT_LABELS}):|$)`,
+		`(?:^|\\n\\n)(?:${TOOL_RESULT_LABELS}):[\\s\\S]*?(?=\\n\\n(?:${SEGMENT_LABELS}):|$)`,
 		"g",
 	);
 	const results = (prompt.match(segment) ?? []).map((s) => s.trim());
