@@ -7,58 +7,40 @@ import {
 import type { SearchableItem } from "../searchable-list";
 
 /**
- * What a worker is allowed to do, as a few named settings.
+ * The tools a worker may use, from the roster's point of view.
  *
- * The roster stores a list of tool names, but picking tools one at a time in a
- * dialog is fiddly and gets it wrong in the dangerous direction — the whole
- * point of scoping is that a worker asked to survey a repo cannot decide to
- * delete half of it. Four presets cover what the roles actually are, and
- * `team.json` is still there for anything finer.
+ * A worker starts with PowerShell (`run_commands`) and `apply_patch`: with a
+ * shell it can read, search and run anything, so finer presets only got in
+ * its way. The manager narrows or widens a worker per job with a `TOOLS:` line
+ * (see manager-block.ts); the roster just sets what it starts with. The rest
+ * are opt-in extras.
  */
-export const WORKER_TOOL_PRESETS = [
-	{
-		id: "read",
-		label: "read-only",
-		tools: ["read_files", "search_codebase"],
-		rolePrompt:
-			"Reads files and reports exactly what is in them. Quote the line and give file:line for every claim. You cannot edit anything.",
-	},
-	{
-		id: "edit",
-		label: "read + edit",
-		tools: ["read_files", "search_codebase", "editor"],
-		rolePrompt:
-			"Follows the manager's instructions and edits code. Read a file before changing it, and report what you changed with file:line.",
-	},
-	{
-		id: "full",
-		label: "read + edit + shell",
-		tools: ["read_files", "search_codebase", "editor", "run_commands"],
-		rolePrompt:
-			"Carries out the manager's instructions, including running commands. Report what you ran and what it produced.",
-	},
-	{
-		id: "web",
-		label: "web lookup",
-		tools: ["fetch_web_content", "search_codebase"],
-		rolePrompt:
-			"Looks things up on the web and reports what the source says, with the URL for every claim.",
-	},
+export const WORKER_TOOLS = [
+	{ name: "run_commands", label: "PowerShell (run_commands)" },
+	{ name: "apply_patch", label: "apply_patch (edit files)" },
+	{ name: "read_files", label: "read_files" },
+	{ name: "search_codebase", label: "search_codebase" },
+	{ name: "fetch_web_content", label: "fetch_web_content (web)" },
+	{ name: "skills", label: "skills" },
 ] as const;
 
-export type WorkerToolPreset = (typeof WORKER_TOOL_PRESETS)[number];
+export const DEFAULT_WORKER_TOOLS: readonly string[] = [
+	"run_commands",
+	"apply_patch",
+];
 
-/** Which preset a worker's tool list corresponds to, if any. */
-export function presetForTools(
-	tools: string[] | undefined,
-): WorkerToolPreset | undefined {
-	if (!tools) {
-		return undefined;
-	}
-	const key = [...tools].sort().join(",");
-	return WORKER_TOOL_PRESETS.find(
-		(preset) => [...preset.tools].sort().join(",") === key,
-	);
+export const DEFAULT_WORKER_ROLE_PROMPT =
+	"Carries out the manager's instructions. Use PowerShell to read, search and run things, and apply_patch to change files. Report what you ran, what you changed with file:line, and what it produced.";
+
+/**
+ * `editor` and `apply_patch` are one grant ("may change files"): the worker's
+ * provider decides which one it actually gets (applyTeammateToolScope in
+ * team-tools.ts), so either name counts as apply_patch here.
+ */
+function hasTool(tools: readonly string[], name: string): boolean {
+	return name === "apply_patch"
+		? tools.includes("apply_patch") || tools.includes("editor")
+		: tools.includes(name);
 }
 
 export function describeTools(tools: string[] | undefined): string {
@@ -68,7 +50,16 @@ export function describeTools(tools: string[] | undefined): string {
 	if (tools.length === 0) {
 		return "nothing but reporting back";
 	}
-	return presetForTools(tools)?.label ?? tools.join(", ");
+	return tools
+		.map((name) =>
+			name === "run_commands"
+				? "PowerShell"
+				: name === "editor"
+					? "apply_patch"
+					: name,
+		)
+		.filter((name, index, all) => all.indexOf(name) === index)
+		.join(", ");
 }
 
 /**
@@ -83,6 +74,7 @@ export const ROW_ADD = "+add";
 export const ROW_SAVE = "+save";
 export const ROW_BACK = "+back";
 export const ROW_INHERIT = "+inherit";
+export const ROW_DONE = "+done";
 /** "This worker has no profile — pick a provider by hand instead." */
 export const ROW_NO_PROFILE = "+no-profile";
 
@@ -108,20 +100,7 @@ export type WorkersStep =
 	| { kind: "profile"; agentId: string | null }
 	| { kind: "provider"; agentId: string | null }
 	| { kind: "model"; agentId: string | null; providerId: string }
-	| {
-			kind: "tools";
-			agentId: string | null;
-			providerId: string;
-			modelId?: string;
-			/**
-			 * The profile the new worker is being built on, while adding one.
-			 *
-			 * Carried on the step rather than held in separate draft state, for the
-			 * reason the rest of this wizard is: a draft that lives outside the step
-			 * can disagree with the screen that is showing.
-			 */
-			profileName?: string;
-	  }
+	| { kind: "tools"; agentId: string }
 	| { kind: "notes"; agentId: string }
 	| { kind: "rename"; agentId: string }
 	| { kind: "delete"; agentId: string };
@@ -358,16 +337,18 @@ export function buildModelRows(
 }
 
 export function buildToolRows(tools: string[] | undefined): SearchableItem[] {
-	const current = presetForTools(tools)?.id;
-	return WORKER_TOOL_PRESETS.map((preset) => ({
-		key: preset.id,
-		label:
-			preset.id === current
-				? `${preset.label} (current) — ${preset.tools.join(", ")}`
-				: `${preset.label} — ${preset.tools.join(", ")}`,
-		section: "Tools this worker may use",
-		searchText: `${preset.id} ${preset.label} ${preset.tools.join(" ")}`,
-	}));
+	const held = tools ?? WORKER_TOOLS.map((tool) => tool.name);
+	return [
+		...WORKER_TOOLS.map((tool) => ({
+			key: tool.name,
+			label: `${hasTool(held, tool.name) ? "[x]" : "[ ]"} ${tool.label}${
+				DEFAULT_WORKER_TOOLS.includes(tool.name) ? " (default)" : ""
+			}`,
+			section: "Tools this worker starts with (Enter toggles)",
+			searchText: `${tool.name} ${tool.label}`,
+		})),
+		{ key: ROW_DONE, label: "Done", searchText: "done back" },
+	];
 }
 
 /**
@@ -377,7 +358,7 @@ export function buildToolRows(tools: string[] | undefined): SearchableItem[] {
  * worker named after its provider has to keep that name when the provider
  * changes — otherwise the roster still says "qwen" and the messages go to a
  * Gemini chat. A hand-picked name is left alone, the same way a hand-written
- * role prompt is in `applyToolPreset`. The model is dropped because a model id
+ * role prompt is left alone. The model is dropped because a model id
  * from the old provider is not valid for the new one, and keeping it would fail
  * at spawn time instead of here.
  */
@@ -414,48 +395,37 @@ export function applyModel(
 }
 
 /**
- * Swap a worker onto a tool preset.
- *
- * The role prompt follows the preset unless it has been customised in
- * `team.json` — replacing a hand-written one here would silently throw away the
- * thing the user cared most about.
+ * Turn one tool on or off for a worker. An unscoped worker (no list) holds
+ * every tool, so it starts from the full list.
  */
-export function applyToolPreset(
+export function toggleWorkerTool(
 	worker: TeamRosterWorker,
-	presetId: string,
+	name: string,
 ): TeamRosterWorker {
-	const preset =
-		WORKER_TOOL_PRESETS.find((candidate) => candidate.id === presetId) ??
-		WORKER_TOOL_PRESETS[0];
-	const usingPresetPrompt = WORKER_TOOL_PRESETS.some(
-		(candidate) => candidate.rolePrompt === worker.rolePrompt,
-	);
-	return {
-		...worker,
-		tools: [...preset.tools],
-		rolePrompt: usingPresetPrompt ? preset.rolePrompt : worker.rolePrompt,
-	};
+	const held = worker.tools ?? WORKER_TOOLS.map((tool) => tool.name);
+	const tools = hasTool(held, name)
+		? held.filter(
+				(tool) =>
+					tool !== name && !(name === "apply_patch" && tool === "editor"),
+			)
+		: [...held, name];
+	return { ...worker, tools };
 }
 
 export function buildWorker(options: {
 	providerId: string;
 	modelId?: string;
-	presetId: string;
 	taken: string[];
 }): TeamRosterWorker {
-	const preset =
-		WORKER_TOOL_PRESETS.find(
-			(candidate) => candidate.id === options.presetId,
-		) ?? WORKER_TOOL_PRESETS[0];
 	return {
 		agentId: uniqueAgentId(
 			shortProviderName(options.providerId),
 			options.taken,
 		),
-		rolePrompt: preset.rolePrompt,
+		rolePrompt: DEFAULT_WORKER_ROLE_PROMPT,
 		providerId: options.providerId,
 		...(options.modelId === undefined ? {} : { modelId: options.modelId }),
-		tools: [...preset.tools],
+		tools: [...DEFAULT_WORKER_TOOLS],
 	};
 }
 
@@ -468,18 +438,13 @@ export function buildWorker(options: {
  */
 export function buildWorkerFromProfile(options: {
 	profile: Profile;
-	presetId: string;
 	taken: string[];
 }): TeamRosterWorker {
-	const preset =
-		WORKER_TOOL_PRESETS.find(
-			(candidate) => candidate.id === options.presetId,
-		) ?? WORKER_TOOL_PRESETS[0];
 	return {
 		agentId: uniqueAgentId(options.profile.name, options.taken),
-		rolePrompt: preset.rolePrompt,
+		rolePrompt: DEFAULT_WORKER_ROLE_PROMPT,
 		profile: options.profile.name,
-		tools: [...preset.tools],
+		tools: [...DEFAULT_WORKER_TOOLS],
 	};
 }
 

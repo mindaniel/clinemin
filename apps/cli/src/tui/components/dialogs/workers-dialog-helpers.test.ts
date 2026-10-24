@@ -5,29 +5,31 @@ import {
 	ACTION_MODEL,
 	applyModel,
 	applyProvider,
-	applyToolPreset,
 	buildActionRows,
 	buildModelRows,
 	buildProviderRows,
 	buildToolRows,
 	buildWorker,
 	buildWorkerRows,
+	DEFAULT_WORKER_ROLE_PROMPT,
+	DEFAULT_WORKER_TOOLS,
+	describeTools,
 	isValidAgentId,
-	presetForTools,
 	ROW_ADD,
+	ROW_DONE,
 	ROW_INHERIT,
 	ROW_SAVE,
 	renameWorker,
+	toggleWorkerTool,
 	uniqueAgentId,
-	WORKER_TOOL_PRESETS,
 } from "./workers-dialog-helpers";
 
 function worker(overrides: Partial<TeamRosterWorker> = {}): TeamRosterWorker {
 	return {
 		agentId: "deepseek",
-		rolePrompt: WORKER_TOOL_PRESETS[0].rolePrompt,
+		rolePrompt: DEFAULT_WORKER_ROLE_PROMPT,
 		providerId: "deepseek-web-v2",
-		tools: [...WORKER_TOOL_PRESETS[0].tools],
+		tools: [...DEFAULT_WORKER_TOOLS],
 		...overrides,
 	};
 }
@@ -68,7 +70,7 @@ describe("row keys", () => {
 		expect(rows[0]).toBe("Profile: (none)");
 		expect(rows[1]).toBe("Provider: deepseek-web-v2");
 		expect(rows[2]).toBe("Model: deepseek-reasoner");
-		expect(rows[3]).toBe("Tools: read-only");
+		expect(rows[3]).toBe("Tools: PowerShell, apply_patch");
 	});
 
 	it("hides provider and model once the worker is on a profile", () => {
@@ -105,15 +107,22 @@ describe("row keys", () => {
 		expect(rows.find((row) => row.key === "b")?.label).toContain("(current)");
 	});
 
-	it("marks the current provider and preset", () => {
+	it("marks the current provider", () => {
 		expect(
 			buildProviderRows(["x", "y"], "y").find((row) => row.key === "y")?.label,
 		).toContain("(current)");
-		expect(
-			buildToolRows([...WORKER_TOOL_PRESETS[2].tools]).find(
-				(row) => row.key === "full",
-			)?.label,
-		).toContain("(current)");
+	});
+
+	it("checks the tools a worker holds, with a Done row last", () => {
+		const rows = buildToolRows(["run_commands", "editor"]);
+		const label = (key: string) => rows.find((row) => row.key === key)?.label;
+		expect(label("run_commands")).toBe(
+			"[x] PowerShell (run_commands) (default)",
+		);
+		// editor and apply_patch are one grant, so editor checks apply_patch.
+		expect(label("apply_patch")).toContain("[x]");
+		expect(label("read_files")).toBe("[ ] read_files");
+		expect(rows.at(-1)?.key).toBe(ROW_DONE);
 	});
 });
 
@@ -181,47 +190,49 @@ describe("applyModel", () => {
 	});
 });
 
-describe("applyToolPreset", () => {
-	it("swaps tools and the matching role prompt", () => {
-		const next = applyToolPreset(worker(), "full");
-		expect(next.tools).toEqual([...WORKER_TOOL_PRESETS[2].tools]);
-		expect(next.rolePrompt).toBe(WORKER_TOOL_PRESETS[2].rolePrompt);
-	});
-
-	it("keeps a hand-written role prompt", () => {
-		const next = applyToolPreset(worker({ rolePrompt: "Mine." }), "full");
-		expect(next.rolePrompt).toBe("Mine.");
-		expect(next.tools).toEqual([...WORKER_TOOL_PRESETS[2].tools]);
-	});
-
-	it("falls back to the first preset on an unknown id", () => {
-		expect(applyToolPreset(worker(), "nope").tools).toEqual([
-			...WORKER_TOOL_PRESETS[0].tools,
+describe("toggleWorkerTool", () => {
+	it("adds an optional tool and removes it again", () => {
+		const on = toggleWorkerTool(worker(), "read_files");
+		expect(on.tools).toEqual(["run_commands", "apply_patch", "read_files"]);
+		expect(toggleWorkerTool(on, "read_files").tools).toEqual([
+			...DEFAULT_WORKER_TOOLS,
 		]);
+	});
+
+	it("turning apply_patch off drops editor too", () => {
+		const next = toggleWorkerTool(
+			worker({ tools: ["run_commands", "editor"] }),
+			"apply_patch",
+		);
+		expect(next.tools).toEqual(["run_commands"]);
+	});
+
+	it("starts an unscoped worker from every tool", () => {
+		const next = toggleWorkerTool(worker({ tools: undefined }), "skills");
+		expect(next.tools).toContain("run_commands");
+		expect(next.tools).not.toContain("skills");
 	});
 });
 
 describe("buildWorker", () => {
-	it("names the worker after the provider and applies the preset", () => {
+	it("names the worker after the provider and gives it the default tools", () => {
 		const created = buildWorker({
 			providerId: "gemini-web",
 			modelId: "gemini-3-pro",
-			presetId: "edit",
 			taken: ["deepseek"],
 		});
 		expect(created).toEqual({
 			agentId: "gemini",
 			providerId: "gemini-web",
 			modelId: "gemini-3-pro",
-			rolePrompt: WORKER_TOOL_PRESETS[1].rolePrompt,
-			tools: [...WORKER_TOOL_PRESETS[1].tools],
+			rolePrompt: DEFAULT_WORKER_ROLE_PROMPT,
+			tools: ["run_commands", "apply_patch"],
 		});
 	});
 
 	it("omits modelId when the lead's model is inherited", () => {
 		const created = buildWorker({
 			providerId: "gemini-web",
-			presetId: "read",
 			taken: [],
 		});
 		expect("modelId" in created).toBe(false);
@@ -231,7 +242,6 @@ describe("buildWorker", () => {
 		expect(
 			buildWorker({
 				providerId: "qwen-web",
-				presetId: "read",
 				taken: ["qwen"],
 			}).agentId,
 		).toBe("qwen-2");
@@ -268,13 +278,15 @@ describe("renameWorker", () => {
 	});
 });
 
-describe("presetForTools", () => {
-	it("ignores order", () => {
-		expect(presetForTools(["search_codebase", "read_files"])?.id).toBe("read");
+describe("describeTools", () => {
+	it("names run_commands PowerShell and folds editor into apply_patch", () => {
+		expect(describeTools(["run_commands", "editor", "apply_patch"])).toBe(
+			"PowerShell, apply_patch",
+		);
 	});
 
-	it("returns nothing for an unscoped worker", () => {
-		expect(presetForTools(undefined)).toBeUndefined();
+	it("says so for an unscoped worker", () => {
+		expect(describeTools(undefined)).toBe("every tool (unscoped)");
 	});
 });
 

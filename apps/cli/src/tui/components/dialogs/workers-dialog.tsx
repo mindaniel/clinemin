@@ -20,7 +20,6 @@ import {
 	applyNotes,
 	applyProfile,
 	applyProvider,
-	applyToolPreset,
 	buildActionRows,
 	buildModelRows,
 	buildProfileChoiceRows,
@@ -32,17 +31,13 @@ import {
 	clearProfile,
 	ROW_ADD,
 	ROW_BACK,
+	ROW_DONE,
 	ROW_INHERIT,
 	ROW_NO_PROFILE,
 	ROW_SAVE,
 	renameWorker,
+	toggleWorkerTool,
 	type WorkersStep,
-} from "./workers-dialog-helpers";
-
-export {
-	presetForTools,
-	WORKER_TOOL_PRESETS,
-	type WorkerToolPreset,
 } from "./workers-dialog-helpers";
 
 export type WorkersDialogResult = {
@@ -150,6 +145,17 @@ export function WorkersDialogContent(
 		);
 	};
 
+	// A new worker starts with the default tools (PowerShell + apply_patch), so
+	// there is no tools step while adding one; the manager scopes it per job.
+	// Straight on to the note, because that is the one thing only the user can
+	// supply and the manager routes jobs by it. Enter on an empty box skips it.
+	const addWorker = (created: TeamRosterWorker): void => {
+		setDirty(true);
+		setWorkers((current) => [...current, created]);
+		setNotesDraft("");
+		goTo({ kind: "notes", agentId: created.agentId });
+	};
+
 	const select = (key: string): void => {
 		switch (step.kind) {
 			case "list": {
@@ -203,13 +209,7 @@ export function WorkersDialogContent(
 					return;
 				}
 				if (key === ACTION_TOOLS) {
-					const providerId = focusedWorker?.providerId;
-					goTo({
-						kind: "tools",
-						agentId: step.agentId,
-						providerId: providerId ?? "",
-						modelId: focusedWorker?.modelId,
-					});
+					goTo({ kind: "tools", agentId: step.agentId });
 					return;
 				}
 				if (key === ACTION_NOTES) {
@@ -246,16 +246,12 @@ export function WorkersDialogContent(
 					return;
 				}
 				if (step.agentId === null) {
-					// The tool preset is still the worker's own choice: two workers on
-					// one profile may well be scoped differently, and the profile says
-					// nothing about what a worker is allowed to do.
-					goTo({
-						kind: "tools",
-						agentId: null,
-						providerId: profile.providerId,
-						modelId: profile.modelId,
-						profileName: profile.name,
-					});
+					addWorker(
+						buildWorkerFromProfile({
+							profile,
+							taken: workers.map((worker) => worker.agentId),
+						}),
+					);
 					return;
 				}
 				editWorker(step.agentId, (worker) =>
@@ -288,12 +284,13 @@ export function WorkersDialogContent(
 			case "model": {
 				const modelId = key === ROW_INHERIT ? undefined : key;
 				if (step.agentId === null) {
-					goTo({
-						kind: "tools",
-						agentId: null,
-						providerId: step.providerId,
-						modelId,
-					});
+					addWorker(
+						buildWorker({
+							providerId: step.providerId,
+							modelId,
+							taken: workers.map((worker) => worker.agentId),
+						}),
+					);
 					return;
 				}
 				editWorker(step.agentId, (worker) => applyModel(worker, modelId));
@@ -301,33 +298,11 @@ export function WorkersDialogContent(
 				return;
 			}
 			case "tools": {
-				if (step.agentId === null) {
-					const pendingProfile = step.profileName
-						? profiles.find((candidate) => candidate.name === step.profileName)
-						: undefined;
-					const created = pendingProfile
-						? buildWorkerFromProfile({
-								profile: pendingProfile,
-								presetId: key,
-								taken: workers.map((worker) => worker.agentId),
-							})
-						: buildWorker({
-								providerId: step.providerId,
-								modelId: step.modelId,
-								presetId: key,
-								taken: workers.map((worker) => worker.agentId),
-							});
-					setDirty(true);
-					setWorkers((current) => [...current, created]);
-					// Straight on to the note, because that is the one thing only the
-					// user can supply and the manager routes jobs by it. Enter on an
-					// empty box skips it.
-					setNotesDraft("");
-					goTo({ kind: "notes", agentId: created.agentId });
+				if (key === ROW_DONE) {
+					goTo({ kind: "actions", agentId: step.agentId });
 					return;
 				}
-				editWorker(step.agentId, (worker) => applyToolPreset(worker, key));
-				goTo({ kind: "actions", agentId: step.agentId });
+				editWorker(step.agentId, (worker) => toggleWorkerTool(worker, key));
 				return;
 			}
 			case "delete": {
@@ -421,7 +396,7 @@ export function WorkersDialogContent(
 			case "model":
 				return `${step.agentId ?? "New worker"} — pick a model on ${step.providerId}`;
 			case "tools":
-				return `${step.agentId ?? "New worker"} — what may it do?`;
+				return `${step.agentId} — what may it do?`;
 			case "notes":
 				return `${step.agentId} — note for the manager`;
 			case "rename":
