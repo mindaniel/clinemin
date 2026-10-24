@@ -17,6 +17,10 @@ import {
 	emitTeamProgress,
 	trackTeamRunState,
 } from "../../../session/team";
+import {
+	logLeadEvent,
+	logTeamEvent,
+} from "../../../session/team/team-debug-log";
 import type { CoreSessionConfig } from "../../../types/config";
 import type { CoreSessionEvent } from "../../../types/events";
 import type { ActiveSession } from "../../../types/session";
@@ -59,6 +63,9 @@ export class AgentEventBridge {
 			!!liveSession &&
 			(!eventMetadata.agentId ||
 				eventMetadata.agentId === readAgentId(liveSession.agent));
+		if (isRootAgentEvent && liveSession?.runtime.teamRuntime) {
+			logLeadEvent(sessionId, event);
+		}
 		handleAgentEvent(
 			ctx,
 			event,
@@ -79,6 +86,7 @@ export class AgentEventBridge {
 		rootSessionId: string,
 		event: TeamEvent,
 	): Promise<void> {
+		logTeamEvent(rootSessionId, event);
 		const session = this.deps.getSession(rootSessionId);
 		if (session) {
 			trackTeamRunState(session, event);

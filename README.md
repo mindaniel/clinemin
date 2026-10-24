@@ -69,6 +69,10 @@ bun run build:sdk
 
 `/manager` runs the session as a manager: it delegates every step to the workers in `.cline/team.json` and does no work itself. `/manager <task>` goes straight in, and `/manager off` leaves again.
 
+New workers start with PowerShell (`run_commands`) and `apply_patch`; the manager widens or narrows a worker per job with a `TOOLS:` line. Extra tools (`read_files`, `search_codebase`, web, skills) can be ticked under `/workers` → a worker → Tools.
+
+Every manager session writes a readable timeline to `~/.cline/data/logs/team/<sessionId>.log`: which worker started on which provider and model, each task, every tool call and result on both sides, what each one said back, and every error. Send that file when reporting a bug. `CLINE_TEAM_LOG=off` turns it off. A llama.cpp server's own output is in `~/.cline/llamacpp/server-<port>.log`.
+
 Both directions rebuild the system prompt, and a system prompt is fixed for the life of a session — so each switch restarts the session and clears the conversation. `/manager off` asks first. Start a manager at the top of a chat, not halfway through one.
 
 ## Keyboard shortcuts
