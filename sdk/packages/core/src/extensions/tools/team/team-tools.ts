@@ -636,6 +636,14 @@ function spawnTeamTeammate(
  * `apiKey` — another provider's key, or none. Providers that log in through a
  * browser never notice, but one that authenticates with a stored token (v1
  * DeepSeek Web's userToken) fails on every turn. A profile's own key still wins.
+ *
+ * The same goes for the model. A worker left on "the lead's model" got the
+ * lead's model id under its own provider, which is never right across
+ * providers and is destructive on llama.cpp: the model id is the .gguf path,
+ * so a DeepSeek id fell back to the default model, and the shared
+ * llama-server was killed and restarted on it (downloading it first on a fresh
+ * machine). The saved model and context window come from the worker's own
+ * provider settings instead.
  */
 function workerConnectionOverrides(
 	spec: TeamTeammateSpec,
@@ -647,9 +655,12 @@ function workerConnectionOverrides(
 		),
 	);
 	const providerId = overrides.providerId;
-	if (!providerId || providerId === leadProviderId || overrides.apiKey) {
+	if (!providerId || providerId === leadProviderId) {
 		return overrides;
 	}
+	// The lead's catalog describes the lead's provider's models; leaving it in
+	// place hides the worker provider's own.
+	overrides.knownModels = undefined;
 	try {
 		// Read the file directly: `ProviderSettingsManager` imports the core
 		// index, which imports this module, and the cycle breaks module load.
@@ -662,6 +673,8 @@ function workerConnectionOverrides(
 					settings?: {
 						apiKey?: string;
 						baseUrl?: string;
+						model?: string;
+						contextWindow?: number;
 						auth?: { accessToken?: string };
 					};
 				}
@@ -669,10 +682,23 @@ function workerConnectionOverrides(
 		};
 		const stored = state.providers?.[providerId]?.settings;
 		const apiKey = stored?.apiKey ?? stored?.auth?.accessToken;
-		if (apiKey) overrides.apiKey = apiKey;
+		if (!overrides.apiKey && apiKey) overrides.apiKey = apiKey;
 		if (!overrides.baseUrl && stored?.baseUrl) {
 			overrides.baseUrl = stored.baseUrl;
 		}
+		if (!overrides.modelId && stored?.model) {
+			overrides.modelId = stored.model;
+		}
+		// `maxInputTokens` is where the handler factory reads a configured
+		// context window from (as `toProviderConfig` would set it). On llama.cpp
+		// it is also llama-server's `-c`, so a mismatch restarts the server.
+		overrides.providerConfig = {
+			providerId,
+			...(overrides.modelId ? { modelId: overrides.modelId } : {}),
+			...(stored?.contextWindow
+				? { maxInputTokens: stored.contextWindow }
+				: {}),
+		} as DelegatedAgentRuntimeConfig["providerConfig"];
 	} catch {
 		// Unreadable settings: keep the inherited connection, as before.
 	}

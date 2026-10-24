@@ -716,6 +716,70 @@ describe("createAgentTeamsTools runtime behavior", () => {
 		}
 	});
 
+	it("gives a llama.cpp worker with no model its saved .gguf and context window, not the lead's model", async () => {
+		const dir = mkdtempSync(join(tmpdir(), "cline-worker-llamacpp-"));
+		const settingsPath = join(dir, "providers.json");
+		writeFileSync(
+			settingsPath,
+			JSON.stringify({
+				providers: {
+					llamacpp: {
+						settings: {
+							model: "/models/qwen.gguf",
+							contextWindow: 32768,
+							baseUrl: "http://localhost:8080/v1",
+						},
+					},
+				},
+			}),
+		);
+		vi.stubEnv("CLINE_PROVIDER_SETTINGS_PATH", settingsPath);
+		try {
+			const spawnTeammate = vi.fn();
+			const runtime = {
+				getMemberRole: vi.fn(() => "lead"),
+				isTeammateActive: vi.fn(() => false),
+				spawnTeammate,
+			} as unknown as AgentTeamsRuntime;
+			const tools = createAgentTeamsTools({
+				runtime,
+				requesterId: "lead",
+				teammateConfigProvider: makeTeammateConfigProvider({
+					providerId: "deepseek-web-v2",
+					modelId: "deepseek-reasoner",
+				}),
+				createBaseTools: vi.fn(() => []),
+				includeManagementTools: false,
+			});
+
+			await tools
+				.find((tool) => tool.name === "team_spawn_teammate")
+				?.execute(
+					{
+						agentId: "local",
+						rolePrompt: "Read files.",
+						providerId: "llamacpp",
+					},
+					{ agentId: "lead", conversationId: "conv-1", iteration: 1 },
+				);
+
+			const config = spawnTeammate.mock.calls[0]?.[0]?.config;
+			expect(config).toMatchObject({
+				providerId: "llamacpp",
+				modelId: "/models/qwen.gguf",
+				baseUrl: "http://localhost:8080/v1",
+				providerConfig: {
+					providerId: "llamacpp",
+					maxInputTokens: 32768,
+				},
+			});
+			expect(config.knownModels).toBeUndefined();
+		} finally {
+			vi.unstubAllEnvs();
+			rmSync(dir, { recursive: true, force: true });
+		}
+	});
+
 	it("injects workspace metadata into cline teammate system prompt", async () => {
 		const spawnTeammate = vi.fn();
 		const runtime = {

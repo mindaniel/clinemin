@@ -343,10 +343,10 @@ export function buildModelRows(
 			key: ROW_INHERIT,
 			label:
 				currentModelId === undefined
-					? "Use the lead's model (current)"
-					: "Use the lead's model",
+					? "Provider's saved model (current)"
+					: "Provider's saved model",
 			section: "Model",
-			searchText: "inherit default lead",
+			searchText: "inherit default saved lead",
 		},
 		...modelIds.map((modelId) => ({
 			key: modelId,
