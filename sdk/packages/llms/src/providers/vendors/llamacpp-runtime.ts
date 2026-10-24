@@ -354,6 +354,45 @@ function stateFilePath(port: string): string {
 	return path.join(CONFIG_DIR, `server-state-${port}.json`);
 }
 
+/** llama-server's stdout/stderr for the server on this port, read back for load progress. */
+function serverLogPath(port: string): string {
+	return path.join(CONFIG_DIR, `server-${port}.log`);
+}
+
+/**
+ * Log lines llama-server prints (at `-lv 4`) as it loads, with a rough share
+ * of the load done once each appears. llama-server reports no real
+ * percentage, so this is an estimate; for a large model most of the wait sits
+ * in warmup, where the weights are first paged in.
+ */
+const LOAD_STAGES: Array<[RegExp, number]> = [
+	[/load_model: loading model/, 5],
+	[/load_tensors: loading model tensors/, 15],
+	[/load_tensors: offloaded/, 40],
+	[/llama_context: constructing/, 50],
+	[/warming up the model/, 60],
+	[/load_model: initializing/, 95],
+	[/model loaded/, 100],
+];
+
+/** Rough load percentage from llama-server's log so far (0 when the log is missing). */
+export function estimateLoadPercent(log: string): number {
+	let pct = 0;
+	for (const [pattern, stagePct] of LOAD_STAGES) {
+		if (pattern.test(log)) pct = stagePct;
+	}
+	return pct;
+}
+
+function readLoadPercent(logPath: string | undefined): number | undefined {
+	if (!logPath) return undefined;
+	try {
+		return estimateLoadPercent(fs.readFileSync(logPath, "utf-8"));
+	} catch {
+		return undefined;
+	}
+}
+
 function readState(port: string): ServerState | null {
 	try {
 		return JSON.parse(fs.readFileSync(stateFilePath(port), "utf-8"));
@@ -415,21 +454,40 @@ async function checkHealth(baseURL: string): Promise<boolean> {
 	}
 }
 
+/** True when anything answers HTTP at baseURL, including the 503 llama-server sends while it loads. */
+async function serverResponds(baseURL: string): Promise<boolean> {
+	try {
+		await fetch(`${baseURL.replace(/\/$/, "")}/models`, {
+			signal: AbortSignal.timeout(3000),
+		});
+		return true;
+	} catch {
+		return false;
+	}
+}
+
 async function waitForHealth(
 	baseURL: string,
 	timeoutMs: number,
 	expectHealthy: boolean,
 	onProgress?: ProgressCallback,
+	logPath?: string,
 ): Promise<boolean> {
 	const start = Date.now();
-	let lastHeartbeat = start;
+	let lastMessage = "";
 	while (Date.now() - start < timeoutMs) {
 		if ((await checkHealth(baseURL)) === expectHealthy) return true;
-		if (expectHealthy && onProgress && Date.now() - lastHeartbeat > 15000) {
-			lastHeartbeat = Date.now();
-			onProgress(
-				`Still loading model… (${Math.round((Date.now() - start) / 1000)}s) — large models can take a while`,
-			);
+		if (expectHealthy && onProgress) {
+			const pct = readLoadPercent(logPath);
+			const secs = Math.round((Date.now() - start) / 1000);
+			const message =
+				pct === undefined
+					? `Loading model… ${secs}s`
+					: `Loading model… ~${pct}% (${secs}s)`;
+			if (message !== lastMessage) {
+				lastMessage = message;
+				onProgress(message);
+			}
 		}
 		await new Promise((r) => setTimeout(r, 400));
 	}
@@ -544,7 +602,19 @@ export async function ensureLlamaCppRunning(
 		const desiredExtraArgs = buildExtraArgs(config, overrides);
 
 		onProgress?.("Checking for a running llama.cpp server…");
-		const isHealthy = await checkHealth(baseURL);
+		let isHealthy = await checkHealth(baseURL);
+		// A server that answers but is not healthy is still loading, e.g. one the
+		// TUI started a moment ago before this chat turn asked for it. Wait for
+		// it rather than spawning a second one on the same port.
+		if (!isHealthy && (await serverResponds(baseURL))) {
+			isHealthy = await waitForHealth(
+				baseURL,
+				10 * 60 * 1000,
+				true,
+				onProgress,
+				serverLogPath(desiredPort),
+			);
+		}
 
 		if (isHealthy) {
 			const state = readState(desiredPort);
@@ -624,6 +694,10 @@ export async function ensureLlamaCppRunning(
 			desiredPort,
 			"--host",
 			"127.0.0.1",
+			// Info-level log lines, which carry the load stages read for progress.
+			// Before the extra args so a user's own verbosity flag still wins.
+			"-lv",
+			"4",
 			...(desiredExtraArgs
 				? desiredExtraArgs.split(/\s+/).filter(Boolean)
 				: []),
@@ -632,11 +706,20 @@ export async function ensureLlamaCppRunning(
 		onProgress?.("Starting llama-server…");
 		// detached on both platforms so the server outlives this process (survives Ctrl+C / exit),
 		// and isn't torn down as part of the parent's job object / process group on Windows.
+		let logPath: string | undefined = serverLogPath(desiredPort);
+		let logFd: number | undefined;
+		try {
+			fs.mkdirSync(CONFIG_DIR, { recursive: true });
+			logFd = fs.openSync(logPath, "w");
+		} catch {
+			logPath = undefined; // progress falls back to elapsed time
+		}
 		const child = spawn(binaryPath, args, {
-			stdio: "ignore",
+			stdio: logFd === undefined ? "ignore" : ["ignore", logFd, logFd],
 			detached: true,
 			windowsHide: true,
 		});
+		if (logFd !== undefined) fs.closeSync(logFd);
 		child.unref();
 
 		const healthy = await waitForHealth(
@@ -644,6 +727,7 @@ export async function ensureLlamaCppRunning(
 			10 * 60 * 1000,
 			true,
 			onProgress,
+			logPath,
 		);
 		if (!healthy) {
 			return {

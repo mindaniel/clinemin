@@ -20,6 +20,7 @@ import {
 	isProviderConfigured,
 } from "../../utils/provider-auth";
 import type { Config } from "../../utils/types";
+import { setBackgroundNotice } from "../components/background-notice";
 import { ConfigErrorContent } from "../components/dialogs/config-dialogs";
 import {
 	LlamaCppContextSizeContent,
@@ -388,47 +389,13 @@ async function runProviderChange(
 				contextWindow,
 			});
 
-			// Swap the running server right now, with progress visible, instead of
-			// waiting for the next chat message to lazily trigger it — that lazy
-			// path left users unsure whether anything happened and, if the swap
-			// failed (e.g. the old process couldn't be positively identified), the
-			// error was easy to miss and looked like "nothing changed."
-			try {
-				const swapResult = await withLoadingDialog(
-					dialog,
-					`Switching to ${path.basename(modelPath)}...`,
-					async () =>
-						await Llms.ensureLlamaCppRunning(targetBaseUrl, undefined, {
-							modelPath,
-							contextWindow,
-						}),
-				);
-				if (!swapResult.ok) {
-					await dialog.choice<void>({
-						closeOnEscape: true,
-						content: (ctx: ChoiceContext<void>) => (
-							<ConfigErrorContent
-								{...ctx}
-								title="llama.cpp server swap failed"
-								message={swapResult.error ?? "Unknown error"}
-							/>
-						),
-					});
-					return false;
-				}
-			} catch (error) {
-				await dialog.choice<void>({
-					closeOnEscape: true,
-					content: (ctx: ChoiceContext<void>) => (
-						<ConfigErrorContent
-							{...ctx}
-							title="llama.cpp server swap failed"
-							message={error instanceof Error ? error.message : String(error)}
-						/>
-					),
-				});
-				return false;
-			}
+			// Swap the running server right now instead of waiting for the next
+			// chat message to lazily trigger it — that lazy path left users unsure
+			// whether anything happened, and a failed swap looked like "nothing
+			// changed." A large model takes minutes to load, so the swap runs in
+			// the background with a corner notice rather than a blocking dialog;
+			// a chat turn sent meanwhile waits for the same server.
+			swapLlamaCppInBackground(dialog, targetBaseUrl, modelPath, contextWindow);
 			finalProviderId = targetId;
 			saved = true;
 		} else {
@@ -493,6 +460,41 @@ async function runProviderChange(
 		},
 	);
 	return true;
+}
+
+/** Start (or restart) llama-server on a model, with progress in the background notice. */
+function swapLlamaCppInBackground(
+	dialog: DialogActions,
+	baseUrl: string,
+	modelPath: string,
+	contextWindow: number,
+): void {
+	const name = path.basename(modelPath);
+	const showError = (message: string) => {
+		void dialog.choice<void>({
+			closeOnEscape: true,
+			content: (ctx: ChoiceContext<void>) => (
+				<ConfigErrorContent
+					{...ctx}
+					title="llama.cpp server swap failed"
+					message={message}
+				/>
+			),
+		});
+	};
+	setBackgroundNotice(`${name}: starting…`);
+	Llms.ensureLlamaCppRunning(
+		baseUrl,
+		(message) => setBackgroundNotice(`${name}: ${message}`),
+		{ modelPath, contextWindow },
+	)
+		.then((result) => {
+			if (!result.ok) showError(result.error ?? "Unknown error");
+		})
+		.catch((error: unknown) =>
+			showError(error instanceof Error ? error.message : String(error)),
+		)
+		.finally(() => setBackgroundNotice(null));
 }
 
 export function useModelSelector(opts: {

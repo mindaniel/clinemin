@@ -13,6 +13,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { RepoStatus } from "../utils/repo-status";
 import { readRepoStatus } from "../utils/repo-status";
 import { toggleBrowserHeadless } from "./browser-mode";
+import { BackgroundNotice } from "./components/background-notice";
 import type { TranscriptScrollHandle } from "./components/chat-message-list";
 import {
 	CheckpointConfirmContent,
@@ -976,6 +977,7 @@ function App(props: TuiProps) {
 	return wrapWithBridge(
 		<box flexDirection="column" width="100%" height="100%">
 			{content}
+			<BackgroundNotice />
 			<Toast toast={toast} />
 		</box>,
 	);
