@@ -1,6 +1,9 @@
 import type { AgentMode } from "@cline/core";
 import { useTerminalDimensions } from "@opentui/react";
-import { useSourceUpdate } from "../../commands/source-auto-update";
+import {
+	runSourceUpdateAction,
+	useSourceUpdate,
+} from "../../commands/source-auto-update";
 import {
 	shouldShowCliUsageCost,
 	shouldShowCliUsageCoveredBySubscription,
@@ -402,10 +405,13 @@ export function StatusBar(props: StatusBarProps) {
 			</box>
 
 			{updatedTo && (
-				<box flexDirection="row" justifyContent="flex-end">
+				<box
+					flexDirection="row"
+					justifyContent="flex-end"
+					onMouseDown={runSourceUpdateAction}
+				>
 					<text fg={successColor}>
-						Update {updatedTo} ready, applies when cline restarts with no other
-						session running
+						Update {updatedTo} ready, click or /update to restart into it
 					</text>
 				</box>
 			)}

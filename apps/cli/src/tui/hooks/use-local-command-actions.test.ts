@@ -32,11 +32,21 @@ function makeActions(
 		switchProfile: vi.fn(async () => true),
 		configureTelegram: vi.fn(async () => true),
 		setKeepAwake: vi.fn(async () => true),
+		restartForUpdate: vi.fn(async () => true),
 		...overrides,
 	};
 }
 
 describe("runLocalSlashCommandAction", () => {
+	it("routes /update to the restart action", async () => {
+		const restartForUpdate = vi.fn(async () => true);
+		const actions = makeActions({ restartForUpdate });
+
+		await runLocalSlashCommandAction({ ...actions, name: "update" });
+
+		expect(restartForUpdate).toHaveBeenCalledOnce();
+	});
+
 	it("opens the manager dialog for a bare /manager", async () => {
 		const openManager = vi.fn(async () => true);
 		const actions = makeActions({ openManager });

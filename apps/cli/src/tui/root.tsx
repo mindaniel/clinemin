@@ -10,6 +10,7 @@ import {
 	useDialogState,
 } from "@opentui-ui/dialog/react";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { setSourceUpdateAction } from "../commands/source-auto-update";
 import type { RepoStatus } from "../utils/repo-status";
 import { readRepoStatus } from "../utils/repo-status";
 import { toggleBrowserHeadless } from "./browser-mode";
@@ -670,6 +671,11 @@ function App(props: TuiProps) {
 			options?: { silent?: boolean },
 		) => submitTextRef.current(text, delivery, options),
 	});
+
+	useEffect(() => {
+		setSourceUpdateAction(() => void handleSlashCommand("update"));
+		return () => setSourceUpdateAction(undefined);
+	}, [handleSlashCommand]);
 
 	const startupActionsRef = useRef({ openConfig, openHistory });
 	startupActionsRef.current = { openConfig, openHistory };

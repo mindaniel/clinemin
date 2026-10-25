@@ -10,6 +10,10 @@ import {
 } from "@cline/core";
 import { setContinuationNote, shutdownLaunchedBrowsers } from "@cline/llms";
 import { formatModeSwitchNotice } from "@cline/shared";
+import {
+	isUpdateRestartRequested,
+	relaunchForUpdate,
+} from "../commands/source-update-restart";
 import { logCliError } from "../logging/errors";
 import { exportHistorySession } from "../session/history-export";
 import { deleteSession } from "../session/session";
@@ -1004,10 +1008,16 @@ export async function runInteractive(
 	}
 
 	let exitSummary: InteractiveExitSummary | undefined;
+	let resumeAfterUpdate: string | undefined;
 	try {
 		await tuiApp.waitUntilExit();
 	} finally {
+		resumeAfterUpdate = sessionRuntime.getActiveSessionId() || undefined;
 		exitSummary = await cleanupRuntime();
+	}
+	if (isUpdateRestartRequested()) {
+		prepareTerminalForPostTuiOutput();
+		await relaunchForUpdate(resumeAfterUpdate);
 	}
 	if (exitSummary) {
 		prepareTerminalForPostTuiOutput();

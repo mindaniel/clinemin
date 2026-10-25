@@ -65,6 +65,8 @@ export interface LocalSlashCommandActionInput {
 	 * "on", "off", or empty to toggle.
 	 */
 	setKeepAwake: (arg: string) => Promise<boolean>;
+	/** `/update`: restart into the staged update, back on this session. */
+	restartForUpdate: () => Promise<boolean>;
 }
 
 /**
@@ -184,6 +186,9 @@ export function runLocalSlashCommandAction(
 	}
 	if (normalized === "awake") {
 		return input.setKeepAwake(commandArgument(input.invocation?.text));
+	}
+	if (normalized === "update") {
+		return input.restartForUpdate();
 	}
 	if (normalized === "quit") {
 		setTimeout(input.exitCline, 0);

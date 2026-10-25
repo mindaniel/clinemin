@@ -33,6 +33,7 @@ export type LocalSlashCommandName =
 	| "profile"
 	| "telegram"
 	| "awake"
+	| "update"
 	| "quit"
 	| "help";
 
@@ -160,6 +161,10 @@ const TUI_LOCAL_COMMANDS: Array<{
 			"Keep the computer awake while Cline runs (/awake on|off, bare /awake toggles)",
 	},
 	{
+		name: "update",
+		description: "Restart into the downloaded update and reopen this chat",
+	},
+	{
 		name: "help",
 		description: "Show help",
 	},
@@ -211,6 +216,7 @@ const SYSTEM_COMMAND_ORDER = [
 	"profile",
 	"telegram",
 	"awake",
+	"update",
 	GUIDE_AI_COMMAND,
 	"help",
 	"quit",

@@ -59,6 +59,10 @@ function cline {
 
 ## Update
 
+Cline downloads and builds updates in the background. When one is ready the status bar says so: click that line, run `/update`, or press `Opt+1`, and cline restarts in the same terminal, applies the update, and reopens the chat you were in. It waits if the agent is mid-turn, and refuses while another cline window or a `--zen` session is running, since the restart stops the hub they share.
+
+To update by hand:
+
 ```powershell
 git pull origin main
 bun install
@@ -94,6 +98,7 @@ While the agent is running, `Esc` aborts it — except when you have a queued me
 | `Opt+R` | Fork session | `Opt+H` | Session history |
 | `Opt+U` | Restore checkpoint | `Opt+K` | Help |
 | `Opt+L` | New session | `Opt+Q` | Exit |
+| `Opt+Y` | Keep awake (`/awake`) | `Opt+1` | Restart into update (`/update`) |
 
 ## Using llama.cpp
 

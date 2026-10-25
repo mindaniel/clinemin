@@ -91,6 +91,21 @@ export function useSourceUpdate(): string | undefined {
 	return useSyncExternalStore(subscribe, () => readyUpdate);
 }
 
+export function getSourceUpdate(): string | undefined {
+	return readyUpdate;
+}
+
+let updateAction: (() => void) | undefined;
+
+/** What clicking the status bar's "update ready" line does (`/update`). */
+export function setSourceUpdateAction(action: (() => void) | undefined): void {
+	updateAction = action;
+}
+
+export function runSourceUpdateAction(): void {
+	updateAction?.();
+}
+
 /**
  * Show any update already staged, then start a background check unless one
  * ran recently or is still running.

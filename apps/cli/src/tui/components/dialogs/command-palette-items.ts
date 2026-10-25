@@ -21,6 +21,7 @@ export type CommandPaletteAction =
 	| "profile"
 	| "telegram"
 	| "awake"
+	| "update"
 	| "help"
 	| "quit";
 
@@ -212,6 +213,14 @@ const ACTION_ITEMS: Array<{
 		shortcut: "Opt+Y",
 		description: "Toggle keeping the computer awake while Cline runs",
 		keywords: ["awake", "sleep", "caffeinate", "power"],
+	},
+	{
+		action: "update",
+		label: "Restart Into Update",
+		// Every letter is taken (Opt+B/F are word navigation).
+		shortcut: "Opt+1",
+		description: "Apply the downloaded update and reopen this chat",
+		keywords: ["update", "restart", "upgrade", "reload"],
 	},
 	{
 		action: "help",

@@ -156,6 +156,11 @@ import type { ChoiceContext } from "@opentui-ui/dialog";
 import { useDialog } from "@opentui-ui/dialog/react";
 import { useCallback } from "react";
 import { runConnectAdapter, runStopConnector } from "../../commands/connect";
+import { getSourceUpdate } from "../../commands/source-auto-update";
+import {
+	findUpdateRestartBlocker,
+	requestUpdateRestart,
+} from "../../commands/source-update-restart";
 import type { SlashCommandRegistry } from "../commands/slash-command-registry";
 import { resolveSlashCommand } from "../commands/slash-command-registry";
 import { FindChatDialogContent } from "../components/dialogs/find-chat-dialog";
@@ -1252,6 +1257,39 @@ export function useLocalCommandActions(input: {
 		[session],
 	);
 
+	/**
+	 * `/update`: exit, stop the hub, and start a new cline on this session so
+	 * the staged update is swapped in on the way (`source-update-restart.ts`).
+	 */
+	const restartForUpdate = useCallback(async (): Promise<boolean> => {
+		const staged = getSourceUpdate();
+		if (!staged) {
+			session.appendEntry({
+				kind: "status",
+				text: "/update: no update downloaded yet. Cline checks in the background and shows a line here when one is ready.",
+			});
+			return true;
+		}
+		if (session.isRunning) {
+			session.appendEntry({
+				kind: "error",
+				text: "/update: the agent is still working. Let the turn finish (or press Esc), then run /update again.",
+			});
+			return true;
+		}
+		const blocker = await findUpdateRestartBlocker(getSessionId());
+		if (blocker) {
+			session.appendEntry({
+				kind: "error",
+				text: `/update: not restarting, ${blocker}`,
+			});
+			return true;
+		}
+		requestUpdateRestart();
+		onExit();
+		return true;
+	}, [getSessionId, onExit, session]);
+
 	const handleSlashCommand = useCallback(
 		(command: string, invocation?: LocalSlashCommandInvocation) => {
 			const resolved = resolveSlashCommand(slashCommandRegistry, command);
@@ -1284,6 +1322,7 @@ export function useLocalCommandActions(input: {
 				switchProfile,
 				configureTelegram,
 				setKeepAwake,
+				restartForUpdate,
 			});
 		},
 		[
@@ -1309,6 +1348,7 @@ export function useLocalCommandActions(input: {
 			switchProfile,
 			configureTelegram,
 			setKeepAwake,
+			restartForUpdate,
 			session.isRunning,
 			slashCommandRegistry,
 		],

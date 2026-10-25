@@ -27,7 +27,7 @@ export interface ClineProcess {
 	commandLine: string;
 }
 
-function scanProcesses(): Promise<ClineProcess[]> {
+export function scanProcesses(): Promise<ClineProcess[]> {
 	return new Promise((resolve) => {
 		const done = (
 			out: string,
