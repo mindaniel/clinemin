@@ -99,12 +99,19 @@ While the agent is running, `Esc` aborts it — except when you have a queued me
 | `Opt+U` | Restore checkpoint | `Opt+K` | Help |
 | `Opt+L` | New session | `Opt+Q` | Exit |
 | `Opt+Y` | Keep awake (`/awake`) | `Opt+1` | Restart into update (`/update`) |
+| `Opt+2` | Log in to web provider (`/login`) | | |
 
 ## Using llama.cpp
 
 Open the provider picker (`Ctrl+P` → Change Provider), select **llama.cpp**. First prompt triggers the download (binary + a small default model, one-time). To point it at your own models: `Ctrl+P` → Change Provider, then set `LLAMACPP_MODEL_PATH`.
 
 Config lives in `~/.cline/llamacpp/` (binary, default model, server state). Advanced overrides (binary path, port, extra `llama-server` flags, autostart toggle) via env vars: `LLAMACPP_BINARY_PATH`, `LLAMACPP_PORT`, `LLAMACPP_ARGS`, `LLAMACPP_AUTO_START`.
+
+## Web providers (DeepSeek, Qwen, ChatGPT, Claude, Gemini, Kimi, Grok)
+
+These drive a real Chrome window. On first use, or after `/profile` creates a new profile, run `/login` (`Opt+2`): it opens that provider's Chrome on its site, visibly, so you can sign in before sending anything. The login stays in the profile.
+
+`Tab` switches the browser between hidden and visible. The setting is kept per profile, so two terminals on two profiles can run one hidden and one visible.
 
 ## Other providers
 

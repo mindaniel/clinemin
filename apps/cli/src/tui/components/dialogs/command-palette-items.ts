@@ -22,6 +22,7 @@ export type CommandPaletteAction =
 	| "telegram"
 	| "awake"
 	| "update"
+	| "login"
 	| "help"
 	| "quit";
 
@@ -221,6 +222,13 @@ const ACTION_ITEMS: Array<{
 		shortcut: "Opt+1",
 		description: "Apply the downloaded update and reopen this chat",
 		keywords: ["update", "restart", "upgrade", "reload"],
+	},
+	{
+		action: "login",
+		label: "Log In To Web Provider",
+		shortcut: "Opt+2",
+		description: "Open the web provider's Chrome on its site to sign in",
+		keywords: ["login", "log in", "sign in", "browser", "web", "account"],
 	},
 	{
 		action: "help",

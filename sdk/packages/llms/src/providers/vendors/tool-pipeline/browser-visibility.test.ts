@@ -33,6 +33,14 @@ describe("browser visibility preference", () => {
 		expect(resolveHeadless(false)).toBe(true);
 	});
 
+	it("keeps a separate preference per browser profile", () => {
+		writeHeadlessPreference(true, "work");
+		writeHeadlessPreference(false, "home");
+		expect(readHeadlessPreference("work")).toBe(true);
+		expect(readHeadlessPreference("home")).toBe(false);
+		expect(readHeadlessPreference("other")).toBeUndefined();
+	});
+
 	it("leaves the browser alone with no preference or nothing running", async () => {
 		expect(await closeBrowserIfModeChanged(1)).toBe(false);
 		writeHeadlessPreference(true);

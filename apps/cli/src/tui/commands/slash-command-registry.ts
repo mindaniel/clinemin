@@ -34,6 +34,7 @@ export type LocalSlashCommandName =
 	| "telegram"
 	| "awake"
 	| "update"
+	| "login"
 	| "quit"
 	| "help";
 
@@ -165,6 +166,11 @@ const TUI_LOCAL_COMMANDS: Array<{
 		description: "Restart into the downloaded update and reopen this chat",
 	},
 	{
+		name: "login",
+		description:
+			"Open the web provider's Chrome on its site to sign in (this profile)",
+	},
+	{
 		name: "help",
 		description: "Show help",
 	},
@@ -214,6 +220,7 @@ const SYSTEM_COMMAND_ORDER = [
 	"paste",
 	"note",
 	"profile",
+	"login",
 	"telegram",
 	"awake",
 	"update",

@@ -54,6 +54,8 @@ import {
 	resolveGrokWebV2Config,
 	resolveKimiWebV2Config,
 	resolveQwenWebV2Config,
+	isWebLoginProvider,
+	openWebProviderLogin,
 	setActiveBrowserProfile,
 	setContinuationNote,
 	setPendingInjectedReply,
@@ -157,6 +159,7 @@ import { useDialog } from "@opentui-ui/dialog/react";
 import { useCallback } from "react";
 import { runConnectAdapter, runStopConnector } from "../../commands/connect";
 import { getSourceUpdate } from "../../commands/source-auto-update";
+import { refreshBrowserHeadless } from "../browser-mode";
 import {
 	findUpdateRestartBlocker,
 	requestUpdateRestart,
@@ -1034,6 +1037,7 @@ export function useLocalCommandActions(input: {
 
 		try {
 			setActiveBrowserProfile(name);
+			refreshBrowserHeadless();
 		} catch (error) {
 			session.appendEntry({
 				kind: "error",
@@ -1052,7 +1056,7 @@ export function useLocalCommandActions(input: {
 			kind: "status",
 			text:
 				`/profile: this terminal now uses profile "${name}". ` +
-				"The next turn opens its browser; sign in there if it is new.",
+				"If it is new, run /login to sign in before the first message.",
 		});
 		return true;
 	}, [dialog, refocusTextarea, resetProfile, session]);
@@ -1290,6 +1294,37 @@ export function useLocalCommandActions(input: {
 		return true;
 	}, [getSessionId, onExit, session]);
 
+	/**
+	 * `/login`: open the web provider's Chrome, visible, on its site, so the
+	 * account can be signed in before the first message (and while the browser
+	 * is set to hidden, where a turn's login page cannot be seen at all).
+	 */
+	const openLogin = useCallback(async (): Promise<boolean> => {
+		if (!isWebLoginProvider(providerId)) {
+			session.appendEntry({
+				kind: "error",
+				text: `/login: "${providerId}" does not sign in through a browser. Pick a web provider first (Opt+P).`,
+			});
+			return true;
+		}
+		try {
+			const opened = await openWebProviderLogin(providerId);
+			session.appendEntry({
+				kind: "status",
+				text:
+					`/login: ${opened.outcome === "launched" ? "opened" : "switched to"} Chrome on ${opened.url} ` +
+					`(profile "${opened.profile}"). Sign in there, then send your message. ` +
+					"The login is kept in the profile; a hidden browser goes back to hidden on the next turn.",
+			});
+		} catch (error) {
+			session.appendEntry({
+				kind: "error",
+				text: `/login: ${error instanceof Error ? error.message : String(error)}`,
+			});
+		}
+		return true;
+	}, [providerId, session]);
+
 	const handleSlashCommand = useCallback(
 		(command: string, invocation?: LocalSlashCommandInvocation) => {
 			const resolved = resolveSlashCommand(slashCommandRegistry, command);
@@ -1323,6 +1358,7 @@ export function useLocalCommandActions(input: {
 				configureTelegram,
 				setKeepAwake,
 				restartForUpdate,
+				openLogin,
 			});
 		},
 		[
@@ -1349,6 +1385,7 @@ export function useLocalCommandActions(input: {
 			configureTelegram,
 			setKeepAwake,
 			restartForUpdate,
+			openLogin,
 			session.isRunning,
 			slashCommandRegistry,
 		],

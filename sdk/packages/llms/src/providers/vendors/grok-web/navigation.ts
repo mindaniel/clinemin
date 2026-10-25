@@ -161,7 +161,7 @@ export async function waitForComposerReady(
 			hintLogged = true;
 			logger?.log(
 				"Grok Web: waiting for the grok.com page to finish loading " +
-					`(up to ${Math.round(config.loginTimeoutMs / 1000)}s). If the Chrome window shows a login page, log in now.`,
+					`(up to ${Math.round(config.loginTimeoutMs / 1000)}s). If the Chrome window shows a login page, log in now (no window? run /login).`,
 				{ severity: "info", providerId: "grok-web" },
 			);
 		}

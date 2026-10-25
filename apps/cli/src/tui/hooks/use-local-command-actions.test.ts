@@ -33,11 +33,21 @@ function makeActions(
 		configureTelegram: vi.fn(async () => true),
 		setKeepAwake: vi.fn(async () => true),
 		restartForUpdate: vi.fn(async () => true),
+		openLogin: vi.fn(async () => true),
 		...overrides,
 	};
 }
 
 describe("runLocalSlashCommandAction", () => {
+	it("routes /login to the login action", async () => {
+		const openLogin = vi.fn(async () => true);
+		const actions = makeActions({ openLogin });
+
+		await runLocalSlashCommandAction({ ...actions, name: "login" });
+
+		expect(openLogin).toHaveBeenCalledOnce();
+	});
+
 	it("routes /update to the restart action", async () => {
 		const restartForUpdate = vi.fn(async () => true);
 		const actions = makeActions({ restartForUpdate });

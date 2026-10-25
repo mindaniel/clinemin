@@ -8,23 +8,53 @@
  * browser with the preference and, when they differ, closes it so the usual
  * launch path starts it again with or without `--headless=new`. Same profile
  * directory either way, so logins and chats survive the switch.
+ *
+ * The preference is kept per browser profile. One shared value meant a Tab in
+ * a terminal on profile B also flipped profile A's Chrome in another terminal:
+ * A's next turn saw the new value and restarted its hidden browser visible.
  */
 
+import { getActiveBrowserProfile } from "./browser-profiles";
 import { clineStateFile, readStateFile, writeStateFile } from "./process-file";
-import { processGlobal } from "./process-global";
 
 const PREFERENCE_FILE = "browser-headless.json";
 
-/** The Tab-key preference, or `undefined` when never set (config.json decides). */
-export function readHeadlessPreference(): boolean | undefined {
-	const state = readStateFile<{ headless?: unknown }>(
-		clineStateFile(PREFERENCE_FILE),
-	);
-	return typeof state?.headless === "boolean" ? state.headless : undefined;
+interface PreferenceState {
+	/** Pre-profile value. Still read as the fallback, never written again. */
+	headless?: unknown;
+	byProfile?: Record<string, unknown>;
 }
 
-export function writeHeadlessPreference(headless: boolean): void {
-	writeStateFile(clineStateFile(PREFERENCE_FILE), { headless });
+function readState(): PreferenceState {
+	return readStateFile<PreferenceState>(clineStateFile(PREFERENCE_FILE)) ?? {};
+}
+
+/**
+ * The Tab-key preference for `profile` (default: the active one), or
+ * `undefined` when never set (config.json decides).
+ */
+export function readHeadlessPreference(
+	profile: string = getActiveBrowserProfile(),
+): boolean | undefined {
+	const state = readState();
+	const own = state.byProfile?.[profile];
+	if (typeof own === "boolean") return own;
+	return typeof state.headless === "boolean" ? state.headless : undefined;
+}
+
+export function writeHeadlessPreference(
+	headless: boolean,
+	profile: string = getActiveBrowserProfile(),
+): void {
+	const state = readState();
+	const byProfile =
+		state.byProfile && typeof state.byProfile === "object"
+			? state.byProfile
+			: {};
+	writeStateFile(clineStateFile(PREFERENCE_FILE), {
+		...state,
+		byProfile: { ...byProfile, [profile]: headless },
+	});
 }
 
 /** Whether to launch Chrome hidden: the preference, else the provider's config. */
@@ -32,11 +62,7 @@ export function resolveHeadless(configHeadless: boolean): boolean {
 	return readHeadlessPreference() ?? configHeadless;
 }
 
-/** Last mode seen per port, so a turn only asks Chrome when the preference moved. */
-const seenMode = () =>
-	processGlobal("browserHeadlessByPort", () => new Map<number, boolean>());
-
-async function readBrowserVersion(
+export async function readBrowserVersion(
 	port: number,
 ): Promise<{ userAgent: string; wsUrl: string } | undefined> {
 	try {
@@ -55,7 +81,7 @@ async function readBrowserVersion(
 }
 
 /** Ask Chrome to quit over CDP and wait until its debug port is gone. */
-async function closeBrowser(port: number, wsUrl: string): Promise<void> {
+export async function closeBrowser(port: number, wsUrl: string): Promise<void> {
 	await new Promise<void>((resolve) => {
 		const done = setTimeout(resolve, 3_000);
 		try {
@@ -85,21 +111,21 @@ async function closeBrowser(port: number, wsUrl: string): Promise<void> {
  * Close the browser on `port` when its mode does not match the preference.
  * True when it was closed: the caller drops its cached connection and
  * launches again. A no-op until the preference has been set once.
+ *
+ * Asks Chrome every turn (one local request) rather than remembering the last
+ * answer per port: `/login` restarts the browser visible behind the
+ * provider's back, and a remembered "already hidden" would keep driving that
+ * window for the rest of the session.
  */
 export async function closeBrowserIfModeChanged(
 	port: number,
 ): Promise<boolean> {
 	const wanted = readHeadlessPreference();
 	if (wanted === undefined) return false;
-	if (seenMode().get(port) === wanted) return false;
 	const version = await readBrowserVersion(port);
-	if (!version) return false; // Not running: the launch will use `wanted`.
+	if (!version?.wsUrl) return false; // Not running: the launch will use `wanted`.
 	const running = version.userAgent.includes("HeadlessChrome");
-	if (running === wanted || !version.wsUrl) {
-		seenMode().set(port, running);
-		return false;
-	}
+	if (running === wanted) return false;
 	await closeBrowser(port, version.wsUrl);
-	seenMode().set(port, wanted);
 	return true;
 }

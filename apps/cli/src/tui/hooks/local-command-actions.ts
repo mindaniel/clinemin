@@ -67,6 +67,8 @@ export interface LocalSlashCommandActionInput {
 	setKeepAwake: (arg: string) => Promise<boolean>;
 	/** `/update`: restart into the staged update, back on this session. */
 	restartForUpdate: () => Promise<boolean>;
+	/** `/login`: open the web provider's Chrome, visible, to sign in. */
+	openLogin: () => Promise<boolean>;
 }
 
 /**
@@ -189,6 +191,9 @@ export function runLocalSlashCommandAction(
 	}
 	if (normalized === "update") {
 		return input.restartForUpdate();
+	}
+	if (normalized === "login") {
+		return input.openLogin();
 	}
 	if (normalized === "quit") {
 		setTimeout(input.exitCline, 0);

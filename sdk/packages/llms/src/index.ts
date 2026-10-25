@@ -236,4 +236,10 @@ export {
 export { getWebProviderPrompts } from "./providers/vendors/tool-pipeline/prompt-registry";
 // Web chats that attach long text as a file get wider tool-output caps (core).
 export { webChatAttachesLongText } from "./providers/vendors/web-attachments";
+// `/login`: open a web provider's Chrome, visible, on its site.
+export {
+	isWebLoginProvider,
+	openWebProviderLogin,
+	type WebLoginResult,
+} from "./providers/vendors/web-login";
 export { disposeLangfuseTelemetry } from "./services/langfuse-telemetry";
