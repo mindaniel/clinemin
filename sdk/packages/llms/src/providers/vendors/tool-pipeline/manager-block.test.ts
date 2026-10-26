@@ -95,7 +95,7 @@ describe("scanManagerBlocks", () => {
 });
 
 describe("parseManagerBlocks", () => {
-	it("turns a block into a sync team_run_task delegation", () => {
+	it("turns a block into a background team_run_task delegation", () => {
 		const { delegations, cleanedContent, problems } =
 			parseManagerBlocks(REAL_REPLY);
 
@@ -103,7 +103,7 @@ describe("parseManagerBlocks", () => {
 		expect(delegations).toHaveLength(1);
 		expect(delegations[0]?.name).toBe("team_run_task");
 		expect(delegations[0]?.arguments.agentId).toBe("extractor");
-		expect(delegations[0]?.arguments.runMode).toBe("sync");
+		expect(delegations[0]?.arguments.runMode).toBe("background");
 		// The manager's commentary to the operator survives; the block does not,
 		// so the transcript does not show the same instruction twice.
 		expect(cleanedContent).toContain("We are starting the process");
@@ -177,7 +177,7 @@ describe("manager blocks", () => {
 				arguments: {
 					agentId: "reader",
 					task: "PROVIDER: deepseek-web-v2\nROLE: Reads long documents and pulls out numbers.\nOpen report-2024.pdf and list every revenue figure.",
-					runMode: "sync",
+					runMode: "background",
 					continueConversation: true,
 				},
 			},

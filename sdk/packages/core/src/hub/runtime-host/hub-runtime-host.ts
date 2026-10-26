@@ -10,6 +10,7 @@ import type {
 	SessionRecord as HubSessionRecord,
 	ITelemetryService,
 	JsonValue,
+	TeamProgressProjectionEvent,
 	ToolApprovalRequest,
 	ToolApprovalResult,
 } from "@cline/shared";
@@ -1244,6 +1245,21 @@ export class HubRuntimeHost implements RuntimeHost {
 		);
 	}
 
+	async cancelBackgroundRuns(
+		sessionId: string,
+		agentId?: string,
+	): Promise<string[]> {
+		const reply = await this.client.command(
+			"team.cancel_runs",
+			{ sessionId, ...(agentId ? { agentId } : {}) },
+			sessionId,
+		);
+		const stopped = reply.payload?.stopped;
+		return Array.isArray(stopped)
+			? stopped.filter((id): id is string => typeof id === "string")
+			: [];
+	}
+
 	async stopSession(sessionId: string): Promise<void> {
 		this.sessionCapabilities.delete(sessionId);
 		this.disposeSessionSubscription(sessionId);
@@ -1857,6 +1873,26 @@ export class HubRuntimeHost implements RuntimeHost {
 					payload: {
 						sessionId,
 						status: session?.status ?? "running",
+					},
+				});
+				return;
+			}
+			case "team.progress": {
+				// The worker panel follows background runs off these; without
+				// this a hub session's team showed nothing on the client side.
+				const projection = event.payload as
+					| Partial<TeamProgressProjectionEvent>
+					| undefined;
+				if (!projection?.summary || !projection.lastEvent) {
+					return;
+				}
+				this.events.emit({
+					type: "team_progress",
+					payload: {
+						sessionId,
+						teamName: projection.summary.teamName,
+						lifecycle: projection.lastEvent,
+						summary: projection.summary,
 					},
 				});
 				return;

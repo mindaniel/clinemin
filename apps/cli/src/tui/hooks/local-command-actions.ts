@@ -69,6 +69,13 @@ export interface LocalSlashCommandActionInput {
 	restartForUpdate: () => Promise<boolean>;
 	/** `/login`: open the web provider's Chrome, visible, to sign in. */
 	openLogin: () => Promise<boolean>;
+	/**
+	 * `/watch [worker|auto|off]`: open a terminal tab following the workers
+	 * live, or turn tabs opening by themselves on or off.
+	 */
+	openWatch: (arg: string) => Promise<boolean>;
+	/** `/stopworker [worker]`: stop background workers, all or one. */
+	stopWorker: (arg: string) => Promise<boolean>;
 }
 
 /**
@@ -194,6 +201,12 @@ export function runLocalSlashCommandAction(
 	}
 	if (normalized === "login") {
 		return input.openLogin();
+	}
+	if (normalized === "watch") {
+		return input.openWatch(commandArgument(input.invocation?.text));
+	}
+	if (normalized === "stopworker") {
+		return input.stopWorker(commandArgument(input.invocation?.text));
 	}
 	if (normalized === "quit") {
 		setTimeout(input.exitCline, 0);

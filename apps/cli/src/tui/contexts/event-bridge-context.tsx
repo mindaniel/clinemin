@@ -4,6 +4,7 @@ import { createContext, useEffect, useRef } from "react";
 import type {
 	PendingPromptSnapshot,
 	PendingPromptSubmittedEvent,
+	TeamProgressUpdate,
 } from "../../runtime/session-events";
 import type { TuiProps } from "../types";
 
@@ -12,6 +13,7 @@ interface EventBridgeHandlers {
 	onTeamEvent: (event: TeamEvent) => void;
 	onPendingPrompts: (event: PendingPromptSnapshot) => void;
 	onPendingPromptSubmitted: (event: PendingPromptSubmittedEvent) => void;
+	onTeamProgress: (event: TeamProgressUpdate) => void;
 }
 
 const EventBridgeContext = createContext<null>(null);
@@ -34,6 +36,7 @@ export function EventBridgeProvider(props: {
 			onPendingPrompts: (event) => handlersRef.current.onPendingPrompts(event),
 			onPendingPromptSubmitted: (event) =>
 				handlersRef.current.onPendingPromptSubmitted(event),
+			onTeamProgress: (event) => handlersRef.current.onTeamProgress(event),
 		});
 		return unsubscribe;
 	}, []);

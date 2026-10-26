@@ -414,6 +414,83 @@ describe("AgentRuntime", () => {
 		});
 	});
 
+	it("ends the turn when every tool result in a batch says endsTurn", async () => {
+		const handOff: AgentTool<{ to: string }, unknown> = {
+			name: "hand_off",
+			description: "Hand a job to someone else",
+			inputSchema: { type: "object" },
+			async execute(input) {
+				return { message: `Passed on to ${input.to}.`, endsTurn: true };
+			},
+		};
+		const model = new ScriptedModel([
+			() => [
+				{ type: "text-delta", text: "Sending it over." },
+				{
+					type: "tool-call-delta",
+					toolCallId: "call_1",
+					toolName: "hand_off",
+					inputText: '{"to":"qwen"}',
+				},
+				{ type: "finish", reason: "tool-calls" },
+			],
+		]);
+		const runtime = new AgentRuntime({ model, tools: [handOff] });
+
+		const result = await runtime.run("Start");
+
+		expect(result.status).toBe("completed");
+		// No second model call just to say "waiting".
+		expect(model.requests).toHaveLength(1);
+		expect(result.outputText).toBe("Sending it over.");
+	});
+
+	it("keeps going when only some results in a batch say endsTurn", async () => {
+		const handOff: AgentTool<Record<string, never>, unknown> = {
+			name: "hand_off",
+			description: "Hand a job to someone else",
+			inputSchema: { type: "object" },
+			async execute() {
+				return { endsTurn: true };
+			},
+		};
+		const look: AgentTool<Record<string, never>, string> = {
+			name: "look",
+			description: "Look at something",
+			inputSchema: { type: "object" },
+			async execute() {
+				return "3 files";
+			},
+		};
+		const model = new ScriptedModel([
+			() => [
+				{
+					type: "tool-call-delta",
+					toolCallId: "call_1",
+					toolName: "hand_off",
+					inputText: "{}",
+				},
+				{
+					type: "tool-call-delta",
+					toolCallId: "call_2",
+					toolName: "look",
+					inputText: "{}",
+				},
+				{ type: "finish", reason: "tool-calls" },
+			],
+			() => [
+				{ type: "text-delta", text: "Saw 3 files." },
+				{ type: "finish", reason: "stop" },
+			],
+		]);
+		const runtime = new AgentRuntime({ model, tools: [handOff, look] });
+
+		const result = await runtime.run("Start");
+
+		expect(model.requests).toHaveLength(2);
+		expect(result.outputText).toBe("Saw 3 files.");
+	});
+
 	it("continues when completionGuard rejects a no-tool response", async () => {
 		const submitTool: AgentTool<{ summary: string }, string> = {
 			name: "submit",

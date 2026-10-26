@@ -437,6 +437,7 @@ export type HubCommandName =
 	| "run.start"
 	| "session.send_input"
 	| "run.abort"
+	| "team.cancel_runs"
 	| "approval.request"
 	| "approval.respond"
 	| "capability.request"

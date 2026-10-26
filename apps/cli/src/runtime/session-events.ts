@@ -5,6 +5,7 @@ import type {
 	RuntimeHostSubscribeOptions,
 	TeamEvent,
 } from "@cline/core";
+import type { TeamProgressLifecycleEvent } from "@cline/shared";
 
 export const getUIEventEmitter = () =>
 	new EventEmitter() as InteractiveEventBridge;
@@ -27,6 +28,12 @@ export interface PendingPromptSubmittedEvent {
 	attachmentCount: number;
 }
 
+/** One team lifecycle step, as the worker panel follows it. */
+export interface TeamProgressUpdate {
+	sessionId: string;
+	lifecycle: TeamProgressLifecycleEvent;
+}
+
 interface InteractiveEventBridge {
 	on(event: "agent", listener: (event: AgentEvent) => void): this;
 	on(event: "team", listener: (event: TeamEvent) => void): this;
@@ -38,6 +45,10 @@ interface InteractiveEventBridge {
 		event: "pending-prompt-submitted",
 		listener: (event: PendingPromptSubmittedEvent) => void,
 	): this;
+	on(
+		event: "team-progress",
+		listener: (event: TeamProgressUpdate) => void,
+	): this;
 	off(event: "agent", listener: (event: AgentEvent) => void): this;
 	off(event: "team", listener: (event: TeamEvent) => void): this;
 	off(
@@ -48,6 +59,10 @@ interface InteractiveEventBridge {
 		event: "pending-prompt-submitted",
 		listener: (event: PendingPromptSubmittedEvent) => void,
 	): this;
+	off(
+		event: "team-progress",
+		listener: (event: TeamProgressUpdate) => void,
+	): this;
 	emit(event: "agent", payload: AgentEvent): boolean;
 	emit(event: "team", payload: TeamEvent): boolean;
 	emit(event: "pending-prompts", payload: PendingPromptSnapshot): boolean;
@@ -55,6 +70,7 @@ interface InteractiveEventBridge {
 		event: "pending-prompt-submitted",
 		payload: PendingPromptSubmittedEvent,
 	): boolean;
+	emit(event: "team-progress", payload: TeamProgressUpdate): boolean;
 }
 
 type SessionManagerSubscriber = {
@@ -167,6 +183,26 @@ export function subscribeToPendingPromptEvents(
 		}
 		if (typedEvent.type === "pending_prompt_submitted") {
 			handlers.onPendingPromptSubmitted(typedEvent.payload);
+		}
+	});
+}
+
+/**
+ * Team lifecycle steps for this session's team: background runs starting,
+ * progressing and ending. A hub session receives them as `team.progress`
+ * (see `HubRuntimeHost`), a local one straight from the runtime.
+ */
+export function subscribeToTeamProgressEvents(
+	sessionManager: SessionManagerSubscriber,
+	onTeamProgress: (event: TeamProgressUpdate) => void,
+): () => void {
+	return sessionManager.subscribe((event: unknown) => {
+		const typedEvent = event as CoreSessionEvent;
+		if (typedEvent.type === "team_progress") {
+			onTeamProgress({
+				sessionId: typedEvent.payload.sessionId,
+				lifecycle: typedEvent.payload.lifecycle,
+			});
 		}
 	});
 }

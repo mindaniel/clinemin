@@ -665,6 +665,10 @@ export class DefaultRuntimeBuilder implements RuntimeBuilder {
 				teamRuntime = new AgentTeamsRuntime({
 					teamName: effectiveTeamName,
 					leadAgentId: config.sessionId || "lead",
+					// A manager hands jobs to several workers in the background at
+					// once; each is its own model and browser, so two at a time
+					// would leave the rest queued for no reason.
+					...(config.managerMode === true ? { maxConcurrentRuns: 8 } : {}),
 					missionLogIntervalSteps: normalized.missionLogIntervalSteps,
 					missionLogIntervalMs: normalized.missionLogIntervalMs,
 					onTeamEvent: (event: TeamEvent) => {
@@ -787,7 +791,9 @@ export class DefaultRuntimeBuilder implements RuntimeBuilder {
 					const hasInProgress = tasks.some(
 						(t) => t.status === "in_progress" || t.status === "pending",
 					);
-					const runs = rt.listRuns({});
+					// A background run reports back on its own as a new message, so
+					// it is no reason to keep the lead's turn open.
+					const runs = rt.listRuns({}).filter((r) => !r.background);
 					const hasActiveRuns = runs.some(
 						(r) => r.status === "running" || r.status === "queued",
 					);

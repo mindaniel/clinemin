@@ -38,10 +38,12 @@ import { markAbortInProgress } from "../active-runtime";
 import type {
 	PendingPromptSnapshot,
 	PendingPromptSubmittedEvent,
+	TeamProgressUpdate,
 } from "../session-events";
 import {
 	subscribeToAgentEvents,
 	subscribeToPendingPromptEvents,
+	subscribeToTeamProgressEvents,
 } from "../session-events";
 import { compactInteractiveMessages } from "./compaction";
 import {
@@ -129,11 +131,13 @@ export function createInteractiveSessionRuntime(input: {
 	onTeamEvent: (event: TeamEvent) => void;
 	onPendingPrompts: (event: PendingPromptSnapshot) => void;
 	onPendingPromptSubmitted: (event: PendingPromptSubmittedEvent) => void;
+	onTeamProgress?: (event: TeamProgressUpdate) => void;
 }) {
 	let sessionManager: CliCore | undefined;
 	let runtimeHooks: RuntimeHooks | undefined;
 	let unsubscribeAgent = () => {};
 	let unsubscribePendingPrompts = () => {};
+	let unsubscribeTeamProgress = () => {};
 	let startupPromise: Promise<void> | undefined;
 	let startupError: unknown;
 	let shutdownRequested = false;
@@ -237,6 +241,12 @@ export function createInteractiveSessionRuntime(input: {
 			onPendingPrompts: input.onPendingPrompts,
 			onPendingPromptSubmitted: input.onPendingPromptSubmitted,
 		});
+		if (input.onTeamProgress) {
+			unsubscribeTeamProgress = subscribeToTeamProgressEvents(
+				manager,
+				input.onTeamProgress,
+			);
+		}
 		return manager;
 	};
 
@@ -974,6 +984,7 @@ export function createInteractiveSessionRuntime(input: {
 			} finally {
 				unsubscribeAgent();
 				unsubscribePendingPrompts();
+				unsubscribeTeamProgress();
 			}
 			try {
 				exitSummary = await getExitSummary();
@@ -1013,6 +1024,11 @@ export function createInteractiveSessionRuntime(input: {
 		abortAll,
 		cleanup,
 		getActiveSessionId: () => activeSessionId,
+		/** Stop background workers (all, or one), leaving the manager alone. */
+		stopBackgroundWorkers: async (agentId?: string): Promise<string[]> =>
+			sessionManager && activeSessionId
+				? await sessionManager.cancelBackgroundRuns(activeSessionId, agentId)
+				: [],
 		isShutdownRequested: () => shutdownRequested,
 	};
 }

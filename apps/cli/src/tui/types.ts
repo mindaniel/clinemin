@@ -13,6 +13,7 @@ import type {
 import type {
 	PendingPromptSnapshot,
 	PendingPromptSubmittedEvent,
+	TeamProgressUpdate,
 } from "../runtime/session-events";
 import type { HistoryExportFormat } from "../session/history-export";
 import type { RepoStatus } from "../utils/repo-status";
@@ -182,6 +183,7 @@ export interface TuiProps {
 		onTeamEvent: (event: TeamEvent) => void;
 		onPendingPrompts: (event: PendingPromptSnapshot) => void;
 		onPendingPromptSubmitted: (event: PendingPromptSubmittedEvent) => void;
+		onTeamProgress: (event: TeamProgressUpdate) => void;
 	}) => () => void;
 	onSubmit: (
 		input: string,
@@ -200,6 +202,11 @@ export interface TuiProps {
 		promptId: string,
 	) => Promise<PendingPromptMutationResult>;
 	onAbort: () => boolean;
+	/**
+	 * Stop workers running a manager's jobs in the background (all of them, or
+	 * one by name). Resolves with the workers that were stopped.
+	 */
+	onStopBackgroundWorkers?: (agentId?: string) => Promise<string[]>;
 	onExit: () => void;
 	onRunningChange: (isRunning: boolean) => void;
 	onTurnErrorReported: (reported: boolean) => void;

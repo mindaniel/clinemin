@@ -553,6 +553,8 @@ export class AgentTeamsRuntime {
 	private readonly missionLogIntervalSteps: number;
 	private readonly missionLogIntervalMs: number;
 	private readonly maxConcurrentRuns: number;
+	/** Aborts a queued run's teammate turn when the run is cancelled. */
+	private readonly runAbortControllers = new Map<string, AbortController>();
 
 	constructor(options: AgentTeamsRuntimeOptions) {
 		this.teamName = options.teamName;
@@ -1145,6 +1147,7 @@ export class AgentTeamsRuntime {
 			priority?: number;
 			maxRetries?: number;
 			leaseOwner?: string;
+			background?: boolean;
 		},
 	): TeamRunRecord {
 		const runId = `run_${String(++this.runCounter).padStart(5, "0")}`;
@@ -1164,6 +1167,7 @@ export class AgentTeamsRuntime {
 			lastProgressAt: new Date(),
 			lastProgressMessage: "queued",
 			currentActivity: "queued",
+			...(options?.background ? { background: true } : {}),
 		};
 		this.runs.set(runId, record);
 		this.runQueue.push(runId);
@@ -1269,6 +1273,11 @@ export class AgentTeamsRuntime {
 			}
 			this.recordRunProgress(run, "heartbeat");
 		}, 2000);
+		const abortController = new AbortController();
+		this.runAbortControllers.set(run.id, abortController);
+		// `cancelRun` has already recorded and announced the cancellation; the
+		// teammate's own ending must not overwrite it.
+		const wasCancelled = () => (run.status as TeamRunStatus) === "cancelled";
 
 		try {
 			const runMessage = recoveredRun
@@ -1277,7 +1286,11 @@ export class AgentTeamsRuntime {
 			const result = await this.routeToTeammate(run.agentId, runMessage, {
 				taskId: run.taskId,
 				continueConversation: run.continueConversation,
+				signal: abortController.signal,
 			});
+			if (wasCancelled()) {
+				return;
+			}
 			// Model-stream failures surface as results with finishReason
 			// "error" rather than throws; route them through the failure
 			// path so the run is reported as failed (and retried when
@@ -1291,6 +1304,9 @@ export class AgentTeamsRuntime {
 			run.currentActivity = "completed";
 			this.emitEvent({ type: TeamMessageType.RunCompleted, run: { ...run } });
 		} catch (error) {
+			if (wasCancelled()) {
+				return;
+			}
 			const message =
 				error instanceof Error
 					? error.message
@@ -1321,6 +1337,7 @@ export class AgentTeamsRuntime {
 			}
 		} finally {
 			clearInterval(heartbeatTimer);
+			this.runAbortControllers.delete(run.id);
 			this.dispatchQueuedRuns();
 		}
 	}
@@ -1390,6 +1407,9 @@ export class AgentTeamsRuntime {
 		if (queueIndex >= 0) {
 			this.runQueue.splice(queueIndex, 1);
 		}
+		// Stop the teammate too. Marking the record alone left it working, and
+		// its finished turn then reported the run completed after all.
+		this.runAbortControllers.get(runId)?.abort(reason ?? "cancelled");
 		this.emitEvent({
 			type: TeamMessageType.RunCancelled,
 			run: { ...run },

@@ -53,6 +53,7 @@ import {
 	handleRunAbort,
 	handleSessionHook,
 	handleSessionInput,
+	handleTeamCancelRuns,
 } from "./handlers/run-handlers";
 import { projectSessionEvent } from "./handlers/session-event-projector";
 import {
@@ -411,6 +412,8 @@ export class HubServerTransport implements NativeHubTransport {
 				return await handleSessionInput(this.ctx, envelope);
 			case "run.abort":
 				return await handleRunAbort(this.ctx, envelope);
+			case "team.cancel_runs":
+				return await handleTeamCancelRuns(this.ctx, envelope);
 			case "capability.request":
 				return await handleCapabilityRequest(this.ctx, envelope);
 			case "approval.respond":

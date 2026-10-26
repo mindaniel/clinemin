@@ -301,6 +301,22 @@ export async function handleSessionInput(
 	);
 }
 
+/** Stop a session's background teammate runs; see `cancelBackgroundRuns`. */
+export async function handleTeamCancelRuns(
+	ctx: HubTransportContext,
+	envelope: HubCommandEnvelope,
+): Promise<HubReplyEnvelope> {
+	const sessionId = extractSessionId(envelope);
+	const agentId =
+		typeof envelope.payload?.agentId === "string" &&
+		envelope.payload.agentId.trim()
+			? envelope.payload.agentId.trim()
+			: undefined;
+	const stopped =
+		(await ctx.sessionHost.cancelBackgroundRuns?.(sessionId, agentId)) ?? [];
+	return okReply(envelope, { stopped });
+}
+
 export async function handleRunAbort(
 	ctx: HubTransportContext,
 	envelope: HubCommandEnvelope,

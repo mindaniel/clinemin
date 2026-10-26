@@ -69,6 +69,7 @@ import {
 	stopKeepAwake,
 } from "../../utils/keep-awake";
 import { isManagerOffRequest } from "../../utils/manager-command";
+import { openWatchTab, writeWatchTabsAuto } from "../watch-tabs";
 
 export type WebChatEntry =
 	| DeepSeekWebV2ChatEntry
@@ -230,6 +231,7 @@ export function useLocalCommandActions(input: {
 	cwd: string;
 	/** Id of the running CLI session; used by `/findchat` to pin it to a chat. */
 	getSessionId: () => string | undefined;
+	onStopBackgroundWorkers?: TuiProps["onStopBackgroundWorkers"];
 	/**
 	 * Switch this session to a manager on the given provider and restart it
 	 * empty. The system prompt is fixed for a session's life, so starting a
@@ -276,6 +278,7 @@ export function useLocalCommandActions(input: {
 		providerId,
 		cwd,
 		getSessionId,
+		onStopBackgroundWorkers,
 		onStartManager,
 		onStopManager,
 		isManagerMode,
@@ -1325,6 +1328,74 @@ export function useLocalCommandActions(input: {
 		return true;
 	}, [providerId, session]);
 
+	/**
+	 * `/watch`: the workers' live activity in a terminal tab of its own, so it
+	 * stays out of the manager's chat. `auto`/`off` decide whether each worker
+	 * gets a tab by itself when it starts its first job.
+	 */
+	const openWatch = useCallback(
+		async (arg: string): Promise<boolean> => {
+			const word = arg.trim();
+			if (/^(auto|on)$/i.test(word) || /^off$/i.test(word)) {
+				const auto = !/^off$/i.test(word);
+				writeWatchTabsAuto(auto);
+				session.appendEntry({
+					kind: "status",
+					text: auto
+						? "/watch: each worker now gets its own terminal tab when it starts a job. /watch off stops that."
+						: "/watch: tabs no longer open by themselves. /watch still opens one.",
+				});
+				return true;
+			}
+			const worker = word || undefined;
+			const opened = openWatchTab(getSessionId(), worker);
+			session.appendEntry(
+				opened.ok
+					? {
+							kind: "status",
+							text: `/watch: opened a tab following ${worker ?? "every worker"}.`,
+						}
+					: {
+							kind: "error",
+							text: `/watch: ${opened.error}. Run it yourself in another terminal: ${opened.command}`,
+						},
+			);
+			return true;
+		},
+		[getSessionId, session],
+	);
+
+	/** `/stopworker`: stop background workers without stopping the manager. */
+	const stopWorker = useCallback(
+		async (arg: string): Promise<boolean> => {
+			const worker = arg.trim() || undefined;
+			if (!onStopBackgroundWorkers) {
+				session.appendEntry({
+					kind: "error",
+					text: "/stopworker: not available in this session.",
+				});
+				return true;
+			}
+			try {
+				const stopped = await onStopBackgroundWorkers(worker);
+				session.appendEntry({
+					kind: "status",
+					text:
+						stopped.length > 0
+							? `/stopworker: stopped ${stopped.join(", ")}. The manager is told.`
+							: `/stopworker: ${worker ? `${worker} is not working on anything` : "no worker is working in the background"}.`,
+				});
+			} catch (error) {
+				session.appendEntry({
+					kind: "error",
+					text: `/stopworker: ${error instanceof Error ? error.message : String(error)}`,
+				});
+			}
+			return true;
+		},
+		[onStopBackgroundWorkers, session],
+	);
+
 	const handleSlashCommand = useCallback(
 		(command: string, invocation?: LocalSlashCommandInvocation) => {
 			const resolved = resolveSlashCommand(slashCommandRegistry, command);
@@ -1359,6 +1430,8 @@ export function useLocalCommandActions(input: {
 				setKeepAwake,
 				restartForUpdate,
 				openLogin,
+				openWatch,
+				stopWorker,
 			});
 		},
 		[
@@ -1386,6 +1459,8 @@ export function useLocalCommandActions(input: {
 			setKeepAwake,
 			restartForUpdate,
 			openLogin,
+			openWatch,
+			stopWorker,
 			session.isRunning,
 			slashCommandRegistry,
 		],

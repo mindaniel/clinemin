@@ -549,6 +549,20 @@ export async function runCli(): Promise<void> {
 			});
 		});
 
+	// A manager's workers, live, in a terminal of their own. See commands/watch.ts.
+	const watchCmd = program
+		.command("watch")
+		.argument("[worker]", "Only this worker (default: every worker)")
+		.description("Follow what a manager's workers are doing, live")
+		.option("--session <id>", "Manager session to follow (default: newest)")
+		.action(async (worker: string | undefined) => {
+			const { runWatchCommand } = await import("./commands/watch");
+			ctx.exitCode = await runWatchCommand({
+				worker,
+				sessionId: watchCmd.opts().session,
+			});
+		});
+
 	program
 		.command("hook")
 		.description("Handle a hook payload from stdin")

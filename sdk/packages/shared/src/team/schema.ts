@@ -163,8 +163,8 @@ export const TeamRunTaskInputSchema = z.object({
 	agentId: z.string().describe("Teammate agent ID"),
 	task: z.string().min(1).describe("Task instructions for the teammate"),
 	taskId: nullableOptional(z.string()).describe("Optional shared task list ID"),
-	runMode: nullableOptional(z.enum(["sync", "async"])).describe(
-		"Execution mode: 'sync' blocks until the teammate finishes and returns the result (default if omitted); 'async' queues the run and returns a runId immediately — use team_await_runs to collect results later.",
+	runMode: nullableOptional(z.enum(["sync", "async", "background"])).describe(
+		"Execution mode: 'sync' blocks until the teammate finishes and returns the result (default if omitted); 'async' queues the run and returns a runId immediately — use team_await_runs to collect results later; 'background' ends your turn and sends you the teammate's reply as a new message when it finishes (falls back to 'sync' where that is not possible).",
 	),
 	continueConversation: nullableOptional(z.boolean()).describe(
 		"If true, continue the teammate conversation; otherwise start fresh",
@@ -378,6 +378,8 @@ export const TeamRunTaskToolResultSchema = z.object({
 	contextWindow: z.number().optional(),
 	contextUsedPct: z.number().optional(),
 	note: z.string().optional(),
+	/** The turn may end here: the reply arrives later as a new message. */
+	endsTurn: z.boolean().optional(),
 });
 
 export const TeamRunResultSummarySchema = z.object({

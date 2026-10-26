@@ -242,6 +242,21 @@ interface PreparedToolExecution {
 export const RUN_IN_FOREGROUND_METADATA_KEY = "runInForeground";
 
 /**
+ * True when a tool's result asks to end the turn: its output is an object with
+ * `endsTurn: true` and the call did not fail.
+ */
+function toolMessageEndsTurn(message: AgentMessage): boolean {
+	return message.content.some(
+		(part) =>
+			part.type === "tool-result" &&
+			!part.isError &&
+			typeof part.output === "object" &&
+			part.output !== null &&
+			(part.output as { endsTurn?: unknown }).endsTurn === true,
+	);
+}
+
+/**
  * One executed tool call: the tool message it produced, and whether the user
  * asked for it to be dropped instead of sent.
  */
@@ -800,7 +815,17 @@ export class AgentRuntime {
 				// tool result should be. So no continuation note either -- it would
 				// be a nudge to carry on with work the user just declined.
 				const skippedAny = executed.some((execution) => execution.silentSkip);
-				if (sentMessages.length > 0 && !skippedAny) {
+				// A result marked `endsTurn` (a job handed to the background, whose
+				// answer arrives later as a new message) gives the model nothing to
+				// read now. When every call in the batch is one, the turn ends here
+				// rather than calling the model again only to have it say it waits.
+				const endsTurn =
+					executed.length > 0 &&
+					executed.every(
+						(execution) =>
+							!execution.silentSkip && toolMessageEndsTurn(execution.message),
+					);
+				if (sentMessages.length > 0 && !skippedAny && !endsTurn) {
 					const continuationMessage: AgentMessage = {
 						id: `cont-${Date.now()}`,
 						role: "user",
@@ -820,7 +845,7 @@ export class AgentRuntime {
 					iteration: this.state.iteration,
 					toolCallCount: toolCalls.length,
 				});
-				if (skippedAny) {
+				if (skippedAny || endsTurn) {
 					const result = this.finishRun("completed", finalAssistantMessage);
 					await this.callAfterRunHooks(result);
 					await this.emit({

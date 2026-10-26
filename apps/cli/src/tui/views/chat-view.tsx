@@ -1,8 +1,13 @@
 import { isWebChatProvider } from "@cline/shared";
+import { useTerminalDimensions } from "@opentui/react";
 import {
 	AutocompleteDropdown,
 	type AutocompleteDropdownProps,
 } from "../components/autocomplete-dropdown";
+import {
+	BACKGROUND_RUNS_PANEL_WIDTH,
+	BackgroundRuns,
+} from "../components/background-runs";
 import {
 	ChatMessageList,
 	type TranscriptScrollHandle,
@@ -16,6 +21,7 @@ import {
 	StatusBar,
 } from "../components/status-bar";
 import { useSession } from "../contexts/session-context";
+import type { BackgroundRunItem } from "../hooks/use-background-runs";
 import {
 	useTerminalBackground,
 	useTerminalTheme,
@@ -56,6 +62,8 @@ export function ChatView(props: {
 	loadIndividualSubscriptionPlans?: TuiProps["loadIndividualSubscriptionPlans"];
 	autocomplete?: AutocompleteDropdownProps;
 	queuedPrompts?: QueuedPromptItem[];
+	backgroundRuns?: BackgroundRunItem[];
+	backgroundRunsNow?: number;
 	selectedQueuedPromptId?: string | null;
 	editingQueuedPrompt?: QueuedPromptItem;
 	onQueuedPromptEditConfirm: (id: string, prompt: string) => void;
@@ -87,16 +95,34 @@ export function ChatView(props: {
 	const modelDisplayName = resolveModelDisplayName(config);
 	const maxInputTokens = resolveModelMaxInputTokens(config);
 	const runtimeInteraction = props.runtimeInteraction ?? null;
+	const { width: termWidth } = useTerminalDimensions();
+	const backgroundRuns = props.backgroundRuns ?? [];
+	// Beside the transcript when there is room for both, else above the input.
+	const runsBeside =
+		backgroundRuns.length > 0 && termWidth >= BACKGROUND_RUNS_PANEL_WIDTH + 64;
 
 	return (
 		<box flexDirection="column" width="100%" height="100%">
-			<ChatMessageList
-				ref={props.transcriptScrollRef}
-				entries={session.entries}
-				isStreaming={session.isStreaming}
-				loadIndividualSubscriptionPlans={props.loadIndividualSubscriptionPlans}
-				uiMode={session.uiMode}
-			/>
+			<box flexDirection="row" flexGrow={1} minHeight={0}>
+				<box flexDirection="column" flexGrow={1} minWidth={0}>
+					<ChatMessageList
+						ref={props.transcriptScrollRef}
+						entries={session.entries}
+						isStreaming={session.isStreaming}
+						loadIndividualSubscriptionPlans={
+							props.loadIndividualSubscriptionPlans
+						}
+						uiMode={session.uiMode}
+					/>
+				</box>
+				{runsBeside && (
+					<BackgroundRuns
+						runs={backgroundRuns}
+						now={props.backgroundRunsNow ?? Date.now()}
+						width={BACKGROUND_RUNS_PANEL_WIDTH}
+					/>
+				)}
+			</box>
 
 			<box flexDirection="column" flexShrink={0}>
 				{runtimeInteraction ? (
@@ -117,6 +143,13 @@ export function ChatView(props: {
 					<>
 						{props.autocomplete && (
 							<AutocompleteDropdown {...props.autocomplete} accent={accent} />
+						)}
+
+						{!runsBeside && (
+							<BackgroundRuns
+								runs={backgroundRuns}
+								now={props.backgroundRunsNow ?? Date.now()}
+							/>
 						)}
 
 						{props.queuedPrompts && props.queuedPrompts.length > 0 && (

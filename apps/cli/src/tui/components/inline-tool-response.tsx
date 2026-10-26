@@ -202,8 +202,11 @@ function ToolApprovalResponse(
 	const allowSilentSkip = props.allowSilentSkip;
 	const request = props.interaction.request;
 	// A command can also be run in the foreground: no timeout, no background,
-	// the whole output goes back to the model when it ends.
-	const allowForeground = request.toolName === "run_commands";
+	// the whole output goes back to the model when it ends. For a job handed to
+	// a worker the same choice means: hold the turn until its reply is in,
+	// instead of letting it come back later as a new message.
+	const isDelegation = request.toolName === "team_run_task";
+	const allowForeground = request.toolName === "run_commands" || isDelegation;
 	const choices: ToolApprovalOutcome[] = [
 		"approve",
 		...(allowForeground ? (["foreground"] as const) : []),
@@ -288,7 +291,9 @@ function ToolApprovalResponse(
 				/>
 				{allowForeground && (
 					<ChoiceButton
-						label="[f] Foreground, no timeout"
+						label={
+							isDelegation ? "[f] Wait for reply" : "[f] Foreground, no timeout"
+						}
 						selected={selected === "foreground"}
 						onPress={() => resolve("foreground")}
 					/>

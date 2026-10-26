@@ -371,6 +371,15 @@ export class ClineCore {
 	 */
 	abort: RuntimeHost["abort"] = (...args) => this.host.abort(...args);
 	/**
+	 * Stops the session's background teammate runs (all, or one agent's),
+	 * leaving the session itself running. Resolves with the stopped agent ids.
+	 */
+	cancelBackgroundRuns = async (
+		sessionId: string,
+		agentId?: string,
+	): Promise<string[]> =>
+		(await this.host.cancelBackgroundRuns?.(sessionId, agentId)) ?? [];
+	/**
 	 * Stops an active session gracefully.
 	 *
 	 * Terminates the session and cleans up associated resources. Unlike abort, this

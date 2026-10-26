@@ -35,6 +35,8 @@ export type LocalSlashCommandName =
 	| "awake"
 	| "update"
 	| "login"
+	| "watch"
+	| "stopworker"
 	| "quit"
 	| "help";
 
@@ -171,6 +173,16 @@ const TUI_LOCAL_COMMANDS: Array<{
 			"Open the web provider's Chrome on its site to sign in (this profile)",
 	},
 	{
+		name: "watch",
+		description:
+			"Follow workers live in a new terminal tab (/watch <worker>, /watch auto|off opens one per worker by itself)",
+	},
+	{
+		name: "stopworker",
+		description:
+			"Stop workers running in the background (/stopworker <worker> for one)",
+	},
+	{
 		name: "help",
 		description: "Show help",
 	},
@@ -214,6 +226,8 @@ const SYSTEM_COMMAND_ORDER = [
 	"team",
 	"manager",
 	"workers",
+	"watch",
+	"stopworker",
 	"profiles",
 	"history",
 	"findchat",

@@ -250,6 +250,9 @@ export class LocalRuntimeHost implements RuntimeHost {
 	private readonly eventBridge: AgentEventBridge;
 	private readonly sessionVersioning = new SessionVersioningService();
 	private readonly unregisterBackgroundReporter: () => void;
+	/** Worker replies waiting for the lead, per session, oldest first. */
+	private readonly backgroundReports = new Map<string, string[]>();
+	private readonly pumpingBackgroundReports = new Set<string>();
 
 	constructor(options: LocalRuntimeHostOptions) {
 		const homeDir = homedir();
@@ -282,7 +285,12 @@ export class LocalRuntimeHost implements RuntimeHost {
 		// is idle and queues behind the current one when it is busy.
 		this.unregisterBackgroundReporter = registerBackgroundCommandReporter({
 			owns: (sid) => this.sessions.has(sid),
-			deliver: (sid, message) => {
+			takesLaterTurns: (sid) => this.sessions.get(sid)?.interactive === true,
+			deliver: (sid, message, options) => {
+				if (options?.queue) {
+					this.queueBackgroundReport(sid, message);
+					return;
+				}
 				void this.runTurn({ sessionId: sid, prompt: message }).catch(
 					(error) => {
 						this.defaultLogger?.error?.(
@@ -1041,6 +1049,54 @@ export class LocalRuntimeHost implements RuntimeHost {
 		return usage || aggregateUsage ? { usage, aggregateUsage } : undefined;
 	}
 
+	private queueBackgroundReport(sessionId: string, message: string): void {
+		const queue = this.backgroundReports.get(sessionId) ?? [];
+		queue.push(message);
+		this.backgroundReports.set(sessionId, queue);
+		void this.pumpBackgroundReports(sessionId);
+	}
+
+	/**
+	 * Hand queued worker replies to the lead one turn at a time.
+	 *
+	 * A reply waits while the lead is busy, while the user's own queued
+	 * messages are pending (they were there first), and through an abort —
+	 * which clears the pending-prompt queue, and would drop a reply parked
+	 * there. Two workers finishing together therefore take turns instead of
+	 * racing to start one.
+	 */
+	private async pumpBackgroundReports(sessionId: string): Promise<void> {
+		if (this.pumpingBackgroundReports.has(sessionId)) return;
+		this.pumpingBackgroundReports.add(sessionId);
+		try {
+			while (true) {
+				const queue = this.backgroundReports.get(sessionId);
+				const session = this.sessions.get(sessionId);
+				if (!session || !queue || queue.length === 0) {
+					this.backgroundReports.delete(sessionId);
+					return;
+				}
+				if (
+					session.aborting ||
+					session.drainingPendingPrompts ||
+					session.pendingPrompts.length > 0 ||
+					!session.agent.canStartRun()
+				) {
+					await new Promise((resolve) => setTimeout(resolve, 500));
+					continue;
+				}
+				const message = queue.shift() as string;
+				await this.runTurn({ sessionId, prompt: message }).catch((error) => {
+					this.defaultLogger?.error?.(
+						`background report failed for ${sessionId}: ${error}`,
+					);
+				});
+			}
+		} finally {
+			this.pumpingBackgroundReports.delete(sessionId);
+		}
+	}
+
 	async abort(sessionId: string, reason?: unknown): Promise<void> {
 		const session = this.sessions.get(sessionId);
 		if (!session) return;
@@ -1051,6 +1107,21 @@ export class LocalRuntimeHost implements RuntimeHost {
 		session.aborting = true;
 		this.pendingPromptsController.clearAborted(session);
 		session.agent.abort(reason);
+	}
+
+	async cancelBackgroundRuns(
+		sessionId: string,
+		agentId?: string,
+	): Promise<string[]> {
+		const teamRuntime = this.sessions.get(sessionId)?.runtime.teamRuntime;
+		if (!teamRuntime) return [];
+		const stopped: string[] = [];
+		for (const run of teamRuntime.listRuns({ includeCompleted: false })) {
+			if (agentId && run.agentId !== agentId) continue;
+			teamRuntime.cancelRun(run.id, "Stopped by the user.");
+			stopped.push(run.agentId);
+		}
+		return stopped;
 	}
 
 	async stopSession(sessionId: string): Promise<void> {

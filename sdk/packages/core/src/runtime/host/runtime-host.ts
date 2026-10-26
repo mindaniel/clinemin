@@ -318,6 +318,12 @@ export interface RuntimeHost {
 	runTurn(input: SendSessionInput): Promise<AgentResult | undefined>;
 	restoreSession(input: RestoreSessionInput): Promise<RestoreSessionResult>;
 	abort(sessionId: string, reason?: unknown): Promise<void>;
+	/**
+	 * Stop the session's background teammate runs — every active one, or only
+	 * `agentId`'s. Each stopped run reports back to the lead like any other
+	 * ending. Resolves with the agent ids that were stopped.
+	 */
+	cancelBackgroundRuns?(sessionId: string, agentId?: string): Promise<string[]>;
 	stopSession(sessionId: string): Promise<void>;
 	dispose(reason?: string): Promise<void>;
 	getSession(sessionId: string): Promise<SessionRecord | undefined>;

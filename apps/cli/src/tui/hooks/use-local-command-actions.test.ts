@@ -34,11 +34,33 @@ function makeActions(
 		setKeepAwake: vi.fn(async () => true),
 		restartForUpdate: vi.fn(async () => true),
 		openLogin: vi.fn(async () => true),
+		openWatch: vi.fn(async () => true),
+		stopWorker: vi.fn(async () => true),
 		...overrides,
 	};
 }
 
 describe("runLocalSlashCommandAction", () => {
+	it("routes /watch and /stopworker with their argument", async () => {
+		const openWatch = vi.fn(async () => true);
+		const stopWorker = vi.fn(async () => true);
+		const actions = makeActions({ openWatch, stopWorker });
+
+		await runLocalSlashCommandAction({
+			...actions,
+			name: "watch",
+			invocation: { text: "/watch qwen" } as never,
+		});
+		await runLocalSlashCommandAction({
+			...actions,
+			name: "stopworker",
+			invocation: { text: "/stopworker" } as never,
+		});
+
+		expect(openWatch).toHaveBeenCalledWith("qwen");
+		expect(stopWorker).toHaveBeenCalledWith("");
+	});
+
 	it("routes /login to the login action", async () => {
 		const openLogin = vi.fn(async () => true);
 		const actions = makeActions({ openLogin });

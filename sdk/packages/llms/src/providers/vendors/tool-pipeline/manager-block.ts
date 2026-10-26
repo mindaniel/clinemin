@@ -224,7 +224,7 @@ export interface ManagerRunTask {
 	arguments: {
 		agentId: string;
 		task: string;
-		runMode: "sync";
+		runMode: "background";
 		continueConversation: boolean;
 		tools?: string[];
 	};
@@ -257,9 +257,13 @@ export interface ParsedManagerBlocks {
 /**
  * Turn a reply's `<manager>` blocks into delegations.
  *
- * Runs in `sync` mode: the manager wrote one instruction and expects the reply,
- * exactly as it would if a human were pasting it back. Dispatching async would
- * hand it a run id it has no idea what to do with.
+ * Runs in `background` mode: the manager wrote one instruction and expects the
+ * reply, exactly as it would if a human were pasting it back, and that is what
+ * it gets. The runtime just does not hold the manager's turn open meanwhile:
+ * the reply arrives as the next message (see `team_run_task`), so the user can
+ * keep talking to the manager while workers work. The manager never sees a run
+ * id and needs no other syntax. Where a later message has no one to read it
+ * (an unattended run) the runtime waits for the reply instead.
  */
 export interface ShellFenceBlock {
 	start: number;
@@ -600,7 +604,7 @@ function parseManagerBlocksOnly(
 			arguments: {
 				agentId: block.agentId,
 				task: block.task,
-				runMode: "sync",
+				runMode: "background",
 				continueConversation: true,
 				...(block.tools ? { tools: block.tools } : {}),
 			},

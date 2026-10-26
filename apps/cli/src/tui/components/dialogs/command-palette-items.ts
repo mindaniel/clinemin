@@ -23,6 +23,8 @@ export type CommandPaletteAction =
 	| "awake"
 	| "update"
 	| "login"
+	| "watch"
+	| "stopworker"
 	| "help"
 	| "quit";
 
@@ -229,6 +231,20 @@ const ACTION_ITEMS: Array<{
 		shortcut: "Opt+2",
 		description: "Open the web provider's Chrome on its site to sign in",
 		keywords: ["login", "log in", "sign in", "browser", "web", "account"],
+	},
+	{
+		action: "watch",
+		label: "Watch Workers",
+		shortcut: "Opt+3",
+		description: "Follow the workers live in a new terminal tab",
+		keywords: ["watch", "workers", "terminal", "tab", "live", "background"],
+	},
+	{
+		action: "stopworker",
+		label: "Stop Background Workers",
+		shortcut: "Opt+4",
+		description: "Stop every worker running a job in the background",
+		keywords: ["stop", "kill", "cancel", "workers", "background"],
 	},
 	{
 		action: "help",

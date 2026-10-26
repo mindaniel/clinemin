@@ -75,6 +75,12 @@ bun run build:sdk
 
 New workers start with PowerShell (`run_commands`) and `apply_patch`; the manager widens or narrows a worker per job with a `TOOLS:` line. Extra tools (`read_files`, `search_codebase`, web, skills) can be ticked under `/workers` → a worker → Tools.
 
+You never wait on a worker. The manager hands a job over and its turn ends at once, so you can keep talking to it or hand out more work; each worker's reply comes back to it as the next message. Replies that land together take turns, and they wait behind anything you already queued. The manager is not told any of this: to it, a reply simply arrives. Unattended sessions (`--zen`, `cline send`) still wait for each reply. If you approve worker jobs by hand, `[f] Wait for reply` keeps that one in the turn.
+
+Busy workers show in a panel on the right (above the input on a narrow terminal). To see what one is actually doing, run `/watch` (`Opt+3`) for a new terminal tab that follows every worker live, or `/watch <worker>` for one. `/watch auto` opens a tab per worker by itself when it starts a job, and `/watch off` stops that. From any terminal, `cline watch [worker]` does the same. `/stopworker [worker]` stops background work (all of it, or one worker's), and the manager is told.
+
+A worker added or renamed in `/workers` while a manager is running is picked up the first time a job is sent to it; no restart needed.
+
 Every manager session writes a readable timeline to `~/.cline/data/logs/team/<sessionId>.log`: which worker started on which provider and model, each task, every tool call and result on both sides, what each one said back, and every error. Send that file when reporting a bug. `CLINE_TEAM_LOG=off` turns it off. A llama.cpp server's own output is in `~/.cline/llamacpp/server-<port>.log`.
 
 Both directions rebuild the system prompt, and a system prompt is fixed for the life of a session — so each switch restarts the session and clears the conversation. `/manager off` asks first. Start a manager at the top of a chat, not halfway through one.
@@ -99,7 +105,8 @@ While the agent is running, `Esc` aborts it — except when you have a queued me
 | `Opt+U` | Restore checkpoint | `Opt+K` | Help |
 | `Opt+L` | New session | `Opt+Q` | Exit |
 | `Opt+Y` | Keep awake (`/awake`) | `Opt+1` | Restart into update (`/update`) |
-| `Opt+2` | Log in to web provider (`/login`) | | |
+| `Opt+2` | Log in to web provider (`/login`) | `Opt+3` | Watch workers (`/watch`) |
+| `Opt+4` | Stop background workers (`/stopworker`) | | |
 
 ## Using llama.cpp
 

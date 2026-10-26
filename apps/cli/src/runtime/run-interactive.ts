@@ -365,6 +365,9 @@ export async function runInteractive(
 		onPendingPromptSubmitted: (event) => {
 			uiEvents.emit("pending-prompt-submitted", event);
 		},
+		onTeamProgress: (event) => {
+			uiEvents.emit("team-progress", event);
+		},
 	});
 	let modeChangePromise: Promise<void> | undefined;
 	let modeChangeTarget: "plan" | "act" | undefined;
@@ -607,16 +610,19 @@ export async function runInteractive(
 			onTeamEvent: onTeam,
 			onPendingPrompts,
 			onPendingPromptSubmitted,
+			onTeamProgress,
 		}) => {
 			uiEvents.on("agent", onAgent);
 			uiEvents.on("team", onTeam);
 			uiEvents.on("pending-prompts", onPendingPrompts);
 			uiEvents.on("pending-prompt-submitted", onPendingPromptSubmitted);
+			uiEvents.on("team-progress", onTeamProgress);
 			return () => {
 				uiEvents.off("agent", onAgent);
 				uiEvents.off("team", onTeam);
 				uiEvents.off("pending-prompts", onPendingPrompts);
 				uiEvents.off("pending-prompt-submitted", onPendingPromptSubmitted);
+				uiEvents.off("team-progress", onTeamProgress);
 			};
 		},
 		onSubmit: async (input, mode, delivery, attachments, onCommandOutput) => {
@@ -818,6 +824,8 @@ export async function runInteractive(
 		onAbort: () => {
 			return sessionRuntime.abortAll();
 		},
+		onStopBackgroundWorkers: (agentId) =>
+			sessionRuntime.stopBackgroundWorkers(agentId),
 		onExit: () => {
 			tuiApp?.destroy();
 		},

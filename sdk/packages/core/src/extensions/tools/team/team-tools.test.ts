@@ -4,6 +4,7 @@ import { join } from "node:path";
 import type { AgentTool } from "@cline/shared";
 import { resolveTeamDataDir } from "@cline/shared/storage";
 import { afterEach, describe, expect, it, vi } from "vitest";
+import { registerBackgroundCommandReporter } from "../background-command-reports";
 import { createDelegatedAgentConfigProvider } from "./delegated-agent";
 import { AgentTeamsRuntime } from "./multi-agent";
 import {
@@ -1011,6 +1012,7 @@ describe("createAgentTeamsTools runtime behavior", () => {
 
 	it("returns compact summaries from team_list_runs", async () => {
 		const runtime = {
+			isTeammateActive: vi.fn(() => true),
 			listRuns: vi.fn(() => [
 				{
 					id: "run_0001",
@@ -1083,6 +1085,8 @@ describe("createAgentTeamsTools runtime behavior", () => {
 		const routeToTeammate = vi.fn(() => routePromise);
 		const runtime = {
 			routeToTeammate,
+			isTeammateActive: vi.fn(() => true),
+			listRuns: vi.fn(() => []),
 			getMemberRole: vi.fn(() => "lead"),
 		} as unknown as AgentTeamsRuntime;
 
@@ -1130,9 +1134,160 @@ describe("createAgentTeamsTools runtime behavior", () => {
 		expect(result2.message).toContain("already dispatched");
 	});
 
+	it("reports a background run back to the lead's session when it ends", async () => {
+		const delivered: Array<{
+			sessionId: string;
+			message: string;
+			queue?: boolean;
+		}> = [];
+		const unregister = registerBackgroundCommandReporter({
+			owns: (sessionId) => sessionId === "lead-session",
+			takesLaterTurns: () => true,
+			deliver: (sessionId, message, options) =>
+				delivered.push({ sessionId, message, queue: options?.queue }),
+		});
+		try {
+			const startTeammateRun = vi.fn(() => ({ id: "run_00007" }));
+			const runtime = {
+				startTeammateRun,
+				isTeammateActive: vi.fn(() => true),
+				listRuns: vi.fn(() => []),
+				awaitRun: vi.fn(async () => ({
+					id: "run_00007",
+					agentId: "qwen",
+					status: "completed",
+					result: {
+						text: "Found 3 matches.",
+						iterations: 2,
+						finishReason: "completed",
+					},
+				})),
+				getMemberRole: vi.fn(() => "lead"),
+			} as unknown as AgentTeamsRuntime;
+
+			const tools = createAgentTeamsTools({
+				runtime,
+				requesterId: "lead",
+				teammateConfigProvider: makeTeammateConfigProvider(),
+			});
+			const runTask = tools.find((tool) => tool.name === "team_run_task");
+			if (!runTask) {
+				throw new Error("Expected team_run_task tool to be defined");
+			}
+
+			const result = (await runTask.execute(
+				{ agentId: "qwen", task: "Search for kanban", runMode: "background" },
+				{
+					agentId: "lead",
+					conversationId: "conv-1",
+					iteration: 1,
+					sessionId: "lead-session",
+				},
+			)) as { message?: string; endsTurn?: boolean };
+
+			expect(startTeammateRun).toHaveBeenCalledWith(
+				"qwen",
+				"Search for kanban",
+				expect.objectContaining({ background: true }),
+			);
+			// The lead reads an ordinary relayed reply: no run id, no "background".
+			expect(result.message).toBe(
+				"Passed on to qwen. Its reply will come as the next message.",
+			);
+			expect(result.endsTurn).toBe(true);
+			await vi.waitFor(() => expect(delivered).toHaveLength(1));
+			expect(delivered[0]).toEqual({
+				sessionId: "lead-session",
+				message: "Reply from qwen:\n\nFound 3 matches.",
+				queue: true,
+			});
+		} finally {
+			unregister();
+		}
+	});
+
+	it("refuses a job for a worker still busy with a background run", async () => {
+		const routeToTeammate = vi.fn();
+		const runtime = {
+			routeToTeammate,
+			isTeammateActive: vi.fn(() => true),
+			listRuns: vi.fn(() => [
+				{ id: "run_00003", agentId: "qwen", status: "running" },
+			]),
+			getMemberRole: vi.fn(() => "lead"),
+		} as unknown as AgentTeamsRuntime;
+
+		const tools = createAgentTeamsTools({
+			runtime,
+			requesterId: "lead",
+			teammateConfigProvider: makeTeammateConfigProvider(),
+		});
+		const runTask = tools.find((tool) => tool.name === "team_run_task");
+		if (!runTask) {
+			throw new Error("Expected team_run_task tool to be defined");
+		}
+
+		await expect(
+			runTask.execute(
+				{ agentId: "qwen", task: "Another job" },
+				{ agentId: "lead", conversationId: "conv-1", iteration: 1 },
+			),
+		).rejects.toThrow("still working on run_00003");
+		expect(routeToTeammate).not.toHaveBeenCalled();
+	});
+
+	it("waits for the reply when the session cannot take a later message", async () => {
+		const routeToTeammate = vi.fn(async () => ({
+			text: "Done.",
+			iterations: 1,
+			finishReason: "completed",
+		}));
+		const startTeammateRun = vi.fn();
+		const runtime = {
+			routeToTeammate,
+			startTeammateRun,
+			isTeammateActive: vi.fn(() => true),
+			listRuns: vi.fn(() => []),
+			getMemberRole: vi.fn(() => "lead"),
+		} as unknown as AgentTeamsRuntime;
+		const unregister = registerBackgroundCommandReporter({
+			owns: (sessionId) => sessionId === "zen-session",
+			takesLaterTurns: () => false,
+			deliver: () => undefined,
+		});
+		try {
+			const tools = createAgentTeamsTools({
+				runtime,
+				requesterId: "lead",
+				teammateConfigProvider: makeTeammateConfigProvider(),
+			});
+			const runTask = tools.find((tool) => tool.name === "team_run_task");
+			if (!runTask) {
+				throw new Error("Expected team_run_task tool to be defined");
+			}
+			const result = (await runTask.execute(
+				{ agentId: "qwen", task: "Do it", runMode: "background" },
+				{
+					agentId: "lead",
+					conversationId: "conv-1",
+					iteration: 1,
+					sessionId: "zen-session",
+				},
+			)) as { mode?: string; text?: string };
+
+			expect(startTeammateRun).not.toHaveBeenCalled();
+			expect(result.mode).toBe("sync");
+			expect(result.text).toBe("Done.");
+		} finally {
+			unregister();
+		}
+	});
+
 	it("returns explicit dispatch state for async team_run_task calls", async () => {
 		const runtime = {
 			startTeammateRun: vi.fn(() => ({ id: "run_00001" })),
+			isTeammateActive: vi.fn(() => true),
+			listRuns: vi.fn(() => []),
 			getMemberRole: vi.fn(() => "lead"),
 		} as unknown as AgentTeamsRuntime;
 
@@ -1179,6 +1334,8 @@ describe("createAgentTeamsTools runtime behavior", () => {
 		});
 		const runtime = {
 			routeToTeammate,
+			isTeammateActive: vi.fn(() => true),
+			listRuns: vi.fn(() => []),
 			getMemberRole: vi.fn(() => "lead"),
 		} as unknown as AgentTeamsRuntime;
 

@@ -115,6 +115,12 @@ export interface TeamRunRecord {
 	currentActivity?: string;
 	result?: unknown;
 	error?: string;
+	/**
+	 * The lead does not wait on this run: its reply is delivered to the lead's
+	 * session as a new message when it ends, so the lead's turn may finish
+	 * while the run is still going.
+	 */
+	background?: boolean;
 }
 
 export type TeamOutcomeStatus = "draft" | "in_review" | "finalized";

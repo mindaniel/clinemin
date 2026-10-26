@@ -73,6 +73,18 @@ import {
 	zodToJsonSchema,
 } from "@cline/shared";
 import { resolveProviderSettingsPath } from "@cline/shared/storage";
+import {
+	canReportBackgroundCommandLater,
+	reportBackgroundCommand,
+} from "../background-command-reports";
+
+/**
+ * Set by the agent runtime when the user approved this call to run in the
+ * foreground (see `RUN_IN_FOREGROUND_METADATA_KEY` in `@cline/agents`). For a
+ * delegation that means: wait for the worker's reply in this turn.
+ */
+const RUN_IN_FOREGROUND_METADATA_KEY = "runInForeground";
+
 import { type AskQuestionInput, AskQuestionInputSchema } from "../schemas";
 import {
 	buildDelegatedAgentConfig,
@@ -81,6 +93,10 @@ import {
 } from "./delegated-agent";
 import type { AgentTeamsRuntime } from "./multi-agent";
 import { resolveWorkerConnection } from "./profile-config";
+import {
+	loadTeamRoster,
+	mergeRosterIntoTeammateSpecs,
+} from "./team-roster-config";
 import { appendWorkerToolGuide } from "./worker-tool-guide";
 
 function truncateText(value: string, maxLength: number): string {
@@ -293,6 +309,32 @@ function summarizeRun(
 		error: run.error,
 		resultSummary: summarizeRunResult(run),
 	};
+}
+
+/**
+ * The message a background run sends back to the lead when it ends.
+ *
+ * It arrives as a new turn, not as a tool result, so it says on its own who
+ * answered. It reads like any relayed reply — no run ids, nothing about the
+ * background — because to a manager that is all it is. The diagnostics are the
+ * same ones a sync run returns, so a worker that stopped early or asked a
+ * question reads the same either way.
+ */
+export function formatBackgroundRunReport(run: TeamRunRecord): string {
+	const result = run.result as AgentResult | undefined;
+	if (run.status !== "completed" || !result) {
+		return `${run.agentId} stopped before finishing (${run.status})${run.error ? `: ${run.error}` : "."} Treat nothing it was doing as done.`;
+	}
+	const { note } = diagnoseRun(result, run.agentId);
+	const lines = [
+		`Reply from ${run.agentId}:`,
+		"",
+		result.text?.trim() || "(no text)",
+	];
+	if (note) {
+		lines.push("", note);
+	}
+	return lines.join("\n");
 }
 
 function assertAwaitedRunSucceeded(run: TeamRunRecord): void {
@@ -708,6 +750,35 @@ function workerConnectionOverrides(
 	return overrides;
 }
 
+/**
+ * Spawn a worker the roster names but this session does not have yet.
+ *
+ * Workers are spawned from `team.json` when the session starts. One added or
+ * renamed in /workers afterwards existed only on disk, so a job sent to it
+ * failed with "Teammate ... was not found" until the session was restarted.
+ */
+function spawnRosterWorkerIfMissing(
+	options: Omit<CreateAgentTeamsToolsOptions, "allowSpawn">,
+	agentId: string,
+): void {
+	if (options.runtime.isTeammateActive(agentId)) {
+		return;
+	}
+	const { roster } = loadTeamRoster({
+		workspaceRoot: options.teammateConfigProvider.getRuntimeConfig().cwd,
+	});
+	const spec = mergeRosterIntoTeammateSpecs([], roster).find(
+		(candidate) => candidate.agentId === agentId,
+	);
+	if (!spec) {
+		const known = options.runtime.getTeammateIds();
+		throw new Error(
+			`There is no worker called "${agentId}". Workers: ${known.length > 0 ? known.join(", ") : "(none)"}.`,
+		);
+	}
+	spawnTeamTeammate({ ...options, spec });
+}
+
 export function bootstrapAgentTeams(
 	options: BootstrapAgentTeamsOptions,
 ): BootstrapAgentTeamsResult {
@@ -968,25 +1039,21 @@ export function createAgentTeamsTools(
 						.get(options.runtime)
 						?.get(validatedInput.agentId)?.providerId,
 				);
-				if (validatedInput.runMode === "async") {
-					const run = options.runtime.startTeammateRun(
-						validatedInput.agentId,
-						taskText,
-						{
-							taskId: validatedInput.taskId || undefined,
-							fromAgentId: options.requesterId,
-							continueConversation:
-								validatedInput.continueConversation || undefined,
-						},
+				spawnRosterWorkerIfMissing(options, validatedInput.agentId);
+
+				// One job per worker at a time. A worker still busy with a background
+				// job would get this one interleaved into the same conversation.
+				const busyRun = options.runtime
+					.listRuns({})
+					.find(
+						(run) =>
+							run.agentId === validatedInput.agentId &&
+							(run.status === "running" || run.status === "queued"),
 					);
-					return validateWithZod(TeamRunTaskToolResultSchema, {
-						agentId: validatedInput.agentId,
-						mode: "async",
-						status: "queued",
-						dispatched: true,
-						message: `Task dispatched to ${validatedInput.agentId} and queued as ${run.id}.`,
-						runId: run.id,
-					});
+				if (busyRun) {
+					throw new Error(
+						`${validatedInput.agentId} is still working on ${busyRun.id} in the background. Wait for its reply, or give this job to another worker.`,
+					);
 				}
 
 				// A `tools` grant is applied before the run, so the worker starts
@@ -998,6 +1065,70 @@ export function createAgentTeamsTools(
 							validatedInput.tools,
 						)
 					: undefined;
+
+				// When the session can take a message later, the reply is sent back
+				// as a new turn and the lead does not wait for it: its turn ends, and
+				// the user can keep talking to it meanwhile. `background` asks for
+				// exactly that and falls back to waiting where it is not possible
+				// (an unattended run, a bare SDK agent); the user can also pick
+				// "wait for reply" when approving the call.
+				const sessionId = context?.sessionId;
+				const reportBack = Boolean(
+					sessionId && canReportBackgroundCommandLater(sessionId),
+				);
+				const waitRequested =
+					context?.metadata?.[RUN_IN_FOREGROUND_METADATA_KEY] === true;
+				const inBackground =
+					!waitRequested &&
+					(validatedInput.runMode === "async" ||
+						(validatedInput.runMode === "background" && reportBack));
+				if (inBackground) {
+					const run = options.runtime.startTeammateRun(
+						validatedInput.agentId,
+						taskText,
+						{
+							taskId: validatedInput.taskId || undefined,
+							fromAgentId: options.requesterId,
+							continueConversation:
+								validatedInput.continueConversation || undefined,
+							...(reportBack ? { background: true } : {}),
+						},
+					);
+					if (reportBack && sessionId) {
+						void options.runtime.awaitRun(run.id).then(
+							(finished) => {
+								// Queued, never started directly: two workers finishing
+								// together must take turns with the lead, and a reply
+								// lands behind whatever the user already sent.
+								reportBackgroundCommand(
+									sessionId,
+									formatBackgroundRunReport(finished),
+									{ queue: true },
+								);
+							},
+							() => undefined,
+						);
+					}
+					const dispatched = !reportBack
+						? `Task dispatched to ${validatedInput.agentId} and queued as ${run.id}.`
+						: validatedInput.runMode === "background"
+							? `Passed on to ${validatedInput.agentId}. Its reply will come as the next message.`
+							: `${validatedInput.agentId} is working on it in the background (${run.id}). Its reply will be sent to you as a new message when it finishes; do not wait for it in this turn.`;
+					return validateWithZod(TeamRunTaskToolResultSchema, {
+						agentId: validatedInput.agentId,
+						mode: "async",
+						status: "queued",
+						dispatched: true,
+						message: rescopeNote ? `${rescopeNote} ${dispatched}` : dispatched,
+						runId: run.id,
+						// Nothing to read until the reply arrives, so a turn whose
+						// every call is a background job ends here (see the agent
+						// loop) instead of asking the model to say it is waiting.
+						...(reportBack && validatedInput.runMode === "background"
+							? { endsTurn: true }
+							: {}),
+					});
+				}
 
 				// Deduplication guard: collapse a duplicate sync call for the same
 				// agent onto the first in-flight dispatch in this parallel tool-call batch.

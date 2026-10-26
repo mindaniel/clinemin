@@ -15,6 +15,12 @@ export function trackTeamRunState(
 	session: ActiveSession,
 	event: TeamEvent,
 ): void {
+	// A background run sends its own reply to the lead as a new message (see
+	// `team_run_task`). Tracking it here would hold the lead's turn open until
+	// it ends — the very wait it exists to avoid — and then report it twice.
+	if ("run" in event && event.run.background) {
+		return;
+	}
 	switch (event.type) {
 		case "run_queued":
 		case "run_started":

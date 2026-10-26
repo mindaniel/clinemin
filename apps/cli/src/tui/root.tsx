@@ -11,6 +11,7 @@ import {
 } from "@opentui-ui/dialog/react";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { setSourceUpdateAction } from "../commands/source-auto-update";
+import type { TeamProgressUpdate } from "../runtime/session-events";
 import type { RepoStatus } from "../utils/repo-status";
 import { readRepoStatus } from "../utils/repo-status";
 import { toggleBrowserHeadless } from "./browser-mode";
@@ -44,6 +45,7 @@ import { SessionProvider, useSession } from "./contexts/session-context";
 import { useAccountDialog } from "./hooks/use-account-dialog";
 import { useAgentEventHandlers } from "./hooks/use-agent-events";
 import { useAutocomplete } from "./hooks/use-autocomplete";
+import { useBackgroundRuns } from "./hooks/use-background-runs";
 import { useConfigPanel } from "./hooks/use-config-panel";
 import { useLocalCommandActions } from "./hooks/use-local-command-actions";
 import { useMcpManager } from "./hooks/use-mcp-manager";
@@ -64,6 +66,7 @@ import { deriveTerminalTitle } from "./utils/terminal-title";
 import { ChatView } from "./views/chat-view";
 import { HomeView } from "./views/home-view";
 import { type OnboardingResult, OnboardingView } from "./views/onboarding";
+import { autoOpenWatchTab } from "./watch-tabs";
 
 function isChatBackedStartupTarget(
 	target: TuiStartupTarget | undefined,
@@ -662,6 +665,7 @@ function App(props: TuiProps) {
 		providerId: props.config.providerId,
 		cwd: props.config.cwd,
 		getSessionId: props.getSessionId,
+		onStopBackgroundWorkers: props.onStopBackgroundWorkers,
 		onStartManager: props.onStartManager,
 		onStopManager: props.onStopManager,
 		isManagerMode: () => props.config.managerMode === true,
@@ -747,6 +751,8 @@ function App(props: TuiProps) {
 		},
 		[globalPaletteItems, runCommandPaletteResult],
 	);
+
+	const backgroundRuns = useBackgroundRuns();
 
 	const agentHandlers = useAgentEventHandlers({
 		appendEntry: session.appendEntry,
@@ -907,8 +913,12 @@ function App(props: TuiProps) {
 			onTeamEvent: agentHandlers.handleTeamEvent,
 			onPendingPrompts: handlePendingPrompts,
 			onPendingPromptSubmitted: agentHandlers.handlePendingPromptSubmitted,
+			onTeamProgress: (update: TeamProgressUpdate) => {
+				backgroundRuns.handleTeamProgress(update);
+				autoOpenWatchTab(update);
+			},
 		}),
-		[agentHandlers, handlePendingPrompts],
+		[agentHandlers, handlePendingPrompts, backgroundRuns.handleTeamProgress],
 	);
 
 	const viewProps = {
@@ -925,6 +935,8 @@ function App(props: TuiProps) {
 		transcriptScrollRef,
 		loadIndividualSubscriptionPlans: props.loadIndividualSubscriptionPlans,
 		queuedPrompts,
+		backgroundRuns: backgroundRuns.runs,
+		backgroundRunsNow: backgroundRuns.now,
 		selectedQueuedPromptId,
 		editingQueuedPrompt,
 		onQueuedPromptEditConfirm: (id: string, prompt: string) => {
