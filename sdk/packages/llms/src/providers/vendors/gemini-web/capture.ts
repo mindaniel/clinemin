@@ -13,6 +13,15 @@ import {
 	type GeminiWebV2RuntimeConfig,
 	requestGeminiThrottleRecoveryReload,
 } from "./config";
+import {
+	COUNT_REPLIES_SCRIPT,
+	DISMISS_PROMO_SCRIPT,
+	keepGeminiPageActive,
+	parseReplyState,
+	type ReplyState,
+	readReplyScript,
+	replyFinished,
+} from "./dom-reply";
 import { buildSendScript } from "./send-script";
 import { consumeGeminiSse } from "./sse";
 
@@ -29,6 +38,12 @@ import { consumeGeminiSse } from "./sse";
 // over from an earlier turn never intercepts a later turn's response.
 
 const geminiNetworkEnabledSessions = new Set<string>();
+
+/** How often the page is checked for the reply, and how many equal reads end it. */
+const DOM_POLL_MS = 700;
+const DOM_STABLE_POLLS = 3;
+
+const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
 
 export async function sendAndCapture(
 	cdp: CdpClient,
@@ -120,6 +135,25 @@ export async function sendAndCapture(
 		);
 		await abortableSleep(sendDelay, signal);
 
+		// The reply is also read off the page (see `dom-reply.ts`): Gemini no
+		// longer sends it through `/StreamGenerate` on every account, and a
+		// background tab only renders it when told it is active.
+		await keepGeminiPageActive(cdp, cdpSessionId);
+		const evaluate = async (expression: string): Promise<unknown> => {
+			const r = await cdp.send(
+				"Runtime.evaluate",
+				{ expression, returnByValue: true },
+				cdpSessionId,
+			);
+			return r.result?.value;
+		};
+		const closedPromos = Number(await evaluate(DISMISS_PROMO_SCRIPT)) || 0;
+		if (closedPromos > 0) {
+			debugLog(`closed ${closedPromos} promo dialog(s) before sending`);
+			await abortableSleep(800, signal);
+		}
+		const replyIndex = Number(await evaluate(COUNT_REPLIES_SCRIPT)) || 0;
+
 		// The send script waits on the composer taking the text and the submit
 		// landing. In a long chat (many earlier turns rendered on the page) that
 		// runs past the 30s CDP default and failed the turn with
@@ -141,13 +175,54 @@ export async function sendAndCapture(
 		// without the abort in this race Escape looked like it worked and then
 		// the input stayed dead until the response timeout fired minutes later.
 		const cancelled = abortRace(signal);
+		let timer: ReturnType<typeof setTimeout> | undefined;
 		const timeoutPromise = new Promise<void>((resolve) => {
-			setTimeout(resolve, config.responseTimeoutMs);
+			timer = setTimeout(resolve, config.responseTimeoutMs);
 		});
+		let stopDomPolling = false;
+		let domText: string | undefined;
+		const domCaptured = (async () => {
+			const history: ReplyState[] = [];
+			while (!stopDomPolling) {
+				await sleep(DOM_POLL_MS);
+				if (stopDomPolling) return;
+				try {
+					history.push(
+						parseReplyState(await evaluate(readReplyScript(replyIndex))),
+					);
+				} catch {
+					continue; // Page mid-navigation; try again next poll.
+				}
+				if (replyFinished(history, DOM_STABLE_POLLS)) {
+					domText = history[history.length - 1]?.text;
+					return;
+				}
+			}
+		})();
 		try {
-			await Promise.race([bodyCaptured, timeoutPromise, cancelled.promise]);
+			await Promise.race([
+				bodyCaptured,
+				domCaptured,
+				timeoutPromise,
+				cancelled.promise,
+			]);
 		} finally {
+			stopDomPolling = true;
+			if (timer) clearTimeout(timer);
 			cancelled.dispose();
+		}
+
+		if (!capturedBody && domText) {
+			debugLog(`reply read from the page (${domText.length} chars)`);
+			const rateLimited = isRateLimitText(domText);
+			if (rateLimited) requestGeminiThrottleRecoveryReload();
+			return {
+				text: domText,
+				finishReason: "stop",
+				usage: estimateWebUsage(prompt, domText),
+				rateLimited,
+				rawBody: domText,
+			};
 		}
 
 		if (!capturedBody) {
