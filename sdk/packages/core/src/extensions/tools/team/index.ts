@@ -14,6 +14,11 @@ export {
 	createConfiguredAgentTools,
 } from "./configured-agent-tool";
 export {
+	type CreateHandoverToolOptions,
+	createHandoverTool,
+	type HandoverTarget,
+} from "./handover-tool";
+export {
 	findProfile,
 	loadProfiles,
 	type ProfileLoadResult,
@@ -32,6 +37,8 @@ export type {
 	SubAgentStartContext,
 } from "./spawn-agent-tool";
 export {
+	keptRosterFields,
+	listHandoverManagers,
 	listManagerWorkers,
 	loadTeamRoster,
 	mergeRosterIntoTeammateSpecs,

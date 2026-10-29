@@ -304,14 +304,21 @@ export {
 	parseGuideAiCommand,
 } from "./prompt/guide";
 export type {
+	ManagerPeerSummary,
+	ManagerStatusInput,
 	ManagerSystemPromptOptions,
+	ManagerUsageLimit,
 	ManagerWorkerSummary,
 } from "./prompt/manager";
 export {
+	buildManagerStatusLine,
 	buildManagerSystemPrompt,
 	MANAGER_DONE_TOKEN,
 	MANAGER_EXAMPLE_BODY,
 	MANAGER_EXAMPLE_COMMAND,
+	MANAGER_HANDOVER_PCT,
+	MANAGER_HANDOVER_TOOL,
+	readManagerUsageLimit,
 	shortProviderName,
 } from "./prompt/manager";
 export {

@@ -1,7 +1,7 @@
 import type { WorkspaceContext } from "../extensions/context";
 import { isClineProvider } from "../providers/utils";
 import type { WorkspaceInfo } from "../session/workspace";
-import type { ManagerWorkerSummary } from "./manager";
+import type { ManagerPeerSummary, ManagerWorkerSummary } from "./manager";
 import { buildManagerSystemPrompt } from "./manager";
 import { withWebPromptFolder } from "./simple-web";
 import {
@@ -118,6 +118,8 @@ export interface ClineSystemPromptOptions
 	managerMode?: boolean;
 	/** Workers the manager can address, listed in its prompt. */
 	managerWorkers?: ManagerWorkerSummary[];
+	/** Other managers it can hand the job to (roster `managers`). */
+	managerPeers?: ManagerPeerSummary[];
 	/**
 	 * Tool names this agent actually has, when it is a restricted set.
 	 *
@@ -367,6 +369,7 @@ export function buildClineSystemPrompt(
 		}
 		return buildManagerSystemPrompt({
 			workers: options.managerWorkers,
+			managers: options.managerPeers,
 			workspaceRoot,
 			platform,
 			// Project rules stay off the manager for the same reason they stay off

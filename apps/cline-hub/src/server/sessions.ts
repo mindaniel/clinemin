@@ -1,6 +1,7 @@
 import process from "node:process";
 import {
 	type ClineCoreStartInput,
+	listHandoverManagers,
 	listManagerWorkers,
 	type SessionRecord,
 	SessionSource,
@@ -105,6 +106,9 @@ function buildSessionStartInput(
 		managerMode && !options?.systemPrompt?.trim()
 			? buildManagerSystemPrompt({
 					workers: listManagerWorkers({
+						workspaceRoot: context.workspaceRoot,
+					}),
+					managers: listHandoverManagers({
 						workspaceRoot: context.workspaceRoot,
 					}),
 					workspaceRoot: context.cwd,

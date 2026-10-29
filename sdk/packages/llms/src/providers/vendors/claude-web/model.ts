@@ -65,6 +65,7 @@ import {
 	readPageUrl,
 	waitForComposerReady,
 } from "./navigation";
+import { keepManagerStatus } from "./prompts";
 import { parseAskUserInputToolCalls, renderAskUserInputAsText } from "./sse";
 
 // ── Main provider ──────────────────────────────────────────────────────────────
@@ -265,7 +266,7 @@ function buildClaudePrompt(
 	}
 
 	// Rephrase tool results
-	const segments = raw.split("\n\n");
+	const segments = keepManagerStatus(raw.split("\n\n"));
 	const rephrased = segments
 		.filter((segment, index) => {
 			const trimmed = segment.trim();

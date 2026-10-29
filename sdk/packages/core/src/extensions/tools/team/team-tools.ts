@@ -690,7 +690,7 @@ function spawnTeamTeammate(
  * machine). The saved model and context window come from the worker's own
  * provider settings instead.
  */
-function workerConnectionOverrides(
+export function workerConnectionOverrides(
 	spec: TeamTeammateSpec,
 	leadProviderId: string,
 ): Partial<DelegatedAgentRuntimeConfig> {

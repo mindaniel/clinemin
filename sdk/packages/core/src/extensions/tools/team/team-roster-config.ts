@@ -6,6 +6,7 @@ import {
 	stripUtf8Bom,
 	TEAM_ROSTER_FILENAME,
 	type TeamRoster,
+	type TeamRosterManager,
 	type TeamRosterWorker,
 	type TeamTeammateSpec,
 } from "@cline/shared";
@@ -132,6 +133,30 @@ export function listManagerWorkers(options: {
 }
 
 /**
+ * The parts of an existing roster a worker editor does not own.
+ *
+ * The editors (/workers, the hub's Team view) only know about workers. Writing
+ * the file from their list alone silently deleted the `managers` a long job
+ * hands over to, so whatever else the file declared is carried across.
+ */
+export function keptRosterFields(
+	path: string,
+): Pick<TeamRoster, "teamName" | "managers"> {
+	if (!existsSync(path)) return {};
+	try {
+		const parsed = parseTeamRoster(stripUtf8Bom(readFileSync(path, "utf8")));
+		if (!parsed.ok) return {};
+		const { teamName, managers } = parsed.roster;
+		return {
+			...(teamName ? { teamName } : {}),
+			...(managers?.length ? { managers } : {}),
+		};
+	} catch {
+		return {};
+	}
+}
+
+/**
  * Write a roster back to disk.
  *
  * Shared so every editor of the roster produces the same file. Optional fields
@@ -144,6 +169,7 @@ export function writeTeamRoster(options: {
 }): void {
 	const roster = {
 		version: 1 as const,
+		...keptRosterFields(options.path),
 		workers: options.workers.map((worker) => ({
 			agentId: worker.agentId,
 			rolePrompt: worker.rolePrompt,
@@ -163,5 +189,21 @@ export function writeTeamRoster(options: {
 		`${JSON.stringify(roster, null, 2)}
 `,
 		"utf8",
+	);
+}
+
+/**
+ * The managers a running manager may hand over to: every one the roster lists
+ * except itself. `self` is the agentId this manager was started as, when it
+ * was started by a handover; a manager the user started has no roster name,
+ * so it can hand over to any of them.
+ */
+export function listHandoverManagers(options: {
+	workspaceRoot?: string;
+	self?: string;
+}): TeamRosterManager[] {
+	const { roster } = loadTeamRoster({ workspaceRoot: options.workspaceRoot });
+	return (roster?.managers ?? []).filter(
+		(manager) => manager.agentId !== options.self,
 	);
 }

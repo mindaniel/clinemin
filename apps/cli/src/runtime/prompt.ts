@@ -4,6 +4,7 @@ import { basename, resolve } from "node:path";
 import {
 	buildWorkspaceMetadata,
 	getWebProviderPrompts,
+	listHandoverManagers,
 	listManagerWorkers,
 	mergeRulesForSystemPrompt,
 	type UserInstructionConfigService,
@@ -45,6 +46,9 @@ export async function resolveSystemPrompt(input: {
 		// @cline/shared also builds for the browser and cannot touch the disk.
 		managerWorkers: input.managerMode
 			? listManagerWorkers({ workspaceRoot: input.cwd })
+			: undefined,
+		managerPeers: input.managerMode
+			? listHandoverManagers({ workspaceRoot: input.cwd })
 			: undefined,
 		overridePrompt: input.explicitSystemPrompt,
 		platform:

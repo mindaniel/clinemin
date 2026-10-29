@@ -2,6 +2,7 @@ import type { LanguageModelV2Prompt } from "@ai-sdk/provider";
 import type { WebProviderPrompts } from "@cline/shared";
 import { messagesToPrompt } from "../deepseek-web";
 import { buildLeanConversation, continuationLabel } from "../deepseek-web-v2";
+import { splitManagerStatus } from "../tool-pipeline/continuation-note";
 import { SIMPLE_WEB_SYSTEM_PROMPT } from "../tool-pipeline/simple-system-prompt";
 
 /**
@@ -137,8 +138,21 @@ function formatClaudeToolResult(toolName: string, text: string): string {
  * This runs AFTER the shared `messagesToPrompt` formatter (which we do not
  * modify). Segments are the formatter's own `\n\n`-joined turns.
  */
+/**
+ * The continuation note's "Note:" segment is dropped below, but a manager's
+ * status line rides on the end of it. Pull the status out into a segment of
+ * its own first, so dropping the note does not drop the status with it.
+ */
+export function keepManagerStatus(segments: string[]): string[] {
+	return segments.flatMap((segment) => {
+		if (!segment.trim().startsWith("Note:")) return [segment];
+		const { body, status } = splitManagerStatus(segment);
+		return status ? [body, status] : [segment];
+	});
+}
+
 function rephraseClaudeToolResults(promptText: string): string {
-	const segments = promptText.split("\n\n");
+	const segments = keepManagerStatus(promptText.split("\n\n"));
 	return segments
 		.filter((segment, index) => {
 			const trimmed = segment.trim();

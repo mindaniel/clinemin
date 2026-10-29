@@ -55,7 +55,17 @@ export interface ManagerSystemPromptOptions {
 	platform?: string;
 	/** Extra instructions from the user, appended verbatim. */
 	rules?: string;
+	/** Other managers this one can hand the job to (roster `managers`). */
+	managers?: ManagerPeerSummary[];
 }
+
+export interface ManagerPeerSummary {
+	agentId: string;
+	notes?: string;
+}
+
+/** The tool a `<handover>` block becomes. */
+export const MANAGER_HANDOVER_TOOL = "team_handover";
 
 /**
  * Short name for a provider: `qwen-web` -> `qwen`, `deepseek-web-v2` ->
@@ -229,10 +239,192 @@ Their replies also say how much of their context they have used; past about 80%,
 start someone fresh and hand over what they produced.`,
 	);
 
+	const managers = options.managers ?? [];
+	if (managers.length > 0) {
+		const others = managers
+			.map((manager) => {
+				const note = manager.notes?.replace(/\s+/g, " ").trim();
+				return note ? `- ${manager.agentId} — ${note}` : `- ${manager.agentId}`;
+			})
+			.join("\n");
+		sections.push(
+			`Every message I send ends with a [Manager status: ...] line about you: how
+much of your own context is used and when your usage limit resets. Your context
+is smaller than theirs, so watch it. Past ${MANAGER_HANDOVER_PCT}%, start no new
+work and hand the job to another manager:
+${others}
+
+<handover>
+TO: ${managers[0].agentId}
+The goal, what is done and verified, what is left, which assistant holds what,
+and anything you were about to check.
+</handover>
+
+\`</handover>\` goes alone on its own line. The new manager sees nothing but
+that message and the same assistants, so write it to stand on its own. Your
+part ends once it is sent.`,
+		);
+	} else {
+		sections.push(
+			`Every message I send ends with a [Manager status: ...] line about you: how
+much of your own context is used and when your usage limit resets. Your context
+is smaller than theirs, so watch it. Past ${MANAGER_HANDOVER_PCT}%, start no new
+work: write a handover summary as your final answer — the goal, what is done and
+verified, what is left, and which assistant holds what — so another manager can
+pick up from it.`,
+		);
+	}
+
 	const rules = options.rules?.trim();
 	if (rules) {
 		sections.push(rules);
 	}
 
 	return sections.join("\n\n");
+}
+
+/**
+ * Past this share of its context, the manager is told to hand over.
+ *
+ * A manager usually runs on a web chat with a far smaller budget than its
+ * workers, and it cannot see how full its own conversation is: the status bar
+ * is for the user. Without a number it either never hands over and dies
+ * mid-job, or guesses. 90% leaves room for the handover summary itself.
+ */
+export const MANAGER_HANDOVER_PCT = 90;
+
+/** What the manager's provider said about its own usage limit. */
+export interface ManagerUsageLimit {
+	/** Share of the session limit spent, 0-100 (Claude Web, Kimi). */
+	percent?: number;
+	/** Messages left in the window (ChatGPT Web, Grok). */
+	messagesRemaining?: number;
+	messagesTotal?: number;
+	/** ISO time the limit resets. */
+	resetsAt?: string;
+}
+
+const finite = (value: unknown): value is number =>
+	typeof value === "number" && Number.isFinite(value);
+
+/**
+ * Read a usage limit out of a turn's provider metadata.
+ *
+ * Every web provider publishes it under its own id, in one of two shapes
+ * (`sessionPercent`/`sessionResetsAt` or `messagesRemaining`/`messagesResetAt`
+ * — see `readWebSessionStatus` in the CLI). Matching the shape rather than a
+ * list of provider ids means a provider that starts reporting one is picked up
+ * without touching this.
+ */
+export function readManagerUsageLimit(
+	metadata: unknown,
+): ManagerUsageLimit | undefined {
+	if (!metadata || typeof metadata !== "object") return undefined;
+	for (const entry of Object.values(metadata as Record<string, unknown>)) {
+		if (!entry || typeof entry !== "object") continue;
+		const record = entry as Record<string, unknown>;
+		const resetsAt =
+			typeof record.sessionResetsAt === "string"
+				? record.sessionResetsAt
+				: typeof record.messagesResetAt === "string"
+					? record.messagesResetAt
+					: undefined;
+		if (finite(record.sessionPercent)) {
+			return {
+				percent: Math.max(0, Math.min(record.sessionPercent, 100)),
+				...(resetsAt ? { resetsAt } : {}),
+			};
+		}
+		if (finite(record.messagesRemaining)) {
+			return {
+				messagesRemaining: Math.max(0, record.messagesRemaining),
+				...(finite(record.messagesTotal)
+					? { messagesTotal: record.messagesTotal }
+					: {}),
+				...(resetsAt ? { resetsAt } : {}),
+			};
+		}
+	}
+	return undefined;
+}
+
+export interface ManagerStatusInput {
+	contextUsedTokens?: number;
+	contextWindow?: number;
+	limit?: ManagerUsageLimit;
+	/**
+	 * Whether it has other managers to hand over to (named in its prompt).
+	 * Without any, it hands over in its final answer instead.
+	 */
+	canHandOver?: boolean;
+	now?: Date;
+}
+
+function formatWait(ms: number): string {
+	const minutes = Math.max(1, Math.round(ms / 60_000));
+	if (minutes < 60) return `${minutes}m`;
+	const hours = Math.floor(minutes / 60);
+	const rest = minutes % 60;
+	return rest ? `${hours}h ${rest}m` : `${hours}h`;
+}
+
+/**
+ * The one-line status appended to every message the manager receives: how
+ * full its own conversation is and when its usage limit resets.
+ *
+ * Times are local clock time plus a relative wait, because the model has no
+ * clock of its own and an ISO timestamp in UTC invites it to get the
+ * difference wrong. Returns undefined when there is nothing to report, so no
+ * empty bracket is sent.
+ */
+export function buildManagerStatusLine(
+	input: ManagerStatusInput,
+): string | undefined {
+	const now = input.now ?? new Date();
+	const parts: string[] = [];
+	const { contextUsedTokens, contextWindow } = input;
+	const contextPct =
+		finite(contextUsedTokens) && finite(contextWindow) && contextWindow > 0
+			? (contextUsedTokens / contextWindow) * 100
+			: undefined;
+	if (contextPct !== undefined) {
+		parts.push(
+			`context ${contextPct.toFixed(0)}% used (${Math.round(
+				contextUsedTokens as number,
+			)} of ${contextWindow} tokens)`,
+		);
+	}
+
+	const limit = input.limit;
+	if (limit) {
+		let limitText: string | undefined;
+		if (finite(limit.percent)) {
+			limitText = `usage limit ${limit.percent.toFixed(0)}% used`;
+		} else if (finite(limit.messagesRemaining)) {
+			limitText = `${limit.messagesRemaining}${
+				finite(limit.messagesTotal) ? ` of ${limit.messagesTotal}` : ""
+			} messages left`;
+		}
+		const resetMs = limit.resetsAt ? Date.parse(limit.resetsAt) : Number.NaN;
+		if (Number.isFinite(resetMs) && resetMs > now.getTime()) {
+			const clock = new Date(resetMs).toLocaleTimeString("en-GB", {
+				hour: "2-digit",
+				minute: "2-digit",
+			});
+			const reset = `resets at ${clock} (in ${formatWait(
+				resetMs - now.getTime(),
+			)})`;
+			limitText = limitText ? `${limitText}, ${reset}` : `usage limit ${reset}`;
+		}
+		if (limitText) parts.push(limitText);
+	}
+
+	if (parts.length === 0) return undefined;
+	let line = `[Manager status: ${parts.join("; ")}.]`;
+	if (contextPct !== undefined && contextPct >= MANAGER_HANDOVER_PCT) {
+		line += input.canHandOver
+			? ` You are past ${MANAGER_HANDOVER_PCT}% of your context. Start no new work: send a <handover> block to another manager — the goal, what is done and verified, what is left, and which assistant holds what.`
+			: ` You are past ${MANAGER_HANDOVER_PCT}% of your context. Start no new work: write a handover summary as your final answer — the goal, what is done and verified, what is left, and which assistant holds what — ending with ${MANAGER_DONE_TOKEN}.`;
+	}
+	return line;
 }

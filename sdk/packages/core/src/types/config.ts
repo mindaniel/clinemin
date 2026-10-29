@@ -25,6 +25,11 @@ export interface CoreModelConfig {
 	providerId: string;
 	modelId: string;
 	apiKey?: string;
+	/**
+	 * Browser profile a web provider drives, for a session on a second account
+	 * of the same provider (a manager taking over from another, say).
+	 */
+	browserProfile?: string;
 	baseUrl?: string;
 	headers?: Record<string, string>;
 	providerConfig?: ProviderConfig;

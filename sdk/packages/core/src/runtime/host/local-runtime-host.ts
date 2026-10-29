@@ -7,6 +7,7 @@ import {
 	type AgentEvent,
 	type AgentResult,
 	type BasicLogger,
+	buildManagerSystemPrompt,
 	captureSdkError,
 	createSessionId,
 	type ITelemetryService,
@@ -22,7 +23,14 @@ import {
 import type { ToolExecutors } from "../../extensions/tools";
 import { DefaultToolNames } from "../../extensions/tools";
 import { registerBackgroundCommandReporter } from "../../extensions/tools/background-command-reports";
-import type { TeamEvent } from "../../extensions/tools/team";
+import {
+	createHandoverTool,
+	type HandoverTarget,
+	listHandoverManagers,
+	listManagerWorkers,
+	type TeamEvent,
+} from "../../extensions/tools/team";
+import { workerConnectionOverrides } from "../../extensions/tools/team/team-tools";
 import type { HookEventPayload } from "../../hooks";
 import { buildTelemetryAgentIdentity } from "../../services/agent-events";
 import { resolveWorkspacePath } from "../../services/config";
@@ -594,7 +602,31 @@ export class LocalRuntimeHost implements RuntimeHost {
 			onAuthError,
 		});
 
-		const tools = [...runtime.tools, ...(configWithProvider.extraTools ?? [])];
+		// A manager can hand the job to another manager from the roster when its
+		// own context runs out; see `team_handover`.
+		const handoverTool = configWithProvider.managerMode
+			? createHandoverTool({
+					workspaceRoot:
+						configWithProvider.workspaceRoot ?? configWithProvider.cwd,
+					self:
+						typeof startInput.sessionMetadata?.managerName === "string"
+							? startInput.sessionMetadata.managerName
+							: undefined,
+					startSuccessor: (target, summary) =>
+						this.startManagerSuccessor({
+							fromSessionId: sessionId,
+							startInput,
+							teamName: configWithProvider.teamName,
+							target,
+							summary,
+						}),
+				})
+			: undefined;
+		const tools = [
+			...runtime.tools,
+			...(configWithProvider.extraTools ?? []),
+			...(handoverTool ? [handoverTool] : []),
+		];
 		const extensions = runtime.extensions ?? bootstrap.extensions;
 		const explicitInitialCompactionState = startInput.initialCompactionState;
 		let activeSessionRef: ActiveSession | undefined;
@@ -682,6 +714,7 @@ export class LocalRuntimeHost implements RuntimeHost {
 			temperature: configWithProvider.temperature,
 			systemPrompt: configWithProvider.systemPrompt,
 			managerMode: configWithProvider.managerMode,
+			browserProfile: configWithProvider.browserProfile,
 			maxIterations: configWithProvider.maxIterations,
 			execution: configWithProvider.execution,
 			prepareTurn,
@@ -935,6 +968,97 @@ export class LocalRuntimeHost implements RuntimeHost {
 			messagesPath,
 			result,
 		};
+	}
+
+	/**
+	 * Start the manager a `<handover>` named, on the same team and workspace,
+	 * with the handover as its first message.
+	 *
+	 * Its connection is resolved the way a worker's is — profile first, then the
+	 * roster's provider and model, then that provider's saved settings — so the
+	 * old manager's key and model never leak onto another provider. It returns
+	 * as soon as the session exists: the first turn of a web manager takes
+	 * minutes, and the old manager's turn should not be held open for it.
+	 */
+	private async startManagerSuccessor(input: {
+		fromSessionId: string;
+		startInput: ResolvedStartSessionInput;
+		teamName?: string;
+		target: HandoverTarget;
+		summary: string;
+	}): Promise<string> {
+		const previous = input.startInput.config;
+		const connection = workerConnectionOverrides(
+			{
+				agentId: input.target.agentId,
+				rolePrompt: "manager",
+				profile: input.target.profile,
+				providerId: input.target.providerId,
+				modelId: input.target.modelId,
+			},
+			previous.providerId,
+		);
+		const providerId = connection.providerId ?? previous.providerId;
+		const sameProvider = providerId === previous.providerId;
+		const modelId =
+			connection.modelId ?? (sameProvider ? previous.modelId : undefined);
+		if (!modelId) {
+			throw new Error(
+				`Manager "${input.target.agentId}" has no model. Set modelId for it in team.json, or pick a model for ${providerId} once so it is saved.`,
+			);
+		}
+		const workspaceRoot = previous.workspaceRoot ?? previous.cwd;
+		const sessionId = createSessionId();
+		const startPromise = this.startSession({
+			source: input.startInput.source,
+			interactive: input.startInput.interactive,
+			toolPolicies: input.startInput.toolPolicies,
+			sessionMetadata: {
+				...(input.startInput.sessionMetadata ?? {}),
+				managerName: input.target.agentId,
+				handoverFrom: input.fromSessionId,
+			},
+			config: {
+				...previous,
+				sessionId,
+				providerId,
+				modelId,
+				apiKey:
+					connection.apiKey ?? (sameProvider ? previous.apiKey : undefined),
+				baseUrl:
+					connection.baseUrl ?? (sameProvider ? previous.baseUrl : undefined),
+				headers:
+					connection.headers ?? (sameProvider ? previous.headers : undefined),
+				browserProfile: connection.browserProfile,
+				// Same shape at runtime; the delegated type is just looser.
+				providerConfig: (connection.providerConfig ??
+					(sameProvider
+						? previous.providerConfig
+						: undefined)) as typeof previous.providerConfig,
+				knownModels: sameProvider ? previous.knownModels : undefined,
+				teamName: input.teamName ?? previous.teamName,
+				systemPrompt: buildManagerSystemPrompt({
+					workers: listManagerWorkers({ workspaceRoot }),
+					managers: listHandoverManagers({
+						workspaceRoot,
+						self: input.target.agentId,
+					}),
+					workspaceRoot: previous.cwd,
+					platform: process.platform,
+				}),
+			},
+			prompt: `You are taking over this job from the previous manager, who ran out of room. Their handover:\n\n${input.summary}`,
+		});
+		startPromise.catch((error) => {
+			this.sessions
+				.get(input.fromSessionId)
+				?.config.logger?.error?.("Manager handover session failed", {
+					fromSessionId: input.fromSessionId,
+					sessionId,
+					error,
+				});
+		});
+		return sessionId;
 	}
 
 	async restoreSession(

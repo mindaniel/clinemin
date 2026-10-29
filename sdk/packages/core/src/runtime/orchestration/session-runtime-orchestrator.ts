@@ -36,16 +36,20 @@ import {
 	type AgentRuntimePrepareTurnContext,
 	type AgentTool,
 	type BasicLogger,
+	buildManagerStatusLine,
 	type ContributionRegistry,
 	createContributionRegistry,
+	estimateTokens,
 	type ITelemetryService,
 	isLikelyAuthError,
 	type LegacyAgentUsage,
 	type LoopDetectionConfig,
+	MANAGER_HANDOVER_TOOL,
 	type Message,
 	type MessageWithMetadata,
 	type ModelInfo,
 	mergeModelOptions,
+	readManagerUsageLimit,
 	type ToolCallRecord,
 } from "@cline/shared";
 import { filterDisabledTools } from "../../services/global-settings";
@@ -340,6 +344,13 @@ export class SessionRuntime {
 		inputTokens: 0,
 		outputTokens: 0,
 	};
+	/**
+	 * The provider's last word on its own usage limit. Kept across runs: a
+	 * manager's turns are mostly new runs (each worker reply arrives as one),
+	 * and a run starts with no usage, so the reset time would vanish from its
+	 * status line on exactly the turns it reads.
+	 */
+	private lastUsageLimitMetadata: unknown;
 	/** Tool-start timestamps for `ToolCallRecord.durationMs`. */
 	private toolStartedAt = new Map<string, Date>();
 	/** Tool-call input snapshot for `ToolCallRecord.input`. */
@@ -1023,7 +1034,9 @@ export class SessionRuntime {
 					await this.prepareMessagesForModelRequest(messages);
 				return {
 					...control,
-					messages: preparedMessages,
+					messages: this.config.managerMode
+						? this.appendManagerStatus(messages, preparedMessages)
+						: preparedMessages,
 				};
 			},
 		};
@@ -1079,6 +1092,45 @@ export class SessionRuntime {
 					: {}),
 			};
 		};
+	}
+
+	/**
+	 * Tell a manager how full its own conversation is and when its usage limit
+	 * resets, on the end of the message it is about to read. Only the request
+	 * carries it; the transcript does not, so old status lines never pile up
+	 * in the history or count against the context they report on.
+	 */
+	private appendManagerStatus(
+		history: readonly AgentMessage[],
+		prepared: AgentMessage[],
+	): AgentMessage[] {
+		const status = buildManagerStatusLine({
+			contextUsedTokens: estimateContextTokens(history),
+			contextWindow: tryGetModelInfo(this.config)?.contextWindow,
+			limit: readManagerUsageLimit(this.lastUsageLimitMetadata),
+			canHandOver: this.config.tools?.some(
+				(tool) => tool.name === MANAGER_HANDOVER_TOOL,
+			),
+		});
+		if (!status || prepared.length === 0) {
+			return prepared;
+		}
+		const last = prepared[prepared.length - 1];
+		if (last.role === "user") {
+			return [
+				...prepared.slice(0, -1),
+				{ ...last, content: [...last.content, { type: "text", text: status }] },
+			];
+		}
+		return [
+			...prepared,
+			{
+				id: `manager-status-${Date.now()}`,
+				role: "user",
+				content: [{ type: "text", text: status }],
+				createdAt: Date.now(),
+			},
+		];
 	}
 
 	private async prepareMessagesForModelRequest(
@@ -1210,6 +1262,9 @@ export class SessionRuntime {
 				break;
 			}
 			case "usage-updated": {
+				if (event.usage.metadata !== undefined) {
+					this.lastUsageLimitMetadata = event.usage.metadata;
+				}
 				this.currentRunUsage = {
 					inputTokens: event.usage.inputTokens,
 					outputTokens: event.usage.outputTokens,
@@ -1459,6 +1514,30 @@ async function buildUserTurnContent(
 	// Import lazily to avoid a circular-import hazard via runtime barrels.
 	const { buildInitialUserContent } = await import("./user-input-builder");
 	return buildInitialUserContent(userMessage, userImages, userFiles, loader);
+}
+
+/**
+ * How much context the next request takes: what the last model call reported
+ * as its input plus output, and a chars/3 estimate of everything added since
+ * (for a manager, mostly worker reports). With no reported usage at all, the
+ * whole history is estimated.
+ */
+function estimateContextTokens(messages: readonly AgentMessage[]): number {
+	let reported = 0;
+	let start = 0;
+	for (let i = messages.length - 1; i >= 0; i--) {
+		const metrics = messages[i].metrics;
+		if (messages[i].role === "assistant" && metrics?.inputTokens) {
+			reported = metrics.inputTokens + (metrics.outputTokens ?? 0);
+			start = i + 1;
+			break;
+		}
+	}
+	let chars = 0;
+	for (const message of messages.slice(start)) {
+		chars += JSON.stringify(message.content).length;
+	}
+	return reported + (chars > 0 ? estimateTokens(chars) : 0);
 }
 
 function tryGetModelInfo(config: AgentConfig): ModelInfo | undefined {

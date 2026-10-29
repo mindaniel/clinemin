@@ -16,6 +16,7 @@ import { mkdirSync, writeFileSync } from "node:fs";
 import { dirname } from "node:path";
 import {
 	createLocalTeamStore,
+	keptRosterFields,
 	loadTeamRoster,
 	resolveTeamRosterSearchPaths,
 } from "@cline/core";
@@ -185,6 +186,8 @@ export function writeTeamRoster(options: {
 }): void {
 	const roster = {
 		version: 1 as const,
+		// The editor only knows workers; keep the managers a job hands over to.
+		...keptRosterFields(options.path),
 		workers: options.workers.map((worker) => ({
 			agentId: worker.agentId,
 			rolePrompt: worker.rolePrompt,

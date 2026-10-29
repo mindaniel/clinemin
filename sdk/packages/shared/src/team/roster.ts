@@ -87,28 +87,61 @@ export const TeamRosterWorkerSchema = z
 	})
 	.strict();
 
+/**
+ * Another manager a running manager can hand the job to.
+ *
+ * A manager usually runs on a web chat with a small context and a usage limit,
+ * so a long job outlives it. Listing the next managers here lets it write a
+ * handover and have the runtime start one of them on the same team, instead of
+ * the user noticing the stall and relaunching by hand. A manager has no role
+ * prompt and no tools of its own: it gets the manager prompt, like every other.
+ */
+export const TeamRosterManagerSchema = z
+	.object({
+		agentId: TeamRosterWorkerSchema.shape.agentId.describe(
+			"Name the running manager hands over to",
+		),
+		notes: TeamRosterWorkerSchema.shape.notes,
+		profile: TeamRosterWorkerSchema.shape.profile,
+		providerId: TeamRosterWorkerSchema.shape.providerId,
+		modelId: TeamRosterWorkerSchema.shape.modelId,
+	})
+	.strict();
+
 export const TeamRosterSchema = z
 	.object({
 		version: z.literal(1),
 		teamName: z.string().min(1).optional(),
 		workers: z.array(TeamRosterWorkerSchema),
+		managers: z.array(TeamRosterManagerSchema).optional(),
 	})
 	.strict()
 	.superRefine((roster, ctx) => {
+		// One namespace for both lists: a `TO:` line naming something that is
+		// both a worker and a manager would have two meanings.
 		const seen = new Set<string>();
-		for (const [index, worker] of roster.workers.entries()) {
-			if (seen.has(worker.agentId)) {
+		const entries = [
+			...roster.workers.map(
+				(entry, index) => ["workers", index, entry] as const,
+			),
+			...(roster.managers ?? []).map(
+				(entry, index) => ["managers", index, entry] as const,
+			),
+		];
+		for (const [list, index, entry] of entries) {
+			if (seen.has(entry.agentId)) {
 				ctx.addIssue({
 					code: "custom",
-					path: ["workers", index, "agentId"],
-					message: `Duplicate agentId "${worker.agentId}"`,
+					path: [list, index, "agentId"],
+					message: `Duplicate agentId "${entry.agentId}"`,
 				});
 			}
-			seen.add(worker.agentId);
+			seen.add(entry.agentId);
 		}
 	});
 
 export type TeamRosterWorker = z.infer<typeof TeamRosterWorkerSchema>;
+export type TeamRosterManager = z.infer<typeof TeamRosterManagerSchema>;
 export type TeamRoster = z.infer<typeof TeamRosterSchema>;
 
 export type ParseTeamRosterResult =

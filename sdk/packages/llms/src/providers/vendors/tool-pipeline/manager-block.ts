@@ -36,12 +36,17 @@ import {
 	MANAGER_DONE_TOKEN,
 	MANAGER_EXAMPLE_BODY,
 	MANAGER_EXAMPLE_COMMAND,
+	MANAGER_HANDOVER_TOOL,
 } from "@cline/shared";
 import { parsePatchBlocks } from "./patch-block";
 import { parseShellFenceFlags } from "./shell-fence";
 
 const OPEN_TAG_RE = /^[ \t]*<\s*manager\s*>[ \t]*\r?$/im;
 const CLOSE_LINE_RE = /^[ \t]*<\s*\/\s*manager\s*>[ \t]*$/;
+// A `<handover>` block is scanned exactly like a `<manager>` one — same
+// positional closing line, same TO: header — it just means something else.
+const HANDOVER_OPEN_TAG_RE = /^[ \t]*<\s*handover\s*>[ \t]*\r?$/im;
+const HANDOVER_CLOSE_LINE_RE = /^[ \t]*<\s*\/\s*handover\s*>[ \t]*$/;
 // A manager's own hands: PowerShell it runs to check a worker's claim rather
 // than taking the worker's word for it.
 //
@@ -93,12 +98,18 @@ export interface ManagerBlock {
  * message, so scanning resumes past the end of each block rather than at the
  * next opening tag.
  */
-export function scanManagerBlocks(text: string): ManagerBlock[] {
+export function scanManagerBlocks(
+	text: string,
+	tag: { open: RegExp; close: RegExp } = {
+		open: OPEN_TAG_RE,
+		close: CLOSE_LINE_RE,
+	},
+): ManagerBlock[] {
 	const blocks: ManagerBlock[] = [];
 	let cursor = 0;
 
 	while (cursor < text.length) {
-		const openMatch = OPEN_TAG_RE.exec(text.slice(cursor));
+		const openMatch = tag.open.exec(text.slice(cursor));
 		if (!openMatch || openMatch.index === undefined) {
 			break;
 		}
@@ -117,7 +128,7 @@ export function scanManagerBlocks(text: string): ManagerBlock[] {
 			const newlineIndex = text.indexOf("\n", lineStart);
 			const lineEnd = newlineIndex === -1 ? text.length : newlineIndex;
 			const line = text.slice(lineStart, lineEnd).replace(/\r$/, "");
-			if (CLOSE_LINE_RE.test(line)) {
+			if (tag.close.test(line)) {
 				bodyEnd = lineStart;
 				blockEnd = newlineIndex === -1 ? text.length : newlineIndex + 1;
 				unterminated = false;
@@ -240,7 +251,16 @@ export interface ManagerPatch {
 	arguments: { input: string };
 }
 
-export type ManagerDelegation = ManagerRunTask | ManagerVerify | ManagerPatch;
+export interface ManagerHandover {
+	name: typeof MANAGER_HANDOVER_TOOL;
+	arguments: { to: string; summary: string };
+}
+
+export type ManagerDelegation =
+	| ManagerRunTask
+	| ManagerVerify
+	| ManagerPatch
+	| ManagerHandover;
 
 export interface ParsedManagerBlocks {
 	/** The reply with every `<manager>` block removed. */
@@ -531,6 +551,13 @@ function parseManagerBlocksOnly(
 	const verify = options.allowCommands
 		? extractShellFences(text)
 		: { cleanedContent: text, delegations: [], problems: [] };
+	const handover = extractHandoverBlocks(verify.cleanedContent);
+	if (handover.delegations.length > 0 || handover.problems.length > 0) {
+		// A handover ends this manager's part. Anything else in the same reply
+		// would start work the next manager does not know about, so it is
+		// dropped rather than dispatched alongside.
+		return handover;
+	}
 	const blocks = scanManagerBlocks(verify.cleanedContent);
 	if (
 		blocks.length === 0 &&
@@ -617,5 +644,50 @@ function parseManagerBlocksOnly(
 		cleanedContent: parts.join("").trim(),
 		delegations,
 		problems,
+	};
+}
+
+/**
+ * Turn `<handover>` blocks into a `team_handover` call: the manager is out of
+ * room and passes the job to another manager named on the TO: line. Only the
+ * first well-formed block counts — a job can only be handed to one successor.
+ */
+function extractHandoverBlocks(text: string): ParsedManagerBlocks {
+	const blocks = scanManagerBlocks(text, {
+		open: HANDOVER_OPEN_TAG_RE,
+		close: HANDOVER_CLOSE_LINE_RE,
+	});
+	const delegations: ManagerDelegation[] = [];
+	const problems: string[] = [];
+	const parts: string[] = [];
+	let cursor = 0;
+	for (const block of blocks) {
+		parts.push(text.slice(cursor, block.start));
+		cursor = block.end;
+		if (delegations.length > 0) continue;
+		if (!block.agentId) {
+			problems.push(
+				"The <handover> block had no `TO: <manager>` line. Repeat it with the manager named on the first line.",
+			);
+		} else if (!block.task) {
+			problems.push(
+				`The <handover> block to "${block.agentId}" had no summary under the TO: line.`,
+			);
+		} else if (block.unterminated) {
+			problems.push(
+				`The <handover> block to "${block.agentId}" was never closed. Put </handover> alone on its own line at the end.`,
+			);
+		} else {
+			delegations.push({
+				name: MANAGER_HANDOVER_TOOL,
+				arguments: { to: block.agentId, summary: block.task },
+			});
+		}
+	}
+	parts.push(text.slice(cursor));
+	return {
+		cleanedContent: parts.join("").trim(),
+		delegations,
+		problems: delegations.length > 0 ? [] : problems,
 	};
 }

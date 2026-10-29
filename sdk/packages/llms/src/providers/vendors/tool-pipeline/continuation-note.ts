@@ -120,12 +120,41 @@ export function resetContinuationNote(): void {
 export const PASTE_CARRIER_PROMPT = "Continue with the reply provided above.";
 
 /**
+ * A manager's status line (`buildManagerStatusLine` in `@cline/shared`) rides
+ * on the end of whatever message the manager reads next, often this very
+ * note. It is not part of the note, so it must not stop the note being
+ * recognised: an unrecognised note is echoed back as "My last message".
+ */
+const MANAGER_STATUS_TAIL_RE = /\s*(\[Manager status: [^\]\n]*\][^\n]*)$/;
+
+function withoutManagerStatus(text: string): string {
+	return text.replace(MANAGER_STATUS_TAIL_RE, "").trim();
+}
+
+/**
+ * Split a manager status line off the end of `text`. Prompt builders that
+ * drop the continuation note (its "Note:" segment) use this to keep the
+ * status, which is the one part of that message the manager must read.
+ */
+export function splitManagerStatus(text: string): {
+	body: string;
+	status?: string;
+} {
+	const match = MANAGER_STATUS_TAIL_RE.exec(text);
+	if (!match) return { body: text };
+	return {
+		body: text.slice(0, match.index).trim(),
+		status: match[1].trim(),
+	};
+}
+
+/**
  * True for a user message the runtime wrote rather than the user: the
  * continuation note or the `/paste` carrier. Prompt builders use this to find
  * the last thing the user actually typed.
  */
 export function isSyntheticUserText(text: string): boolean {
-	const trimmed = text.trim();
+	const trimmed = withoutManagerStatus(text);
 	return isContinuationNoteText(trimmed) || trimmed === PASTE_CARRIER_PROMPT;
 }
 
@@ -135,7 +164,7 @@ export function isSyntheticUserText(text: string): boolean {
  * sessions above).
  */
 export function isContinuationNoteText(text: string): boolean {
-	const trimmed = text.trim();
+	const trimmed = withoutManagerStatus(text);
 	return (
 		trimmed === state().active ||
 		trimmed === DEFAULT_CONTINUATION_NOTE ||

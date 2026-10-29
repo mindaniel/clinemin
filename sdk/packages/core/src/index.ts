@@ -365,6 +365,8 @@ export {
 	type DelegatedAgentKind,
 	type DelegatedAgentRuntimeConfig,
 	findProfile,
+	keptRosterFields,
+	listHandoverManagers,
 	listManagerWorkers,
 	loadConfiguredAgentConfigs,
 	loadProfiles,
