@@ -4,6 +4,7 @@ import {
 	getContinuationNote,
 	getSessionBrowserProfile,
 	runWithBrowserProfile,
+	runWithCliSession,
 } from "@cline/llms";
 import type {
 	AgentAfterToolResult,
@@ -500,10 +501,14 @@ export class AgentRuntime {
 	 * workers apart.
 	 */
 	private inSessionProfile<T>(fn: () => Promise<T>): Promise<T> {
-		return runWithBrowserProfile(
-			this.config.browserProfile?.trim() ||
-				getSessionBrowserProfile(this.config.sessionId),
-			fn,
+		// The CLI session scope lets a web provider tag the site chat it opens
+		// with this session, so history can show the site's chat title.
+		return runWithCliSession(this.config.sessionId, () =>
+			runWithBrowserProfile(
+				this.config.browserProfile?.trim() ||
+					getSessionBrowserProfile(this.config.sessionId),
+				fn,
+			),
 		);
 	}
 

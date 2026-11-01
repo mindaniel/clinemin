@@ -27,7 +27,7 @@ import {
 
 // ── Browser session (raw CDP over WebSocket) ───────────────────────────────
 
-async function isEndpointUp(port: number): Promise<boolean> {
+export async function isEndpointUp(port: number): Promise<boolean> {
 	try {
 		const res = await fetch(`http://127.0.0.1:${port}/json/version`, {
 			signal: AbortSignal.timeout(800),

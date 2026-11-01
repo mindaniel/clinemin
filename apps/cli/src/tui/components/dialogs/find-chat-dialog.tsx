@@ -38,12 +38,19 @@ export function FindChatDialogContent(
 	const [chats, setChats] = useState(initialChats);
 	const [confirmDelete, setConfirmDelete] = useState<string | null>(null);
 
-	const items: SearchableItem[] = chats.map((chat) => ({
-		key: chat.sessionId,
-		label: `${new Date(chat.lastActive).toLocaleString()} � ${chat.sessionId}`,
-		section: providerName,
-		searchText: `${chat.sessionId} ${chat.chatKey} ${chat.lastActive}`,
-	}));
+	// The site's own chat name, when the provider has fetched it, leads the row:
+	// it is what the user remembers, far more than a date or an id.
+	const items: SearchableItem[] = chats.map((chat) => {
+		const title = "title" in chat ? chat.title : undefined;
+		return {
+			key: chat.sessionId,
+			label: title
+				? `${title} · ${new Date(chat.lastActive).toLocaleString()}`
+				: `${new Date(chat.lastActive).toLocaleString()} � ${chat.sessionId}`,
+			section: providerName,
+			searchText: `${title ?? ""} ${chat.sessionId} ${chat.chatKey} ${chat.lastActive}`,
+		};
+	});
 
 	const createImportItem = useCallback<CreateSearchableItem>(
 		(search, baseItems) => {

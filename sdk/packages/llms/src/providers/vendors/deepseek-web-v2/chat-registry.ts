@@ -2,13 +2,18 @@ import { createHash } from "node:crypto";
 import * as fs from "node:fs";
 import * as path from "node:path";
 import type { LanguageModelV2Prompt } from "@ai-sdk/provider";
+import {
+	DEFAULT_PROFILE_NAME,
+	listBrowserProfiles,
+} from "../tool-pipeline/browser-profiles";
+import { getCurrentCliSessionId } from "../tool-pipeline/cli-session-scope";
 import { confirmChatLocation } from "../tool-pipeline/confirm-chat-location";
 import {
 	connectBrowser,
 	ensureDeepSeekPage,
 	navigateDeepSeekChat,
 } from "./browser";
-import { resolveDeepSeekWebV2Config } from "./config";
+import { CONFIG_DIR, resolveDeepSeekWebV2Config } from "./config";
 /**
  * Derive a stable key for a CLI conversation from its first user message. All
  * turns of one CLI chat share the same first user message (the transcript is
@@ -110,6 +115,10 @@ interface ChatSessionRecord {
 	session_id: string;
 	first_seen: string;
 	last_active: string;
+	/** The chat's name on chat.deepseek.com, as the site's sidebar shows it. */
+	title?: string;
+	/** CLI session that drove this chat, so history can show `title`. */
+	cli_session_id?: string;
 }
 
 /** A DeepSeek web chat `session_id` from a `a/chat/s/<session_id>` URL, if any. */
@@ -167,12 +176,84 @@ export function recordChatSession(
 ): void {
 	const registry = readChatRegistry(chatsFile);
 	const existing = registry[chatKey];
+	const cliSessionId = getCurrentCliSessionId() ?? existing?.cli_session_id;
+	// A title belongs to the site chat, so it survives only while the key
+	// still points at the same one.
+	const title = existing?.session_id === sessionId ? existing.title : undefined;
 	registry[chatKey] = {
 		session_id: sessionId,
 		first_seen: existing?.first_seen ?? new Date().toISOString(),
 		last_active: new Date().toISOString(),
+		...(title ? { title } : {}),
+		...(cliSessionId ? { cli_session_id: cliSessionId } : {}),
 	};
 	writeChatRegistry(chatsFile, registry);
+}
+
+/**
+ * Store site chat titles, keyed by DeepSeek `session_id`. Returns how many
+ * records changed, and skips the write when none did.
+ */
+export function setChatTitles(
+	chatsFile: string,
+	titles: ReadonlyMap<string, string>,
+): number {
+	if (titles.size === 0) return 0;
+	const registry = readChatRegistry(chatsFile);
+	let changed = 0;
+	for (const record of Object.values(registry)) {
+		const title = titles.get(record?.session_id)?.trim();
+		if (!title || record.title === title) continue;
+		record.title = title;
+		changed++;
+	}
+	if (changed > 0) writeChatRegistry(chatsFile, registry);
+	return changed;
+}
+
+/** DeepSeek `session_id`s in one registry, most recently active first. */
+export function listRegistrySessionIds(chatsFile: string): string[] {
+	return Object.values(readChatRegistry(chatsFile))
+		.filter((record) => typeof record?.session_id === "string")
+		.sort((a, b) => (a.last_active < b.last_active ? 1 : -1))
+		.map((record) => record.session_id);
+}
+
+/**
+ * Site titles of the DeepSeek chats CLI sessions drove, keyed by CLI session
+ * id (the newest chat wins when a session drove several). Searches every
+ * browser profile's registry: history lists sessions from all of them.
+ */
+export function readDeepSeekChatTitlesBySession(): Map<string, string> {
+	let profiles: string[];
+	try {
+		profiles = listBrowserProfiles().map((profile) => profile.name);
+	} catch {
+		profiles = [];
+	}
+	// Same layout `resolveProfilePaths` uses, without resolving debug ports.
+	const files = new Set([path.join(CONFIG_DIR, "chats.json")]);
+	for (const name of profiles) {
+		if (name === DEFAULT_PROFILE_NAME) continue;
+		files.add(path.join(CONFIG_DIR, "profiles", name, "chats.json"));
+	}
+	const newest = new Map<string, ChatSessionRecord>();
+	for (const file of files) {
+		for (const record of Object.values(readChatRegistry(file))) {
+			const cliSessionId = record?.cli_session_id;
+			if (!cliSessionId || !record.title) continue;
+			const seen = newest.get(cliSessionId);
+			if (!seen || record.last_active > seen.last_active) {
+				newest.set(cliSessionId, record);
+			}
+		}
+	}
+	return new Map(
+		[...newest].map(([cliSessionId, record]) => [
+			cliSessionId,
+			record.title as string,
+		]),
+	);
 }
 
 export function deleteChatSession(chatsFile: string, chatKey: string): void {
@@ -191,6 +272,8 @@ export interface DeepSeekWebV2ChatEntry {
 	sessionId: string;
 	firstSeen: string;
 	lastActive: string;
+	/** The chat's name on the site, once it has been fetched. */
+	title?: string;
 }
 
 /**
@@ -208,6 +291,7 @@ export function listDeepSeekWebV2Chats(): DeepSeekWebV2ChatEntry[] {
 			sessionId: record.session_id,
 			firstSeen: record.first_seen,
 			lastActive: record.last_active,
+			...(record.title ? { title: record.title } : {}),
 		}))
 		.sort((a, b) => (a.lastActive < b.lastActive ? 1 : -1));
 }

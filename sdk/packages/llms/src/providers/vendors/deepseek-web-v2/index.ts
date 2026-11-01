@@ -1,3 +1,9 @@
+export {
+	fetchChatTitles,
+	matchesMaskedEmail,
+	refreshDeepSeekChatTitles,
+	watchDeepSeekLogin,
+} from "./account";
 export { isSameChatLocation } from "./browser";
 export {
 	chatKeyFromPrompt,
@@ -8,8 +14,10 @@ export {
 	lookupChatSession,
 	openDeepSeekWebV2Chat,
 	parseSessionIdFromUrl,
+	readDeepSeekChatTitlesBySession,
 	recordChatSession,
 	resolveConversationChatKey,
+	setChatTitles,
 } from "./chat-registry";
 export {
 	computeSendDelay,

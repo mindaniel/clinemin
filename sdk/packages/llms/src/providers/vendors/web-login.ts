@@ -105,6 +105,8 @@ export interface WebLoginResult {
 	name: string;
 	url: string;
 	profile: string;
+	/** DevTools port of the login browser, for watching the sign-in. */
+	debugPort: number;
 	/** "launched": a new window; "focused": a visible one was already open. */
 	outcome: "launched" | "focused";
 }
@@ -137,6 +139,7 @@ export async function openWebProviderLogin(
 		name: target.name,
 		url: target.url,
 		profile: getActiveBrowserProfile(),
+		debugPort: config.debugPort,
 	};
 
 	const running = await readBrowserVersion(config.debugPort);

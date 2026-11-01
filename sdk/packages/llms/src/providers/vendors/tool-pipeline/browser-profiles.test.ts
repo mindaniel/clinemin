@@ -6,12 +6,14 @@ import {
 	createBrowserProfile,
 	DEFAULT_PROFILE_NAME,
 	deleteBrowserProfile,
+	describeBrowserProfile,
 	getActiveBrowserProfile,
 	listBrowserProfiles,
 	normalizeProfileName,
 	resetBrowserProfilePin,
 	resolveActiveProfilePaths,
 	setActiveBrowserProfile,
+	setBrowserProfileAccount,
 } from "./browser-profiles";
 
 let storeDir: string;
@@ -157,5 +159,32 @@ describe("per-process latch", () => {
 		setActiveBrowserProfile("work");
 		deleteBrowserProfile("work");
 		expect(getActiveBrowserProfile()).toBe(DEFAULT_PROFILE_NAME);
+	});
+});
+
+describe("setBrowserProfileAccount", () => {
+	it("keeps the first account and shows it beside the name", () => {
+		createBrowserProfile("work");
+		expect(setBrowserProfileAccount("work", "a@x.com")).toBe(true);
+		expect(setBrowserProfileAccount("work", "b@x.com")).toBe(false);
+		const entry = listBrowserProfiles().find((p) => p.name === "work");
+		expect(entry?.account).toBe("a@x.com");
+		expect(describeBrowserProfile(entry ?? { name: "work" })).toBe(
+			"work (a@x.com)",
+		);
+	});
+
+	it("replaces a masked account with the full address", () => {
+		setBrowserProfileAccount(DEFAULT_PROFILE_NAME, "a***@x.com");
+		expect(setBrowserProfileAccount(DEFAULT_PROFILE_NAME, "abc@x.com")).toBe(
+			true,
+		);
+		expect(listBrowserProfiles()[0].account).toBe("abc@x.com");
+	});
+
+	it("ignores unknown profiles and empty values", () => {
+		expect(setBrowserProfileAccount("nope", "a@x.com")).toBe(false);
+		expect(setBrowserProfileAccount(DEFAULT_PROFILE_NAME, "  ")).toBe(false);
+		expect(describeBrowserProfile({ name: "plain" })).toBe("plain");
 	});
 });

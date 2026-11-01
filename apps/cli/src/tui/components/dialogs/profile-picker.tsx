@@ -184,6 +184,11 @@ export function ProfilePickerContent(
 								<text fg={isSel ? palette.textOnSelection : undefined}>
 									{entry.name}
 								</text>
+								{entry.account && (
+									<text fg={isSel ? palette.textOnSelection : "gray"}>
+										{entry.account}
+									</text>
+								)}
 								{isActive && (
 									<text fg={isSel ? palette.textOnSelection : "green"}>
 										(active)

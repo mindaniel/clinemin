@@ -16,6 +16,7 @@ import {
 	DEFAULT_PROFILE_NAME,
 	type DeepSeekWebV2ChatEntry,
 	deleteBrowserProfile,
+	describeBrowserProfile,
 	deleteChatGPTChatSession,
 	deleteChatSession,
 	deleteClaudeChatSession,
@@ -56,9 +57,11 @@ import {
 	resolveQwenWebV2Config,
 	isWebLoginProvider,
 	openWebProviderLogin,
+	refreshDeepSeekChatTitles,
 	setActiveBrowserProfile,
 	setContinuationNote,
 	setPendingInjectedReply,
+	watchDeepSeekLogin,
 } from "@cline/llms";
 import { writeChatBinding } from "../../utils/chat-binding";
 import { readClipboardText } from "../../utils/clipboard";
@@ -85,6 +88,8 @@ interface WebProviderConfig {
 	listChats: () => WebChatEntry[];
 	openChat: (sessionId: string) => Promise<{ sessionId: string; url: string }>;
 	deleteChat: (chatKey: string) => void;
+	/** Fetch the site's chat names into the registry before listing. */
+	refreshTitles?: () => Promise<unknown>;
 }
 
 const webProviderConfigs: Record<string, WebProviderConfig> = {
@@ -92,6 +97,7 @@ const webProviderConfigs: Record<string, WebProviderConfig> = {
 		name: "DeepSeek Web v2",
 		listChats: listDeepSeekWebV2Chats,
 		openChat: openDeepSeekWebV2Chat,
+		refreshTitles: () => refreshDeepSeekChatTitles(),
 		deleteChat: (chatKey: string) => {
 			const config = resolveDeepSeekWebV2Config();
 			deleteChatSession(config.chatsFile, chatKey);
@@ -500,6 +506,14 @@ export function useLocalCommandActions(input: {
 				text: `/findchat: provider "${providerId}" is not a supported web provider for chat recall.`,
 			});
 			return true;
+		}
+
+		if (providerConfig.refreshTitles) {
+			// Best-effort: needs the provider's browser already running, and a
+			// failure just leaves the names from earlier turns.
+			await withLoadingDialog(dialog, "Loading chat names...", () =>
+				providerConfig.refreshTitles?.() ?? Promise.resolve(),
+			).catch(() => undefined);
 		}
 
 		let chats: WebChatEntry[];
@@ -1058,7 +1072,11 @@ export function useLocalCommandActions(input: {
 		session.appendEntry({
 			kind: "status",
 			text:
-				`/profile: this terminal now uses profile "${name}". ` +
+				`/profile: this terminal now uses profile ${describeBrowserProfile(
+					listBrowserProfiles().find((entry) => entry.name === name) ?? {
+						name,
+					},
+				)}. ` +
 				"If it is new, run /login to sign in before the first message.",
 		});
 		return true;
@@ -1319,6 +1337,26 @@ export function useLocalCommandActions(input: {
 					`(profile "${opened.profile}"). Sign in there, then send your message. ` +
 					"The login is kept in the profile; a hidden browser goes back to hidden on the next turn.",
 			});
+			// Name the profile after the account signed in to it, so the user
+			// can tell profiles apart later. Only the first email is kept; a
+			// masked one (what the site API reports) is replaced by the full one.
+			const known = listBrowserProfiles().find(
+				(entry) => entry.name === opened.profile,
+			)?.account;
+			if (providerId === "deepseek-web-v2" && (!known || known.includes("*"))) {
+				void watchDeepSeekLogin({
+					profile: opened.profile,
+					debugPort: opened.debugPort,
+				})
+					.then((described) => {
+						if (!described) return;
+						session.appendEntry({
+							kind: "status",
+							text: `/login: signed in. Profile is now shown as ${described}.`,
+						});
+					})
+					.catch(() => undefined);
+			}
 		} catch (error) {
 			session.appendEntry({
 				kind: "error",

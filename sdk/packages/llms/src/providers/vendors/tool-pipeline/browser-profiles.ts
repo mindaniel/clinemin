@@ -285,6 +285,12 @@ export interface BrowserProfile {
 	 */
 	portOffset: number;
 	createdAt: string;
+	/**
+	 * The account signed in under this profile, recorded the first time a web
+	 * provider sees one (`/login` keeps the email typed on the login page).
+	 * Display only: the name stays the directory key, so it is never renamed.
+	 */
+	account?: string;
 }
 
 interface ProfileStore {
@@ -446,6 +452,42 @@ export function createBrowserProfile(rawName: string): BrowserProfile {
 	};
 	writeStore([...store.profiles, created], store.storedActive);
 	return created;
+}
+
+/**
+ * Record the account signed in under `name`. Only the first one sticks unless
+ * `overwrite` is set, so a profile keeps the email it was first logged in with.
+ */
+export function setBrowserProfileAccount(
+	name: string,
+	account: string,
+	options: { overwrite?: boolean } = {},
+): boolean {
+	const value = account.trim();
+	if (!value) return false;
+	const store = readStore();
+	const entry = store.profiles.find((profile) => profile.name === name);
+	if (!entry) return false;
+	// A masked address (`q***@x.com`, all a provider API may report) gives
+	// way to the full one once a login form shows it.
+	const upgradesMasked =
+		entry.account?.includes("*") === true && !value.includes("*");
+	if (entry.account && !options.overwrite && !upgradesMasked) return false;
+	if (entry.account === value) return false;
+	const profiles = store.profiles.map((profile) =>
+		profile.name === name ? { ...profile, account: value } : profile,
+	);
+	writeStore(profiles, store.storedActive);
+	return true;
+}
+
+/** `name (account)` when an account is known, else just the name. */
+export function describeBrowserProfile(
+	profile: Pick<BrowserProfile, "name" | "account">,
+): string {
+	return profile.account
+		? `${profile.name} (${profile.account})`
+		: profile.name;
 }
 
 /**

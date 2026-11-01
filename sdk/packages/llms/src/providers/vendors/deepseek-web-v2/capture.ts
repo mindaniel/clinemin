@@ -14,6 +14,7 @@ import {
 	splitAttachment,
 	typedMessage,
 } from "../tool-pipeline/paste-attachment";
+import { captureChatMetadata } from "./account";
 import {
 	type CdpClient,
 	connectBrowser,
@@ -831,6 +832,14 @@ export async function runCompletion(input: {
 	const deepSeekSession = parseSessionIdFromUrl(pageUrl);
 	if (deepSeekSession) {
 		recordChatSession(config.chatsFile, chatKey, deepSeekSession);
+		// The site's name for this chat, for /findchat and history. Not awaited:
+		// the title appears a moment after the reply and the turn is done.
+		void captureChatMetadata({
+			cdp,
+			cdpSessionId: sessionId,
+			chatsFile: config.chatsFile,
+			chatSessionId: deepSeekSession,
+		});
 		if (config.debug) {
 			logger?.debug(
 				`[deepseek-web-v2] mapped CLI chat ${chatKey} -> DeepSeek session ${deepSeekSession}`,

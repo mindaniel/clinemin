@@ -129,7 +129,10 @@ export {
 	deleteChatSession,
 	listDeepSeekWebV2Chats,
 	openDeepSeekWebV2Chat,
+	readDeepSeekChatTitlesBySession,
+	refreshDeepSeekChatTitles,
 	resolveDeepSeekWebV2Config,
+	watchDeepSeekLogin,
 } from "./providers/vendors/deepseek-web-v2";
 export {
 	deleteGeminiChatSession,
@@ -182,6 +185,7 @@ export {
 	createBrowserProfile,
 	DEFAULT_PROFILE_NAME,
 	deleteBrowserProfile,
+	describeBrowserProfile,
 	getActiveBrowserProfile,
 	getSessionBrowserProfile,
 	listBrowserProfiles,
@@ -197,6 +201,7 @@ export {
 	resolveProfilePaths,
 	runWithBrowserProfile,
 	setActiveBrowserProfile,
+	setBrowserProfileAccount,
 	WEB_PROVIDER_BROWSERS,
 } from "./providers/vendors/tool-pipeline/browser-profiles";
 // Hidden/visible Chrome for the web providers (the TUI's Tab key).
@@ -213,6 +218,10 @@ export {
 	getBoundChatKey,
 	useLastChatForNextCall,
 } from "./providers/vendors/tool-pipeline/chat-target";
+export {
+	getCurrentCliSessionId,
+	runWithCliSession,
+} from "./providers/vendors/tool-pipeline/cli-session-scope";
 // Post-tool continuation note (the agent runtime appends it; the CLI `/note`
 // command customises it per project).
 export {

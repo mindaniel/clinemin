@@ -1,6 +1,7 @@
 // @jsxImportSource @opentui/react
 
 import type { SessionHistoryRecord } from "@cline/core";
+import { readDeepSeekChatTitlesBySession } from "@cline/llms";
 import {
 	formatDisplayUserInput,
 	formatHumanReadableDate,
@@ -28,8 +29,29 @@ function hasForkMetadata(row: SessionHistoryRecord): boolean {
 	return typeof fork === "object" && fork !== null && !Array.isArray(fork);
 }
 
-function formatTitle(row: SessionHistoryRecord, maxLen: number): string {
-	const raw = row.metadata?.title?.trim() || row.prompt?.trim() || "Untitled";
+/**
+ * Site chat names for sessions run on a web provider. The first prompt of such
+ * a session is often a throwaway like "." — the name the site gave the chat is
+ * what tells them apart.
+ */
+function readWebChatTitles(): Map<string, string> {
+	try {
+		return readDeepSeekChatTitlesBySession();
+	} catch {
+		return new Map();
+	}
+}
+
+function formatTitle(
+	row: SessionHistoryRecord,
+	maxLen: number,
+	webTitle?: string,
+): string {
+	const raw =
+		row.metadata?.title?.trim() ||
+		webTitle?.trim() ||
+		row.prompt?.trim() ||
+		"Untitled";
 	const forkTitle =
 		hasForkMetadata(row) && !raw.endsWith(" (fork)") ? `${raw} (fork)` : raw;
 	const normalized = formatDisplayUserInput(forkTitle);
@@ -188,6 +210,12 @@ function HistoryListContent({
 
 	const safeSelected = Math.min(selected, Math.max(0, rows.length - 1));
 	const titleMaxLen = Math.max(20, width - 44);
+	// Re-read with each refresh: a running session's chat gets its name a
+	// moment after its first reply.
+	const webTitles = useMemo(
+		() => (rows.length ? readWebChatTitles() : new Map()),
+		[rows],
+	);
 
 	const rowsRef = useRef(rows);
 	rowsRef.current = rows;
@@ -340,7 +368,11 @@ function HistoryListContent({
 			(row) => row.sessionId === exportPicker.sessionId,
 		);
 		const exportTitle = selectedRow
-			? formatTitle(selectedRow, Math.max(20, width - 12))
+			? formatTitle(
+					selectedRow,
+					Math.max(20, width - 12),
+					webTitles.get(selectedRow.sessionId),
+				)
 			: exportPicker.sessionId;
 
 		return (
@@ -422,7 +454,11 @@ function HistoryListContent({
 					const isSel = absIdx === safeSelected;
 					const cost = row.metadata?.totalCost;
 					const showCost = shouldShowCliUsageCost(row.provider);
-					const title = formatTitle(row, titleMaxLen);
+					const title = formatTitle(
+						row,
+						titleMaxLen,
+						webTitles.get(row.sessionId),
+					);
 					const date = formatRelativeDate(row.startedAt);
 
 					return (
