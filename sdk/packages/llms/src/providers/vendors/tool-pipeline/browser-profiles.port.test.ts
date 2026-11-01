@@ -71,3 +71,20 @@ describe("resolveProfileDebugPort", () => {
 		expect(first).not.toBe(second);
 	});
 });
+
+describe("sessionPortShift", () => {
+	it("moves every profile's port by the session shift", async () => {
+		const { resolveProfileDebugPort, sessionPortShift } = await load();
+		const saved = process.env.CLINE_BROWSER_SESSION_PORT_SHIFT;
+		try {
+			// Another RDP user's Cline must not find this session's Chrome on
+			// the stock port and drive it.
+			process.env.CLINE_BROWSER_SESSION_PORT_SHIFT = "2000";
+			expect(sessionPortShift()).toBe(2000);
+			expect(resolveProfileDebugPort(9222)).toBe(11222);
+		} finally {
+			process.env.CLINE_BROWSER_SESSION_PORT_SHIFT = saved;
+		}
+		expect(resolveProfileDebugPort(9222)).toBe(9222);
+	});
+});

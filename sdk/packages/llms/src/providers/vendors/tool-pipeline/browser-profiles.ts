@@ -1,4 +1,5 @@
 import { AsyncLocalStorage } from "node:async_hooks";
+import { execFileSync } from "node:child_process";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
@@ -216,6 +217,64 @@ export function resetBrowserProfilePin(): void {
  * Chrome already running on an old port until it is closed by hand.
  */
 const PORT_STEP = 10;
+
+/**
+ * Ports added per Windows session above the console session.
+ *
+ * DevTools ports belong to the machine, `~/.cline` belongs to the user. On a
+ * server with several people signed in over RDP, everyone's DeepSeek resolved
+ * 9222. Whoever launched first owned it, and every other user's
+ * `connectBrowser` found a live endpoint there and attached: they drove a
+ * browser in somebody else's session (invisible to them, so it "looked
+ * headless"), on somebody else's login, and `/login` and the Tab toggle acted
+ * on a window they could not see. Each session gets its own port range, so
+ * that can no longer happen. The console session (and every other OS) keeps
+ * the stock ports.
+ */
+const SESSION_PORT_STEP = 1000;
+
+let cachedSessionShift: number | undefined;
+
+/** Windows session id of this process, or undefined when unknown. */
+function windowsSessionId(): number | undefined {
+	try {
+		const out = execFileSync(
+			"tasklist",
+			["/FI", `PID eq ${process.pid}`, "/FO", "CSV", "/NH"],
+			{ encoding: "utf8", timeout: 5000, windowsHide: true },
+		);
+		// "bun.exe","1234","RDP-Tcp#1","3","120,000 K"
+		const fields = out.trim().split('","');
+		const id = Number(fields[3]);
+		return Number.isInteger(id) && id >= 0 ? id : undefined;
+	} catch {
+		return undefined;
+	}
+}
+
+/**
+ * How far this session's debug ports sit above the stock ones. Override with
+ * CLINE_BROWSER_SESSION_PORT_SHIFT (0 turns it off).
+ */
+export function sessionPortShift(): number {
+	const override = process.env.CLINE_BROWSER_SESSION_PORT_SHIFT;
+	if (override !== undefined && override.trim() !== "") {
+		const value = Number(override);
+		return Number.isInteger(value) && value >= 0 ? value : 0;
+	}
+	if (cachedSessionShift !== undefined) return cachedSessionShift;
+	let shift = 0;
+	if (process.platform === "win32") {
+		const id = windowsSessionId();
+		// Session 0 is services, 1 is usually the console.
+		if (id !== undefined && id > 1) {
+			// Keep the highest profile port under 65535.
+			shift = ((id - 1) % 50) * SESSION_PORT_STEP;
+		}
+	}
+	cachedSessionShift = shift;
+	return shift;
+}
 
 export interface BrowserProfile {
 	name: string;
@@ -481,7 +540,7 @@ export function resolveProfilePaths(
 		return {
 			profileName: name,
 			profileDir: path.join(configDir, "profile"),
-			debugPort: defaultDebugPort,
+			debugPort: defaultDebugPort + sessionPortShift(),
 			chatsFile: path.join(configDir, "chats.json"),
 		};
 	}
@@ -491,7 +550,10 @@ export function resolveProfilePaths(
 	return {
 		profileName: name,
 		profileDir: path.join(base, "profile"),
-		debugPort: defaultDebugPort + (entry?.portOffset ?? 0) * PORT_STEP,
+		debugPort:
+			defaultDebugPort +
+			sessionPortShift() +
+			(entry?.portOffset ?? 0) * PORT_STEP,
 		chatsFile: path.join(base, "chats.json"),
 	};
 }
@@ -589,7 +651,7 @@ export function resolveActiveProfilePaths(
 		return {
 			profileName: active.name,
 			profileDir: path.join(configDir, "profile"),
-			debugPort: defaultDebugPort,
+			debugPort: defaultDebugPort + sessionPortShift(),
 			chatsFile: path.join(configDir, "chats.json"),
 		};
 	}
@@ -597,7 +659,10 @@ export function resolveActiveProfilePaths(
 	return {
 		profileName: active.name,
 		profileDir: path.join(base, "profile"),
-		debugPort: defaultDebugPort + (active.portOffset ?? 0) * PORT_STEP,
+		debugPort:
+			defaultDebugPort +
+			sessionPortShift() +
+			(active.portOffset ?? 0) * PORT_STEP,
 		chatsFile: path.join(base, "chats.json"),
 	};
 }
@@ -623,5 +688,5 @@ export function resolveProfileDebugPort(basePort: number): number {
 	const active =
 		store.profiles.find((entry) => entry.name === store.active) ??
 		store.profiles[0];
-	return basePort + (active?.portOffset ?? 0) * PORT_STEP;
+	return basePort + sessionPortShift() + (active?.portOffset ?? 0) * PORT_STEP;
 }

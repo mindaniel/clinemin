@@ -20,5 +20,8 @@ export default defineConfig({
 	test: {
 		environment: "node",
 		include: ["src/**/*.test.ts"],
+		// Port assertions use the stock ports; do not shift them by the
+		// Windows session the tests happen to run in.
+		env: { CLINE_BROWSER_SESSION_PORT_SHIFT: "0" },
 	},
 });

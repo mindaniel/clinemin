@@ -986,7 +986,13 @@ function App(props: TuiProps) {
 				}}
 			/>
 		);
-	} else if (session.hasSubmitted || appView === "chat") {
+	} else if (
+		session.hasSubmitted ||
+		appView === "chat" ||
+		// Local commands (/update, /login, ...) report through status entries.
+		// The home view renders none, so without this their output is invisible.
+		session.entries.length > 0
+	) {
 		content = <ChatView {...viewProps} />;
 	} else {
 		content = <HomeView {...viewProps} />;
