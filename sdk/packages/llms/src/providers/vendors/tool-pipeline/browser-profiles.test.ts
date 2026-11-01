@@ -3,6 +3,7 @@ import os from "node:os";
 import path from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import {
+	browserProfileDisplayName,
 	createBrowserProfile,
 	DEFAULT_PROFILE_NAME,
 	deleteBrowserProfile,
@@ -14,6 +15,7 @@ import {
 	resolveActiveProfilePaths,
 	setActiveBrowserProfile,
 	setBrowserProfileAccount,
+	setBrowserProfileLabel,
 } from "./browser-profiles";
 
 let storeDir: string;
@@ -186,5 +188,35 @@ describe("setBrowserProfileAccount", () => {
 		expect(setBrowserProfileAccount("nope", "a@x.com")).toBe(false);
 		expect(setBrowserProfileAccount(DEFAULT_PROFILE_NAME, "  ")).toBe(false);
 		expect(describeBrowserProfile({ name: "plain" })).toBe("plain");
+	});
+});
+
+describe("setBrowserProfileLabel", () => {
+	it("renames for display only and keeps the directory key", () => {
+		createBrowserProfile("work");
+		setBrowserProfileAccount("work", "a@x.com");
+		setBrowserProfileLabel("work", "  Uni account ");
+		const entry = listBrowserProfiles().find((p) => p.name === "work");
+		expect(entry?.name).toBe("work");
+		expect(describeBrowserProfile(entry ?? { name: "work" })).toBe(
+			"Uni account (a@x.com)",
+		);
+	});
+
+	it("auto names after the account and follows it", () => {
+		createBrowserProfile("work");
+		setBrowserProfileLabel("work", "auto");
+		const find = () =>
+			listBrowserProfiles().find((p) => p.name === "work") ?? { name: "" };
+		expect(browserProfileDisplayName(find())).toBe("work");
+		setBrowserProfileAccount("work", "a***@x.com");
+		setBrowserProfileAccount("work", "abc@x.com");
+		expect(describeBrowserProfile(find())).toBe("abc@x.com");
+		setBrowserProfileLabel("work", undefined);
+		expect(describeBrowserProfile(find())).toBe("work (abc@x.com)");
+	});
+
+	it("throws for an unknown profile", () => {
+		expect(() => setBrowserProfileLabel("nope", "x")).toThrow();
 	});
 });

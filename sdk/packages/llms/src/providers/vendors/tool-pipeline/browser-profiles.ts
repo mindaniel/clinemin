@@ -291,6 +291,17 @@ export interface BrowserProfile {
 	 * Display only: the name stays the directory key, so it is never renamed.
 	 */
 	account?: string;
+	/**
+	 * Name the user gave the profile in `/profile`. Display only, like
+	 * `account`: renaming `name` would move every provider's Chrome directory
+	 * (the logins) and strand any Chrome still running on the old one.
+	 */
+	label?: string;
+	/**
+	 * Show the account as the profile's name, following it as it changes (a
+	 * masked email becomes the full one after `/login`). `label` wins.
+	 */
+	autoLabel?: boolean;
 }
 
 interface ProfileStore {
@@ -481,13 +492,51 @@ export function setBrowserProfileAccount(
 	return true;
 }
 
-/** `name (account)` when an account is known, else just the name. */
-export function describeBrowserProfile(
-	profile: Pick<BrowserProfile, "name" | "account">,
+/**
+ * Set or clear (`undefined`) the name `/profile` shows for `name`. `"auto"`
+ * names it after its account instead. Throws for an unknown profile.
+ */
+export function setBrowserProfileLabel(
+	name: string,
+	label: string | undefined | "auto",
+): BrowserProfile {
+	const store = readStore();
+	const entry = store.profiles.find((profile) => profile.name === name);
+	if (!entry) throw new Error(`Unknown browser profile "${name}".`);
+	const { label: _label, autoLabel: _auto, ...rest } = entry;
+	const trimmed = label === "auto" ? undefined : label?.trim().slice(0, 60);
+	const updated: BrowserProfile = {
+		...rest,
+		...(trimmed ? { label: trimmed } : {}),
+		...(label === "auto" ? { autoLabel: true } : {}),
+	};
+	writeStore(
+		store.profiles.map((profile) =>
+			profile.name === name ? updated : profile,
+		),
+		store.storedActive,
+	);
+	return updated;
+}
+
+/** What the user calls the profile: its label, its account if auto, else its name. */
+export function browserProfileDisplayName(
+	profile: Pick<BrowserProfile, "name" | "account" | "label" | "autoLabel">,
 ): string {
-	return profile.account
-		? `${profile.name} (${profile.account})`
-		: profile.name;
+	return (
+		profile.label ||
+		(profile.autoLabel && profile.account ? profile.account : profile.name)
+	);
+}
+
+/** `display name (account)` when an account is known and not already shown. */
+export function describeBrowserProfile(
+	profile: Pick<BrowserProfile, "name" | "account" | "label" | "autoLabel">,
+): string {
+	const shown = browserProfileDisplayName(profile);
+	return profile.account && profile.account !== shown
+		? `${shown} (${profile.account})`
+		: shown;
 }
 
 /**

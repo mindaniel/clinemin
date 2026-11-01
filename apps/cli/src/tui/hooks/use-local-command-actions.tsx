@@ -59,6 +59,7 @@ import {
 	openWebProviderLogin,
 	refreshDeepSeekChatTitles,
 	setActiveBrowserProfile,
+	setBrowserProfileLabel,
 	setContinuationNote,
 	setPendingInjectedReply,
 	watchDeepSeekLogin,
@@ -988,6 +989,45 @@ export function useLocalCommandActions(input: {
 	);
 
 	/**
+	 * `/profile` -> `d` then `y`: delete a profile together with its logins.
+	 *
+	 * The Chrome directories go first, through the same path as the sign-out
+	 * above. If a Chrome the user started is still holding one, the entry is
+	 * kept, so the profile can still be selected, closed and deleted again
+	 * rather than leaving a login on disk that nothing in the list points to.
+	 */
+	const deleteProfile = useCallback(
+		async (name: string): Promise<boolean> => {
+			try {
+				const result = await resetBrowserProfileData(name, {
+					includeChats: true,
+				});
+				if (result.busy.length) {
+					session.appendEntry({
+						kind: "error",
+						text: `/profile: "${name}" was not deleted: a Chrome you started is still on ${result.busy
+							.map((entry) => `${entry.providerId} (${entry.debugPort})`)
+							.join(", ")}. Close those windows and try again.`,
+					});
+					return true;
+				}
+				deleteBrowserProfile(name);
+				session.appendEntry({
+					kind: "status",
+					text: `/profile: deleted "${name}" and its browser logins.`,
+				});
+			} catch (error) {
+				session.appendEntry({
+					kind: "error",
+					text: `/profile: could not delete "${name}": ${error instanceof Error ? error.message : String(error)}`,
+				});
+			}
+			return true;
+		},
+		[session],
+	);
+
+	/**
 	 * `/profile` — choose which named Chrome profile the web providers use.
 	 *
 	 * A profile is a Chrome `--user-data-dir`, which IS the logged-in account,
@@ -1021,6 +1061,7 @@ export function useLocalCommandActions(input: {
 					active={active}
 					defaultProfileName={DEFAULT_PROFILE_NAME}
 					onDelete={deleteBrowserProfile}
+					onRename={setBrowserProfileLabel}
 				/>
 			),
 		});
@@ -1029,6 +1070,9 @@ export function useLocalCommandActions(input: {
 
 		if (choice.startsWith("__reset__:")) {
 			return resetProfile(choice.slice("__reset__:".length));
+		}
+		if (choice.startsWith("__delete__:")) {
+			return deleteProfile(choice.slice("__delete__:".length));
 		}
 
 		let name = choice;
@@ -1080,7 +1124,7 @@ export function useLocalCommandActions(input: {
 				"If it is new, run /login to sign in before the first message.",
 		});
 		return true;
-	}, [dialog, refocusTextarea, resetProfile, session]);
+	}, [dialog, deleteProfile, refocusTextarea, resetProfile, session]);
 
 	/**
 	 * `/note` — show or set the note the runtime appends after each round of

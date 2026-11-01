@@ -181,6 +181,7 @@ export {
 // user-data-dir, debug port and chat registry from the active one.
 export {
 	type BrowserProfile,
+	browserProfileDisplayName,
 	clearSessionBrowserProfile,
 	createBrowserProfile,
 	DEFAULT_PROFILE_NAME,
@@ -202,6 +203,7 @@ export {
 	runWithBrowserProfile,
 	setActiveBrowserProfile,
 	setBrowserProfileAccount,
+	setBrowserProfileLabel,
 	WEB_PROVIDER_BROWSERS,
 } from "./providers/vendors/tool-pipeline/browser-profiles";
 // Hidden/visible Chrome for the web providers (the TUI's Tab key).

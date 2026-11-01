@@ -1,4 +1,4 @@
-import type { BrowserProfile } from "@cline/llms";
+import { type BrowserProfile, browserProfileDisplayName } from "@cline/llms";
 import type { ChoiceContext } from "@opentui-ui/dialog";
 import { useDialogKeyboard } from "@opentui-ui/dialog/react";
 import { useState } from "react";
@@ -9,11 +9,13 @@ import { palette } from "../../palette";
  * providers log in with.
  *
  * Enter (or click) selects the highlighted profile. `n` opens an inline name
- * field that creates a profile and selects it in one step. `d` deletes the
- * highlighted profile (list entry only — the on-disk Chrome directory, and so
- * the login, is kept). `r` does the opposite: keeps the entry and deletes the
- * Chrome directories, signing that profile out of every web provider. Escape
- * dismisses without changing anything.
+ * field that creates a profile and selects it in one step. `e` renames the
+ * highlighted profile and `a` names it after its signed-in email (both display
+ * only: the Chrome directories stay keyed by the original name). `d` deletes
+ * it: `y` also deletes its Chrome directories (the logins), `k` keeps them so
+ * creating the same name later reuses them. `r` keeps the entry and deletes
+ * the Chrome directories, signing that profile out of every web provider.
+ * Escape dismisses without changing anything.
  */
 export function ProfilePickerContent(
 	props: ChoiceContext<string> & {
@@ -21,6 +23,10 @@ export function ProfilePickerContent(
 		active: string;
 		defaultProfileName: string;
 		onDelete: (name: string) => void;
+		onRename: (
+			name: string,
+			label: string | undefined | "auto",
+		) => BrowserProfile;
 	},
 ) {
 	const {
@@ -31,6 +37,7 @@ export function ProfilePickerContent(
 		active,
 		defaultProfileName,
 		onDelete,
+		onRename,
 	} = props;
 
 	const [profiles, setProfiles] = useState(initialProfiles);
@@ -39,6 +46,7 @@ export function ProfilePickerContent(
 		return index === -1 ? 0 : index;
 	});
 	const [creating, setCreating] = useState(false);
+	const [renaming, setRenaming] = useState<string | null>(null);
 	const [draft, setDraft] = useState("");
 	const [confirmDelete, setConfirmDelete] = useState<string | null>(null);
 	const [confirmReset, setConfirmReset] = useState<string | null>(null);
@@ -47,7 +55,35 @@ export function ProfilePickerContent(
 	const safeSelected = Math.min(selected, Math.max(profiles.length - 1, 0));
 	const current = profiles[safeSelected];
 
+	const applyRename = (name: string, label: string | undefined | "auto") => {
+		try {
+			const updated = onRename(name, label);
+			setProfiles((prev) =>
+				prev.map((entry) => (entry.name === name ? updated : entry)),
+			);
+			setError(null);
+		} catch (err) {
+			setError(err instanceof Error ? err.message : String(err));
+		}
+	};
+
 	useDialogKeyboard((key) => {
+		if (renaming) {
+			// Same as the create field: typing belongs to the input.
+			if (key.name === "escape") {
+				setRenaming(null);
+				setDraft("");
+				return;
+			}
+			if (key.name === "return") {
+				// An empty name goes back to the profile's own name.
+				applyRename(renaming, draft.trim() || undefined);
+				setRenaming(null);
+				setDraft("");
+			}
+			return;
+		}
+
 		if (creating) {
 			// The name field owns typing; only the two control keys are handled
 			// here so a name containing "n" or "d" cannot trigger the shortcuts.
@@ -78,6 +114,10 @@ export function ProfilePickerContent(
 
 		if (confirmDelete) {
 			if (key.name === "y") {
+				resolve(`__delete__:${confirmDelete}`);
+				return;
+			}
+			if (key.name === "k") {
 				try {
 					onDelete(confirmDelete);
 					setProfiles((prev) =>
@@ -116,6 +156,27 @@ export function ProfilePickerContent(
 			setError(null);
 			return;
 		}
+		if (key.name === "e") {
+			if (!current) return;
+			setError(null);
+			setDraft("");
+			setRenaming(current.name);
+			return;
+		}
+		if (key.name === "a") {
+			if (!current) return;
+			if (current.autoLabel && !current.label) {
+				applyRename(current.name, undefined);
+				return;
+			}
+			applyRename(current.name, "auto");
+			if (!current.account) {
+				setError(
+					`No email known for ${current.name} yet: it takes the name once you /login or send a DeepSeek message on it.`,
+				);
+			}
+			return;
+		}
 		if (key.name === "r") {
 			if (!current) return;
 			setError(null);
@@ -145,7 +206,21 @@ export function ProfilePickerContent(
 		<box flexDirection="column" gap={1}>
 			<text>Browser profile for web providers</text>
 
-			{creating ? (
+			{renaming ? (
+				<box flexDirection="column" gap={1}>
+					<box border borderStyle="rounded" borderColor="gray" paddingX={1}>
+						<input
+							onInput={setDraft}
+							placeholder={`New name for ${renaming} (empty = ${renaming})`}
+							flexGrow={1}
+							focused
+						/>
+					</box>
+					<text fg="gray">
+						<em>Enter to rename, Esc to cancel</em>
+					</text>
+				</box>
+			) : creating ? (
 				<box flexDirection="column" gap={1}>
 					<box border borderStyle="rounded" borderColor="gray" paddingX={1}>
 						<input
@@ -182,11 +257,17 @@ export function ProfilePickerContent(
 									{isSel ? "❯" : " "}
 								</text>
 								<text fg={isSel ? palette.textOnSelection : undefined}>
-									{entry.name}
+									{browserProfileDisplayName(entry)}
 								</text>
-								{entry.account && (
+								{entry.account &&
+									entry.account !== browserProfileDisplayName(entry) && (
+										<text fg={isSel ? palette.textOnSelection : "gray"}>
+											{entry.account}
+										</text>
+									)}
+								{entry.autoLabel && !entry.label && (
 									<text fg={isSel ? palette.textOnSelection : "gray"}>
-										{entry.account}
+										(auto)
 									</text>
 								)}
 								{isActive && (
@@ -219,21 +300,28 @@ export function ProfilePickerContent(
 			)}
 
 			{confirmDelete && (
-				<box border borderStyle="rounded" borderColor="red" paddingX={1}>
-					<text fg="red">
-						Forget profile {confirmDelete}? Its browser logins stay on disk.
-						(y/n)
+				<box
+					border
+					borderStyle="rounded"
+					borderColor="red"
+					paddingX={1}
+					flexDirection="column"
+				>
+					<text fg="red">Delete profile {confirmDelete}?</text>
+					<text fg="gray">
+						y = delete it and its browser logins, k = remove from the list but
+						keep the logins, any other key = cancel
 					</text>
 				</box>
 			)}
 
 			{error && <text fg="red">{error}</text>}
 
-			{!creating && (
+			{!creating && !renaming && (
 				<text fg="gray" marginTop={1}>
 					<em>
-						Enter to switch, n for new, d to forget, r to sign out, Esc to
-						cancel
+						Enter to switch, n new, e rename, a auto-name from email, d delete,
+						r sign out, Esc cancel
 					</em>
 				</text>
 			)}
