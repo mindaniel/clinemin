@@ -5,16 +5,20 @@ import {
 	mkdtempSync,
 	readFileSync,
 	rmSync,
+	utimesSync,
 	writeFileSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { stageUpstreamBuild } from "./source-auto-update";
 import {
 	applyStagedUpdate,
 	autoUpdateStateFile,
+	checkSdkBuild,
 	readUpdateState,
+	rebuildStaleSdk,
+	sdkBuildStampFile,
 	stagingWorktreeDir,
 	writeUpdateState,
 } from "./source-update-apply";
@@ -129,4 +133,70 @@ describe("source checkout auto-update", () => {
 		expect(applyStagedUpdate(checkout, clineDir)).toBeUndefined();
 		expect(git(checkout, "log", "-1", "--format=%s")).toBe("mine");
 	}, 60_000);
+
+	describe("stale SDK build", () => {
+		// A build stamped at HEAD, an hour ago so later file writes count as newer.
+		const stampBuild = () => {
+			const stamp = sdkBuildStampFile(checkout);
+			mkdirSync(dirname(stamp), { recursive: true });
+			writeFileSync(stamp, git(checkout, "rev-parse", "HEAD"));
+			const hourAgo = new Date(Date.now() - 60 * 60_000);
+			utimesSync(stamp, hourAgo, hourAgo);
+		};
+
+		it("is stale with no stamp, and asks for an install", () => {
+			expect(checkSdkBuild(checkout)).toEqual({ stale: true, reinstall: true });
+		});
+
+		it("is fresh at the stamped commit, even with uncommitted edits", () => {
+			stampBuild();
+			writeFileSync(join(checkout, "sdk/packages/x/v.txt"), "mine");
+			expect(checkSdkBuild(checkout).stale).toBe(false);
+		});
+
+		it("goes stale when a pull brings SDK source, then rebuilds", () => {
+			stampBuild();
+			pushVersion("two");
+			git(checkout, "pull", "-q", "--ff-only");
+			expect(checkSdkBuild(checkout)).toEqual({
+				stale: true,
+				reinstall: false,
+			});
+
+			rebuildStaleSdk(checkout);
+			expect(builtVersion()).toBe("two");
+			expect(existsSync(`${sdkBuildStampFile(checkout)}.lock`)).toBe(false);
+		}, 60_000);
+
+		it("stays fresh when a pull touches only apps", () => {
+			stampBuild();
+			mkdirSync(join(upstream, "apps"));
+			writeFileSync(join(upstream, "apps/a.ts"), "a");
+			git(upstream, "add", ".");
+			git(upstream, "commit", "-qm", "apps");
+			git(upstream, "push", "-q");
+			git(checkout, "pull", "-q", "--ff-only");
+			expect(checkSdkBuild(checkout).stale).toBe(false);
+		}, 60_000);
+
+		it("asks for an install when a pull changes dependencies", () => {
+			stampBuild();
+			writeFileSync(join(upstream, "package.json"), `${PACKAGE_JSON}\n`);
+			git(upstream, "commit", "-qam", "deps");
+			git(upstream, "push", "-q");
+			git(checkout, "pull", "-q", "--ff-only");
+			expect(checkSdkBuild(checkout)).toEqual({ stale: true, reinstall: true });
+		}, 60_000);
+
+		it("does not rebuild for a local commit of edits already built", () => {
+			writeFileSync(join(checkout, "sdk/packages/x/v.txt"), "mine");
+			git(checkout, "commit", "-qam", "mine");
+			const hourAgo = new Date(Date.now() - 60 * 60_000);
+			utimesSync(join(checkout, "sdk/packages/x/v.txt"), hourAgo, hourAgo);
+			const stamp = sdkBuildStampFile(checkout);
+			mkdirSync(dirname(stamp), { recursive: true });
+			writeFileSync(stamp, git(checkout, "rev-parse", "HEAD~1"));
+			expect(checkSdkBuild(checkout).stale).toBe(false);
+		}, 60_000);
+	});
 });

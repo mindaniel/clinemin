@@ -18,11 +18,14 @@ import {
 	readdirSync,
 	readFileSync,
 	rmSync,
+	statSync,
 	writeFileSync,
 } from "node:fs";
 import { homedir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { isMainThread } from "node:worker_threads";
+
+const SDK_REBUILD_TIMEOUT_MS = 15 * 60_000;
 
 export interface AutoUpdateState {
 	lastCheckAt?: number;
@@ -197,6 +200,104 @@ export function applyStagedUpdate(
 		error: undefined,
 	});
 	return staged.short;
+}
+
+/** Written by `bun run build:sdk`: the commit `dist/` was built from. */
+export function sdkBuildStampFile(root: string): string {
+	return join(root, "sdk", "packages", "shared", "dist", ".source-commit");
+}
+
+export interface SdkBuildCheck {
+	stale: boolean;
+	/** Dependencies may have moved too, so `bun install` must run first. */
+	reinstall: boolean;
+}
+
+/**
+ * Whether `dist/` is behind the checkout, as it is after a plain `git pull`.
+ * Files changed since the stamp only count when newer than it: a commit of
+ * edits that were already built changes nothing, while a pull rewrites them.
+ * Uncommitted edits never count, so working on the SDK never triggers a build.
+ */
+export function checkSdkBuild(root: string): SdkBuildCheck {
+	const stampFile = sdkBuildStampFile(root);
+	if (!existsSync(stampFile)) return { stale: true, reinstall: true };
+	const stamp = readFileSync(stampFile, "utf-8").trim();
+	if (stamp === git(root, ["rev-parse", "HEAD"])) {
+		return { stale: false, reinstall: false };
+	}
+	const builtAt = statSync(stampFile).mtimeMs;
+	let changed: string[];
+	try {
+		changed = git(root, ["diff", "--name-only", stamp, "HEAD"])
+			.split("\n")
+			.filter(
+				(file) =>
+					file && (file.startsWith("sdk/packages/") || isLockfile(file)),
+			)
+			.filter((file) => {
+				const path = join(root, file);
+				return !existsSync(path) || statSync(path).mtimeMs > builtAt;
+			});
+	} catch {
+		// The stamped commit is gone (rebase, gc): nothing says what it holds.
+		return { stale: true, reinstall: true };
+	}
+	return { stale: changed.length > 0, reinstall: changed.some(isLockfile) };
+}
+
+/**
+ * Rebuild a stale `dist/` before the CLI loads it. A build behind the source
+ * fails at module load (`Export named ... not found`), which takes every
+ * command down with it, `cline update` too, so only this can repair it.
+ */
+export function rebuildStaleSdk(root: string): void {
+	const lock = `${sdkBuildStampFile(root)}.lock`;
+	mkdirSync(dirname(lock), { recursive: true });
+	try {
+		mkdirSync(lock);
+	} catch {
+		const age = Date.now() - statSync(lock).mtimeMs;
+		if (age < SDK_REBUILD_TIMEOUT_MS) {
+			// Another launch is building: wait, then load what it built.
+			process.stderr.write("Waiting for the SDK rebuild to finish…\n");
+			const sleeper = new Int32Array(new SharedArrayBuffer(4));
+			while (
+				existsSync(lock) &&
+				Date.now() - statSync(lock).mtimeMs < SDK_REBUILD_TIMEOUT_MS
+			) {
+				Atomics.wait(sleeper, 0, 0, 500);
+			}
+			return;
+		}
+		// Left behind by a killed build.
+	}
+	try {
+		const { stale, reinstall } = checkSdkBuild(root);
+		if (!stale) return;
+		process.stderr.write("SDK build is out of date, rebuilding…\n");
+		if (reinstall) runBun(root, ["install"], SDK_REBUILD_TIMEOUT_MS);
+		runBun(root, ["run", "build:sdk"], SDK_REBUILD_TIMEOUT_MS);
+	} catch {
+		process.stderr.write(
+			`SDK rebuild failed. Run "bun install" and "bun run build:sdk" in ${root} to see why.\n`,
+		);
+	} finally {
+		rmSync(lock, { recursive: true, force: true });
+	}
+}
+
+/** `index.ts` calls this after any swap; never throws. */
+export function rebuildStaleSdkAtLaunch(): void {
+	try {
+		if (!isMainThread) return;
+		if (process.env.CLINE_RUN_AS_HUB_DAEMON === "1") return;
+		if (process.env.CLINE_NO_AUTO_UPDATE === "1") return;
+		const root = sourceCheckoutRoot();
+		if (root && checkSdkBuild(root).stale) rebuildStaleSdk(root);
+	} catch {
+		// Best-effort: launch the version already on disk.
+	}
 }
 
 /** `index.ts` calls this first thing; never throws, never blocks on network. */

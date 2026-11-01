@@ -19,7 +19,7 @@
         "prepare": "husky",
         "postinstall": "bun sdk/scripts/setup-cli-alias.ts",
         "build": "bun run clean && bun install && bun run build:sdk && bun -F @cline/cli build",
-        "build:sdk": "bun --production -F './sdk/packages/*' build",
+        "build:sdk": "bun --production -F './sdk/packages/*' build && bun sdk/scripts/stamp-sdk-build.ts",
         "build:apps": "bun -F './apps/**' --production build",
         "build:models": "bun -F @cline/llms generate:models && bun format --write",
         "dev": "bun --conditions=development run build:sdk && bun run cli && bun run cli hub stop",
