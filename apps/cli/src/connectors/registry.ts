@@ -13,6 +13,16 @@ const connectorDescriptions = new Map(
 
 const registry = new Map<string, ConnectorRegistryEntry>([
 	[
+		"github",
+		{
+			name: "github",
+			description:
+				connectorDescriptions.get("github") ??
+				"Phone app: chats as issues in a private GitHub repo",
+			load: async () => (await import("./adapters/github")).githubConnector,
+		},
+	],
+	[
 		"gchat",
 		{
 			name: "gchat",

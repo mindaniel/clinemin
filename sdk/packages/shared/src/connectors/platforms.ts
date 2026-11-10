@@ -9,6 +9,10 @@ export const CONNECTOR_CATALOG: ConnectorCatalogEntry[] = [
 		description: "Google Chat webhook bridge backed by RPC runtime sessions",
 	},
 	{
+		name: "github",
+		description: "Phone app: chats as issues in a private GitHub repo",
+	},
+	{
 		name: "linear",
 		description: "Linear webhook bridge backed by RPC runtime sessions",
 	},

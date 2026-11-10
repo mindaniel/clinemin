@@ -61,6 +61,11 @@ export interface LocalSlashCommandActionInput {
 	 */
 	configureTelegram: () => Promise<boolean>;
 	/**
+	 * `/setupweb`: step-by-step setup of the phone app (a private GitHub repo,
+	 * a token, the bridge), or start/stop/show it once set up.
+	 */
+	setupWeb: () => Promise<boolean>;
+	/**
 	 * `/awake`: hold a wake lock so the computer does not sleep. `arg` is
 	 * "on", "off", or empty to toggle.
 	 */
@@ -192,6 +197,9 @@ export function runLocalSlashCommandAction(
 	}
 	if (normalized === "telegram") {
 		return input.configureTelegram();
+	}
+	if (normalized === "setupweb") {
+		return input.setupWeb();
 	}
 	if (normalized === "awake") {
 		return input.setKeepAwake(commandArgument(input.invocation?.text));

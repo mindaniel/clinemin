@@ -193,6 +193,7 @@ import {
 	TelegramConfigDialogContent,
 	type TelegramConfigDialogResult,
 } from "../components/dialogs/telegram-config-dialog";
+import { openSetupWeb } from "../setupweb-actions";
 import {
 	WorkersDialogContent,
 	type WorkersDialogResult,
@@ -1295,6 +1296,18 @@ export function useLocalCommandActions(input: {
 		return true;
 	}, [dialog, refocusTextarea, session, termHeight]);
 
+	/** `/setupweb`: set up and run the phone app's bridge (see setupweb-actions.tsx). */
+	const setupWeb = useCallback(
+		() =>
+			openSetupWeb({
+				dialog,
+				termHeight,
+				refocusTextarea,
+				appendEntry: (entry) => session.appendEntry(entry),
+			}),
+		[dialog, refocusTextarea, session, termHeight],
+	);
+
 	/**
 	 * `/awake` — keep the computer from sleeping while this Cline process runs.
 	 * The lock dies with the process, so it never outlives the session.
@@ -1509,6 +1522,7 @@ export function useLocalCommandActions(input: {
 				setNote,
 				switchProfile,
 				configureTelegram,
+				setupWeb,
 				setKeepAwake,
 				restartForUpdate,
 				openLogin,
@@ -1538,6 +1552,7 @@ export function useLocalCommandActions(input: {
 			setNote,
 			switchProfile,
 			configureTelegram,
+			setupWeb,
 			setKeepAwake,
 			restartForUpdate,
 			openLogin,

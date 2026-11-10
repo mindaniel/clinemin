@@ -31,6 +31,7 @@ function makeActions(
 		setNote: vi.fn(() => true),
 		switchProfile: vi.fn(async () => true),
 		configureTelegram: vi.fn(async () => true),
+		setupWeb: vi.fn(async () => true),
 		setKeepAwake: vi.fn(async () => true),
 		restartForUpdate: vi.fn(async () => true),
 		openLogin: vi.fn(async () => true),
@@ -68,6 +69,15 @@ describe("runLocalSlashCommandAction", () => {
 		await runLocalSlashCommandAction({ ...actions, name: "login" });
 
 		expect(openLogin).toHaveBeenCalledOnce();
+	});
+
+	it("routes /setupweb to the phone app setup", async () => {
+		const setupWeb = vi.fn(async () => true);
+		const actions = makeActions({ setupWeb });
+
+		await runLocalSlashCommandAction({ ...actions, name: "setupweb" });
+
+		expect(setupWeb).toHaveBeenCalledOnce();
 	});
 
 	it("routes /update to the restart action", async () => {
