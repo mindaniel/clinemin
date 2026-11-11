@@ -2,6 +2,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 const {
 	spawn,
+	spawnSync,
 	closeSync,
 	mkdirSync,
 	openSync,
@@ -20,6 +21,7 @@ const {
 	CLINE_RUN_AS_HUB_DAEMON_ENV,
 } = vi.hoisted(() => ({
 	spawn: vi.fn(() => ({ unref: vi.fn() })),
+	spawnSync: vi.fn(() => ({ status: 0, stdout: "" })),
 	closeSync: vi.fn(),
 	mkdirSync: vi.fn(),
 	openSync: vi.fn(() => 17),
@@ -50,6 +52,7 @@ const originalConnectorCliLaunch = process.env.CLINE_CONNECTOR_CLI_LAUNCH;
 
 vi.mock("node:child_process", () => ({
 	spawn,
+	spawnSync,
 }));
 
 vi.mock("node:fs", () => ({
@@ -99,6 +102,8 @@ describe("ensureDetachedHubServer", () => {
 		delete process.env[CLINE_RUN_AS_HUB_DAEMON_ENV];
 		spawn.mockReset();
 		spawn.mockImplementation(() => ({ unref: vi.fn() }));
+		spawnSync.mockReset();
+		spawnSync.mockImplementation(() => ({ status: 0, stdout: "" }));
 		closeSync.mockReset();
 		mkdirSync.mockReset();
 		openSync.mockReset();
@@ -498,6 +503,67 @@ describe("ensureDetachedHubServer", () => {
 			await result;
 			expect(spawn).not.toHaveBeenCalled();
 		} finally {
+			vi.useRealTimers();
+		}
+	});
+
+	it("kills a compatible expected hub that never writes its discovery record back", async () => {
+		vi.useFakeTimers();
+		const kill = vi.spyOn(process, "kill").mockImplementation(() => true);
+		try {
+			// An old build: no record, and none written back. Its port answers
+			// /health until it is killed.
+			readHubDiscovery
+				.mockResolvedValueOnce(undefined)
+				.mockResolvedValueOnce(undefined)
+				.mockImplementation(async () =>
+					spawn.mock.calls.length > 0
+						? { url: "ws://127.0.0.1:25463/hub", authToken: "new-token" }
+						: undefined,
+				);
+			let killed = false;
+			spawnSync.mockImplementation(((command: string) => {
+				if (command === "taskkill") {
+					killed = true;
+					return { status: 0, stdout: "" };
+				}
+				return {
+					status: 0,
+					stdout:
+						process.platform === "win32"
+							? "  TCP    127.0.0.1:25463    0.0.0.0:0    LISTENING    777\r\n"
+							: "777\n",
+				};
+			}) as never);
+			kill.mockImplementation(((pid: number, signal?: string | number) => {
+				if (pid === 777 && signal === "SIGTERM") killed = true;
+				return true;
+			}) as never);
+			probeHubServer.mockImplementation(async () =>
+				killed && spawn.mock.calls.length === 0
+					? undefined
+					: {
+							url: "ws://127.0.0.1:25463/hub",
+							protocolVersion: "v1",
+							buildId: "current-build",
+						},
+			);
+			verifyHubConnection.mockImplementation(
+				async () => spawn.mock.calls.length > 0,
+			);
+
+			const { ensureDetachedHubServer } = await import(".");
+			const pending = ensureDetachedHubServer("/workspace");
+			await vi.runAllTimersAsync();
+
+			await expect(pending).resolves.toEqual({
+				url: "ws://127.0.0.1:25463/hub",
+				authToken: "new-token",
+			});
+			expect(killed).toBe(true);
+			expect(spawn).toHaveBeenCalledOnce();
+		} finally {
+			kill.mockRestore();
 			vi.useRealTimers();
 		}
 	});

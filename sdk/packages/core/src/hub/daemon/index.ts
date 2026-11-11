@@ -1,4 +1,4 @@
-import { spawn } from "node:child_process";
+import { spawn, spawnSync } from "node:child_process";
 import {
 	closeSync,
 	mkdirSync,
@@ -206,6 +206,66 @@ async function retireDiscoveredHub(
 	const retired = await waitForHubToRetire(record.url, HUB_RETIRE_TIMEOUT_MS);
 	await clearHubDiscovery(discoveryPath, record).catch(() => undefined);
 	return retired;
+}
+
+/** PIDs listening on a local TCP port, or none when the lookup fails. */
+function listListeningPids(port: number): number[] {
+	const pids = new Set<number>();
+	if (process.platform === "win32") {
+		const result = spawnSync("netstat", ["-ano", "-p", "TCP"], {
+			encoding: "utf8",
+			windowsHide: true,
+		});
+		for (const line of (result.stdout || "").split(/\r?\n/)) {
+			// Proto  Local Address  Foreign Address  State  PID
+			const parts = line.trim().split(/\s+/);
+			if (parts[3] === "LISTENING" && parts[1]?.endsWith(`:${port}`)) {
+				pids.add(Number.parseInt(parts[4] || "", 10));
+			}
+		}
+	} else {
+		const result = spawnSync(
+			"lsof",
+			["-nP", `-tiTCP:${port}`, "-sTCP:LISTEN"],
+			{ encoding: "utf8" },
+		);
+		for (const line of (result.stdout || "").split(/\s+/)) {
+			pids.add(Number.parseInt(line, 10));
+		}
+	}
+	return [...pids].filter(
+		(pid) => Number.isInteger(pid) && pid > 0 && pid !== process.pid,
+	);
+}
+
+/**
+ * Stop a hub that answers on `url` but has no discovery record and never
+ * writes one back: a build from before the record was self-repairing, whose
+ * record a restart deleted. Without its auth token nothing can connect to it
+ * or ask it to shut down, and it holds the fixed port, so a new hub cannot
+ * start either. Its `/health` reply already proved it is a Cline hub, so the
+ * process listening on that port is killed.
+ */
+async function retireOrphanedHub(url: string): Promise<boolean> {
+	const port = Number(new URL(url).port);
+	if (!port) {
+		return false;
+	}
+	for (const pid of listListeningPids(port)) {
+		try {
+			if (process.platform === "win32") {
+				// `/T` takes the hub's children with it, which `process.kill` cannot.
+				spawnSync("taskkill", ["/PID", String(pid), "/T", "/F"], {
+					windowsHide: true,
+				});
+			} else {
+				process.kill(pid, "SIGTERM");
+			}
+		} catch {
+			// Best-effort; the caller reports the hub if it is still there.
+		}
+	}
+	return waitForHubToRetire(url, HUB_RETIRE_TIMEOUT_MS);
 }
 
 async function retireIncompatibleHub(
@@ -525,25 +585,28 @@ export async function ensureDetachedHubServer(
 			if (repaired) {
 				return rememberIfManaged(repaired);
 			}
-			const upgradeHint = retiredUnusableDiscovery
-				? " This can happen immediately after upgrading from a build that wrote an empty hub auth token; run 'cline doctor fix' to stop the old daemon and repair local hub discovery."
-				: "";
-			throw new Error(
-				`A compatible Cline Hub is already running at ${expectedUrl}, but its discovery record is missing or unreadable. Run 'cline doctor fix' to repair local hub discovery.${upgradeHint}`,
+			if (!(await retireOrphanedHub(expectedUrl))) {
+				const upgradeHint = retiredUnusableDiscovery
+					? " This can happen immediately after upgrading from a build that wrote an empty hub auth token; run 'cline doctor fix' to stop the old daemon and repair local hub discovery."
+					: "";
+				throw new Error(
+					`A compatible Cline Hub is already running at ${expectedUrl}, but its discovery record is missing or unreadable. Run 'cline doctor fix' to repair local hub discovery.${upgradeHint}`,
+				);
+			}
+		} else {
+			const retiredExpected = await retireIncompatibleHub(
+				expectedForRetirement,
+				owner.discoveryPath,
 			);
-		}
-		const retiredExpected = await retireIncompatibleHub(
-			expectedForRetirement,
-			owner.discoveryPath,
-		);
-		if (
-			!retiredExpected &&
-			endpointOverrides.allowPortFallback !== true &&
-			endpoint.port !== 0
-		) {
-			throw new Error(
-				`An incompatible Cline Hub is already running at ${expectedUrl} and could not be retired automatically. Run 'cline doctor fix' to stop stale hub daemons before starting a new hub.`,
-			);
+			if (
+				!retiredExpected &&
+				endpointOverrides.allowPortFallback !== true &&
+				endpoint.port !== 0
+			) {
+				throw new Error(
+					`An incompatible Cline Hub is already running at ${expectedUrl} and could not be retired automatically. Run 'cline doctor fix' to stop stale hub daemons before starting a new hub.`,
+				);
+			}
 		}
 	}
 	const shouldUseFallbackPort =
