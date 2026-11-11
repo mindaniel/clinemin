@@ -173,6 +173,10 @@ export class GitHub {
 		);
 	}
 
+	createIssue(title: string, body: string): Promise<Issue> {
+		return this.write("POST", `/repos/${this.repo}/issues`, { title, body });
+	}
+
 	addComment(issue: number, body: string): Promise<Comment> {
 		return this.write("POST", `/repos/${this.repo}/issues/${issue}/comments`, {
 			body,

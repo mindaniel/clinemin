@@ -22,6 +22,10 @@ export interface BridgeConfig {
 	/** Run tools without asking. Off: every tool call waits for Approve on the phone. */
 	autoApproveTools: boolean;
 	pollSeconds: number;
+	/** Show chats run in a minh window on this machine on the phone too. Default on. */
+	mirrorTerminal?: boolean;
+	/** How far back to pick up terminal chats, in days. Default 7. */
+	mirrorDays?: number;
 	/** Only for the fake GitHub in dev/. */
 	apiBase?: string;
 	vapid?: { publicKey: string; privateKey: string; subject: string };

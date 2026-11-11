@@ -1,4 +1,10 @@
-import { mkdtempSync, rmSync } from "node:fs";
+import {
+	mkdirSync,
+	mkdtempSync,
+	rmSync,
+	utimesSync,
+	writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, test } from "vitest";
@@ -118,6 +124,7 @@ beforeEach(async () => {
 		github,
 		hub: hub as unknown as BridgeHub,
 		push: new Push(github, undefined),
+		sessionsDir: join(home, "sessions"),
 	});
 	you = new GitHub("you", fake.repo, fake.url);
 });
@@ -427,5 +434,168 @@ describe("protocol", () => {
 		expect(stableSince(t)).toBe("2026-11-07T10:10:00.000Z");
 		expect(stableSince(t + 60_000)).toBe("2026-11-07T10:10:00.000Z");
 		expect(stableSince(t - 4 * 60_000)).toBe("2026-11-07T10:00:00.000Z");
+	});
+});
+
+type RawMessage = { id: string; role: string; content: unknown[] };
+
+const typed = (id: string, text: string): RawMessage => ({
+	id,
+	role: "user",
+	content: [
+		{ type: "text", text: `<user_input mode="act">${text}</user_input>` },
+	],
+});
+const said = (id: string, text: string, tool?: string): RawMessage => ({
+	id,
+	role: "assistant",
+	content: [
+		{ type: "thinking", thinking: "hmm" },
+		{ type: "text", text },
+		...(tool
+			? [{ type: "tool_use", name: tool, input: { path: "a.ts" } }]
+			: []),
+	],
+});
+const result = (id: string): RawMessage => ({
+	id,
+	role: "user",
+	content: [{ type: "tool_result", content: "ok" }],
+});
+
+/** A chat as a minh window leaves it on disk, last written `ageMs` ago. */
+function terminalChat(
+	id: string,
+	messages: RawMessage[],
+	extra: Record<string, unknown> = {},
+	ageMs = 60_000,
+) {
+	const dir = join(home, "sessions", id);
+	mkdirSync(dir, { recursive: true });
+	const messagesPath = join(dir, `${id}.messages.json`);
+	writeFileSync(
+		join(dir, `${id}.json`),
+		JSON.stringify({
+			session_id: id,
+			source: "cli",
+			interactive: true,
+			provider: "p",
+			model: "m",
+			workspace_root: "/work/app",
+			metadata: { title: `chat ${id}` },
+			messages_path: messagesPath,
+			...extra,
+		}),
+	);
+	writeFileSync(messagesPath, JSON.stringify({ version: 1, messages }));
+	const when = new Date(Date.now() - ageMs);
+	utimesSync(messagesPath, when, when);
+}
+
+describe("terminal chats on the phone", () => {
+	test("a terminal chat becomes an issue with its messages", async () => {
+		terminalChat("t1", [
+			typed("u1", "fix the bug"),
+			said("a1", "Looking.", "read_files"),
+			result("r1"),
+			said("a2", "Fixed."),
+			typed("u2", "thanks"),
+			said("a3", "Welcome."),
+		]);
+		await bridge.start();
+		await bridge.syncMirrors();
+		expect(fake.issues).toHaveLength(1);
+		expect(fake.issues[0].title).toBe("chat t1");
+		expect(readOptions(fake.issues[0].body)).toEqual({
+			provider: "p",
+			model: "m",
+			cwd: "/work/app",
+		});
+		const posted = bodies();
+		expect(posted.map((c) => c.marker?.kind)).toEqual([
+			"reply",
+			"user",
+			"reply",
+		]);
+		expect(posted[0].body).toContain("Looking.");
+		expect(posted[0].body).toContain("Fixed.");
+		expect(posted[0].body).toContain("`read_files` a.ts");
+		expect(posted[0].body).not.toContain("hmm");
+		expect(posted[1].body).toContain("thanks");
+
+		// Copied comments never run as phone messages.
+		await poll();
+		expect(hub.sessions.size).toBe(0);
+
+		// Only what is new goes over next time.
+		terminalChat("t1", [
+			typed("u1", "fix the bug"),
+			said("a1", "Looking.", "read_files"),
+			result("r1"),
+			said("a2", "Fixed."),
+			typed("u2", "thanks"),
+			said("a3", "Welcome."),
+			typed("u3", "one more"),
+		]);
+		await bridge.syncMirrors();
+		expect(bodies()).toHaveLength(4);
+		expect(bodies()[3].body).toContain("one more");
+	});
+
+	test("waits for a reply still being written", async () => {
+		terminalChat("t1", [typed("u1", "hi"), said("a1", "Hel")], {}, 1_000);
+		await bridge.start();
+		await bridge.syncMirrors();
+		expect(fake.issues).toHaveLength(1);
+		expect(bodies()).toHaveLength(0);
+		terminalChat("t1", [typed("u1", "hi"), said("a1", "Hello there.")]);
+		await bridge.syncMirrors();
+		expect(bodies().map((c) => c.body)).toEqual([
+			withMarker({ kind: "reply", state: "done" }, "Hello there."),
+		]);
+	});
+
+	test("leaves out phone chats, sub-agents and one-shot runs", async () => {
+		terminalChat("g", [typed("u", "a")], { source: "github" });
+		terminalChat("sub", [typed("u", "a")], {
+			metadata: { parentSessionId: "x" },
+		});
+		terminalChat("run", [typed("u", "a")], { interactive: false });
+		terminalChat("old", [typed("u", "a")], {}, 30 * 86_400_000);
+		await bridge.start();
+		await bridge.syncMirrors();
+		expect(fake.issues).toHaveLength(0);
+	});
+
+	test("a message from the phone continues the terminal session", async () => {
+		terminalChat("t1", [typed("u1", "hi"), said("a1", "Hello.")]);
+		await bridge.start();
+		await bridge.syncMirrors();
+		hub.sessions.set("t1", ["hi"]);
+		await you.addComment(1, "and now?");
+		await poll();
+		expect(hub.sessions.get("t1")).toEqual(["hi", "and now?"]);
+		expect(hub.started).toHaveLength(0);
+		const before = bodies().length;
+		// The turn lands in the transcript too; it is not copied a second time.
+		terminalChat("t1", [
+			typed("u1", "hi"),
+			said("a1", "Hello."),
+			typed("u2", "and now?"),
+			said("a2", "echo: and now?"),
+		]);
+		await bridge.syncMirrors();
+		expect(bodies()).toHaveLength(before);
+	});
+
+	test("archiving a copied chat leaves the terminal session running", async () => {
+		terminalChat("t1", [typed("u1", "hi"), said("a1", "Hello.")]);
+		await bridge.start();
+		await bridge.syncMirrors();
+		await you.write("PATCH", `/repos/${fake.repo}/issues/1`, {
+			state: "closed",
+		});
+		await poll();
+		expect(hub.released).toEqual([]);
 	});
 });

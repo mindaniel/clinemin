@@ -8,6 +8,9 @@
  *      <!-- minh {"kind":"reply","state":"working"} -->
  *    GitHub hides HTML comments when it renders, so the chat stays readable
  *    on github.com too.
+ *  - A chat run in a minh window on the server is copied in by the bridge:
+ *    what was typed there carries {"kind":"user"}, so it is shown as the
+ *    person's message but does not run again.
  *  - Commands are messages: /stop, /approve <id>, /deny <id>.
  *  - Chat settings (provider, model, mode, tool approval) ride on an options
  *    line, from the phone: at the top of the issue body for a new chat, or
@@ -27,7 +30,8 @@ export type Marker =
 			tool: string;
 			state: ApprovalState;
 	  }
-	| { kind: "notice" };
+	| { kind: "notice" }
+	| { kind: "user" };
 
 const MARKER_PATTERN = /^<!-- minh (\{.*?\}) -->\r?\n?/;
 

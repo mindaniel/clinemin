@@ -4,6 +4,7 @@
  */
 
 import { type BridgeConfig, readJson, statePath, writeJson } from "./config";
+import { sessionDataDir } from "./folders";
 import {
 	type Comment,
 	GitHub,
@@ -12,14 +13,17 @@ import {
 	RateLimitedError,
 } from "./github";
 import { type BridgeHub, Hub, type HubEvent } from "./hub";
+import { listLocalChats, type MirrorEntry, readTranscript } from "./mirror";
 import {
 	type ChatOptions,
 	chatTitle,
+	MAX_COMMENT_CHARS,
 	parseCommand,
 	readMarker,
 	readOptions,
 	stripOptions,
 	withMarker,
+	withOptions,
 } from "./protocol";
 import { Push } from "./push";
 import { ReplyWriter, summarizeToolInput } from "./reply";
@@ -33,6 +37,16 @@ export interface BridgeState {
 	chats: Record<string, ChatState>;
 	/** Issues whose opening message has been sent. */
 	openedIssues: number[];
+	/** Terminal session -> the issue it is copied into. */
+	mirrors?: Record<string, MirrorState>;
+}
+
+interface MirrorState {
+	issue: number;
+	/** Last transcript message copied (or skipped). */
+	lastId?: string;
+	/** A phone turn ran on it: its messages are on the issue already. */
+	skipToEnd?: boolean;
 }
 
 interface ChatState {
@@ -44,6 +58,8 @@ interface ChatState {
 	applied?: string;
 	/** The issue is closed (archived or deleted) and its session let go. */
 	closed?: boolean;
+	/** Copied from a minh window; its session is not the bridge's to stop. */
+	mirrored?: boolean;
 }
 
 export const OPTIONS_FILE = ".minh/options.json";
@@ -84,6 +100,16 @@ interface PendingApproval {
 	body: string;
 }
 
+const MIRROR_EVERY_MS = 20_000;
+/** A reply still being written is left until its transcript sits still this long. */
+const MIRROR_QUIET_MS = 15_000;
+/** Writes one sync may make, so a backlog drains without tripping GitHub's limits. */
+const MIRROR_WRITES = 10;
+/** Newest terminal chats picked up when the mirror first runs. */
+const MIRROR_BACKFILL_CHATS = 15;
+/** Messages copied into a new issue; earlier ones stay in the terminal. */
+const MIRROR_BACKFILL_ENTRIES = 6;
+
 const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
 
 export class Bridge {
@@ -96,10 +122,18 @@ export class Bridge {
 	private readonly approvals = new Map<string, PendingApproval>();
 	private stopped = false;
 
+	private readonly sessionsDir: string;
+
 	constructor(
 		private readonly config: BridgeConfig,
-		deps?: { github?: GitHub; hub?: BridgeHub; push?: Push },
+		deps?: {
+			github?: GitHub;
+			hub?: BridgeHub;
+			push?: Push;
+			sessionsDir?: string;
+		},
 	) {
+		this.sessionsDir = deps?.sessionsDir ?? sessionDataDir();
 		this.github =
 			deps?.github ?? new GitHub(config.token, config.repo, config.apiBase);
 		this.hub = deps?.hub ?? new Hub(config);
@@ -216,6 +250,134 @@ export class Bridge {
 		const next = stableSince(Date.now());
 		if (next > this.state.commentsSince) this.state.commentsSince = next;
 		this.save();
+		if (
+			this.config.mirrorTerminal !== false &&
+			Date.now() - this.mirroredAt >= MIRROR_EVERY_MS
+		) {
+			this.mirroredAt = Date.now();
+			try {
+				await this.syncMirrors();
+			} finally {
+				this.save();
+			}
+		}
+	}
+
+	private mirroredAt = 0;
+
+	/** Copy new messages of terminal chats into their issues. Exposed for tests. */
+	async syncMirrors(now = Date.now()): Promise<void> {
+		const mirrors = (this.state.mirrors ??= {});
+		const days = this.config.mirrorDays ?? 7;
+		const linked = new Set(
+			Object.values(this.state.chats).map((chat) => chat.sessionId),
+		);
+		const chats = listLocalChats(
+			this.sessionsDir,
+			now - days * 86_400_000,
+		).filter(
+			(chat) =>
+				!this.active.has(chat.sessionId) &&
+				(mirrors[chat.sessionId] || !linked.has(chat.sessionId)),
+		);
+		const tooOld = new Set(
+			chats
+				.filter((chat) => !mirrors[chat.sessionId])
+				.slice(0, -MIRROR_BACKFILL_CHATS)
+				.map((chat) => chat.sessionId),
+		);
+		let budget = MIRROR_WRITES;
+		for (const chat of chats) {
+			if (budget <= 0) break;
+			if (tooOld.has(chat.sessionId)) continue;
+			const quiet = now - chat.updatedMs >= MIRROR_QUIET_MS;
+			const mirror = mirrors[chat.sessionId];
+			if (!mirror) {
+				const entries = readTranscript(chat.messagesPath) ?? [];
+				const ready = quiet ? entries : settled(entries);
+				const first = ready[0];
+				if (first?.role !== "user") continue;
+				const issue = await this.github.createIssue(
+					chat.title || chatTitle(first.text),
+					withOptions(
+						{
+							...(chat.provider ? { provider: chat.provider } : {}),
+							...(chat.model ? { model: chat.model } : {}),
+							...(chat.cwd ? { cwd: chat.cwd } : {}),
+						},
+						clip(first.text),
+					),
+				);
+				budget--;
+				this.state.openedIssues.push(issue.number);
+				this.state.chats[issue.number] = {
+					sessionId: chat.sessionId,
+					title: issue.title,
+					options: readOptions(issue.body),
+					mirrored: true,
+				};
+				const created: MirrorState = {
+					issue: issue.number,
+					lastId: first.lastId,
+				};
+				mirrors[chat.sessionId] = created;
+				let rest = ready.slice(1);
+				if (rest.length > MIRROR_BACKFILL_ENTRIES) {
+					rest = rest.slice(-MIRROR_BACKFILL_ENTRIES);
+					await this.github.addComment(
+						issue.number,
+						withMarker(
+							{ kind: "notice" },
+							"_Earlier messages are in the minh window's history._",
+						),
+					);
+					budget--;
+				}
+				budget = await this.copyEntries(created, rest, budget);
+				continue;
+			}
+			if (mirror.skipToEnd) {
+				mirror.lastId =
+					readTranscript(chat.messagesPath)?.at(-1)?.lastId ?? mirror.lastId;
+				mirror.skipToEnd = false;
+				continue;
+			}
+			const entries = readTranscript(chat.messagesPath, mirror.lastId);
+			if (!entries || this.state.chats[mirror.issue]?.closed) {
+				// Compacted (what was copied no longer lines up) or archived on
+				// the phone: catch up to the end without writing.
+				mirror.lastId =
+					readTranscript(chat.messagesPath)?.at(-1)?.lastId ?? mirror.lastId;
+				continue;
+			}
+			budget = await this.copyEntries(
+				mirror,
+				quiet ? entries : settled(entries),
+				budget,
+			);
+		}
+	}
+
+	private async copyEntries(
+		mirror: MirrorState,
+		entries: MirrorEntry[],
+		budget: number,
+	): Promise<number> {
+		for (const entry of entries) {
+			if (budget <= 0) break;
+			await this.github.addComment(
+				mirror.issue,
+				withMarker(
+					entry.role === "user"
+						? { kind: "user" }
+						: { kind: "reply", state: "done" },
+					clip(entry.text),
+				),
+			);
+			budget--;
+			mirror.lastId = entry.lastId;
+		}
+		return budget;
 	}
 
 	private onIssue(issue: Issue): void {
@@ -346,7 +508,12 @@ export class Bridge {
 			await reply.finish("error", undefined, message);
 			await this.notify(issue, chat.title, `Failed: ${message}`);
 		} finally {
-			if (sessionId) this.active.delete(sessionId);
+			if (sessionId) {
+				this.active.delete(sessionId);
+				// This turn is on the issue already; the copier skips past it.
+				const mirror = this.state.mirrors?.[sessionId];
+				if (mirror) mirror.skipToEnd = true;
+			}
 			this.expireApprovals(issue);
 		}
 	}
@@ -456,8 +623,11 @@ export class Bridge {
 	}
 
 	private async release(issue: number): Promise<void> {
-		const sessionId = this.state.chats[issue]?.sessionId;
+		const chat = this.state.chats[issue];
+		const sessionId = chat?.sessionId;
 		if (!sessionId) return;
+		// A terminal chat the phone only watched stays the terminal's.
+		if (chat.mirrored && !chat.applied) return;
 		if (this.active.has(sessionId)) await this.hub.abort(sessionId);
 		await this.hub.release(sessionId);
 	}
@@ -485,4 +655,15 @@ export class Bridge {
 			approved ? "approved" : "denied",
 		);
 	}
+}
+
+/** All but a reply at the very end, which may still be growing. */
+function settled(entries: MirrorEntry[]): MirrorEntry[] {
+	return entries.at(-1)?.role === "assistant" ? entries.slice(0, -1) : entries;
+}
+
+function clip(text: string): string {
+	return text.length > MAX_COMMENT_CHARS
+		? `${text.slice(0, MAX_COMMENT_CHARS)}\n\n_…cut; the rest is in the minh window._`
+		: text;
 }
