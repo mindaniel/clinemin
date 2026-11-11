@@ -1003,7 +1003,7 @@ export async function resolveCompatibleLocalHubUrl(
 		return rememberRecoverableLocalHubUrl(compatible.url, record.authToken);
 	}
 	if (compatible.status === "protocol_mismatch") {
-		await clearHubDiscovery(owner.discoveryPath).catch(() => undefined);
+		await clearHubDiscovery(owner.discoveryPath, record).catch(() => undefined);
 	}
 	return undefined;
 }
@@ -1100,7 +1100,9 @@ export async function restartLocalHubIfIdleAfterStartupTimeout(options: {
 	if (!(await waitForHubToRetire(discovery.url))) {
 		return undefined;
 	}
-	await clearHubDiscovery(owner.discoveryPath).catch(() => undefined);
+	await clearHubDiscovery(owner.discoveryPath, discovery).catch(
+		() => undefined,
+	);
 	return await ensureCompatibleLocalHubUrl({
 		workspaceRoot: options.workspaceRoot,
 		cwd: options.cwd,

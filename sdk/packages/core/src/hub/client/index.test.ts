@@ -970,6 +970,7 @@ describe("resolveCompatibleLocalHubUrl", () => {
 		await expect(resolveCompatibleLocalHubUrl()).resolves.toBeUndefined();
 		expect(clearHubDiscoveryMock).toHaveBeenCalledWith(
 			"/tmp/hub-discovery.json",
+			expect.anything(),
 		);
 	});
 

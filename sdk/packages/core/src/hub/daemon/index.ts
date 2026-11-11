@@ -43,6 +43,9 @@ const HUB_STARTUP_TIMEOUT_MS = 8_000;
 const HUB_STARTUP_POLL_MS = 200;
 const HUB_RETIRE_TIMEOUT_MS = 3_000;
 const HUB_RETIRE_POLL_MS = 100;
+// A running hub rewrites a missing discovery record every 3s
+// (HUB_DISCOVERY_REPAIR_INTERVAL_MS); allow two rounds of that.
+const HUB_DISCOVERY_REPAIR_WAIT_MS = 7_000;
 const HUB_SPAWN_RETRY_DELAYS_MS = [100, 250, 500, 1_000, 2_000];
 const COMPILED_BUN_HUB_DAEMON_ARG = "--cline-hub-daemon";
 
@@ -165,6 +168,29 @@ async function waitForHubToRetire(
 	return false;
 }
 
+/**
+ * Wait for the hub listening at `url` to put its discovery record back, and
+ * return the URL and token once a connection with them works.
+ */
+async function waitForRepairedDiscovery(
+	discoveryPath: string,
+	url: string,
+): Promise<DetachedHubResolution | undefined> {
+	const deadline = Date.now() + HUB_DISCOVERY_REPAIR_WAIT_MS;
+	while (Date.now() < deadline) {
+		const record = await readHubDiscovery(discoveryPath);
+		if (
+			record?.url === url &&
+			record.authToken &&
+			(await verifyHubConnection(url, { authToken: record.authToken }))
+		) {
+			return { url, authToken: record.authToken };
+		}
+		await new Promise((resolve) => setTimeout(resolve, HUB_STARTUP_POLL_MS));
+	}
+	return undefined;
+}
+
 async function retireDiscoveredHub(
 	record: { url: string; authToken?: string; pid?: number },
 	discoveryPath: string,
@@ -178,7 +204,7 @@ async function retireDiscoveredHub(
 		}
 	}
 	const retired = await waitForHubToRetire(record.url, HUB_RETIRE_TIMEOUT_MS);
-	await clearHubDiscovery(discoveryPath).catch(() => undefined);
+	await clearHubDiscovery(discoveryPath, record).catch(() => undefined);
 	return retired;
 }
 
@@ -382,7 +408,9 @@ export function prewarmDetachedHubServer(
 							owner.discoveryPath,
 						);
 					} else {
-						await clearHubDiscovery(owner.discoveryPath).catch(() => undefined);
+						await clearHubDiscovery(owner.discoveryPath, discovered).catch(
+							() => undefined,
+						);
 					}
 				}
 			}
@@ -474,7 +502,9 @@ export async function ensureDetachedHubServer(
 					owner.discoveryPath,
 				);
 			} else {
-				await clearHubDiscovery(owner.discoveryPath).catch(() => undefined);
+				await clearHubDiscovery(owner.discoveryPath, discovered).catch(
+					() => undefined,
+				);
 			}
 		}
 	}
@@ -486,6 +516,15 @@ export async function ensureDetachedHubServer(
 			expectedUrl,
 		);
 		if (isCompatibleHubRecord(expected)) {
+			// Its record may have been deleted by the cleanup of the hub it
+			// replaced; a running hub writes it back within a few seconds.
+			const repaired = await waitForRepairedDiscovery(
+				owner.discoveryPath,
+				expectedUrl,
+			);
+			if (repaired) {
+				return rememberIfManaged(repaired);
+			}
 			const upgradeHint = retiredUnusableDiscovery
 				? " This can happen immediately after upgrading from a build that wrote an empty hub auth token; run 'cline doctor fix' to stop the old daemon and repair local hub discovery."
 				: "";

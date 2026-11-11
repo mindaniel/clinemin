@@ -207,6 +207,12 @@ function isAddressInUseError(error: unknown): boolean {
 const SHARED_SERVERS = new Map<string, Promise<HubWebSocketServer>>();
 const HUB_AUTH_PROTOCOL_PREFIX = "cline-hub-auth.";
 const HUB_SOCKET_HEARTBEAT_INTERVAL_MS = 30_000;
+/**
+ * How often a running hub checks that its discovery record is still on disk.
+ * Clients find the hub's auth token only there, so without it every new client
+ * gives up even though the hub is healthy.
+ */
+export const HUB_DISCOVERY_REPAIR_INTERVAL_MS = 3_000;
 
 function parseHeaderValue(value: string | string[] | undefined): string {
 	return Array.isArray(value) ? value.join(",") : (value ?? "");
@@ -348,6 +354,8 @@ export async function startHubWebSocketServer(
 	} as const;
 	const sockets = new Set<TrackedNodeWebSocket>();
 	let heartbeatTimer: ReturnType<typeof setInterval> | undefined;
+	let discoveryRepairTimer: ReturnType<typeof setInterval> | undefined;
+	let discoveryRepair: Promise<void> | undefined;
 	let closePromise: Promise<void> | undefined;
 
 	const closeServer = async (): Promise<void> => {
@@ -358,6 +366,10 @@ export async function startHubWebSocketServer(
 			if (heartbeatTimer) {
 				clearInterval(heartbeatTimer);
 				heartbeatTimer = undefined;
+			}
+			if (discoveryRepairTimer) {
+				clearInterval(discoveryRepairTimer);
+				discoveryRepairTimer = undefined;
 			}
 			for (const websocket of sockets) {
 				websocket.terminate?.();
@@ -386,10 +398,15 @@ export async function startHubWebSocketServer(
 				});
 			});
 			await transport.stop();
-			const current = await readHubDiscovery(owner.discoveryPath);
-			if (current?.url === url) {
-				await clearHubDiscovery(owner.discoveryPath);
-			}
+			// A repair started just before close must not bring the record back.
+			await discoveryRepair;
+			// Only this hub's own record: a replacement may already be listening
+			// on the same port and have written its own.
+			await clearHubDiscovery(owner.discoveryPath, {
+				url,
+				authToken,
+				pid: process.pid,
+			});
 		})();
 		return closePromise;
 	};
@@ -574,7 +591,7 @@ export async function startHubWebSocketServer(
 		throw error;
 	}
 
-	await writeHubDiscovery(owner.discoveryPath, {
+	const discoveryRecord = (): HubServerDiscoveryRecord => ({
 		hubId: transport.getHubId(),
 		protocolVersion: CURRENT_HUB_PROTOCOL_VERSION,
 		minClientProtocolVersion: MIN_CLIENT_HUB_PROTOCOL_VERSION,
@@ -590,6 +607,32 @@ export async function startHubWebSocketServer(
 		startedAt,
 		updatedAt: startedAt,
 	});
+	await writeHubDiscovery(owner.discoveryPath, discoveryRecord());
+
+	// Put the record back if it goes missing while this hub still owns the
+	// port, e.g. deleted by the cleanup of the hub this one replaced. A record
+	// for another URL belongs to a hub elsewhere and is left alone.
+	discoveryRepairTimer = setInterval(() => {
+		if (discoveryRepair || closePromise) {
+			return;
+		}
+		discoveryRepair = (async () => {
+			const current = await readHubDiscovery(owner.discoveryPath);
+			if (current && (current.url !== url || current.authToken === authToken)) {
+				return;
+			}
+			if (closePromise) {
+				return;
+			}
+			await writeHubDiscovery(owner.discoveryPath, discoveryRecord());
+			logHubMessage("info", "hub.discovery_repaired", { url });
+		})()
+			.catch(() => undefined)
+			.finally(() => {
+				discoveryRepair = undefined;
+			});
+	}, HUB_DISCOVERY_REPAIR_INTERVAL_MS);
+	discoveryRepairTimer.unref?.();
 
 	return {
 		host,
@@ -662,7 +705,7 @@ export async function ensureHubWebSocketServer(
 		// The discovered hub was not reusable (missing, mismatched, or failed
 		// verification), so its record is stale either way.
 		if (discovered?.url) {
-			await clearHubDiscovery(owner.discoveryPath);
+			await clearHubDiscovery(owner.discoveryPath, discovered);
 		}
 
 		const start = async (

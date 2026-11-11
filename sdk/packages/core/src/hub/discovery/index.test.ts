@@ -90,6 +90,43 @@ describe("hub discovery", () => {
 		await expect(readHubDiscovery(discoveryPath)).resolves.toBeUndefined();
 	});
 
+	it("clears a discovery record only while it still describes the expected hub", async () => {
+		snapshot = captureEnv();
+		delete process.env.CLINE_HUB_DISCOVERY_PATH;
+		process.env.CLINE_DATA_DIR = "/tmp/cline-data-scoped";
+
+		const discoveryPath = resolveHubOwnerContext("scoped").discoveryPath;
+		const record = {
+			hubId: "hub_new",
+			protocolVersion: "v1",
+			authToken: "new-token",
+			host: "127.0.0.1",
+			port: 25466,
+			url: "ws://127.0.0.1:25466/hub",
+			pid: 4321,
+			startedAt: new Date().toISOString(),
+			updatedAt: new Date().toISOString(),
+		};
+		await writeHubDiscovery(discoveryPath, record);
+
+		// An old hub on the same fixed port must not delete the new hub's record.
+		await clearHubDiscovery(discoveryPath, {
+			url: record.url,
+			authToken: "old-token",
+		});
+		await clearHubDiscovery(discoveryPath, { url: record.url, pid: 1234 });
+		await expect(readHubDiscovery(discoveryPath)).resolves.toMatchObject(
+			record,
+		);
+
+		await clearHubDiscovery(discoveryPath, {
+			url: record.url,
+			authToken: record.authToken,
+			pid: record.pid,
+		});
+		await expect(readHubDiscovery(discoveryPath)).resolves.toBeUndefined();
+	});
+
 	it("rejects discovery records without an auth token", async () => {
 		snapshot = captureEnv();
 		delete process.env.CLINE_HUB_DISCOVERY_PATH;

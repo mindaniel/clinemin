@@ -200,7 +200,46 @@ export async function writeHubDiscovery(
 	await chmod(discoveryPath, 0o600);
 }
 
-export async function clearHubDiscovery(discoveryPath: string): Promise<void> {
+/** What identifies the hub a discovery record was written for. */
+export type HubDiscoveryIdentity = {
+	url?: string;
+	authToken?: string;
+	pid?: number;
+};
+
+/**
+ * True when `record` was written for the hub `expected` describes. Fields
+ * `expected` leaves out are not compared. A hub always comes back on the same
+ * fixed port, so the URL alone cannot tell a restarted hub from the old one.
+ */
+export function isSameHubDiscovery(
+	record: HubDiscoveryIdentity,
+	expected: HubDiscoveryIdentity,
+): boolean {
+	return (
+		(expected.url === undefined || record.url === expected.url) &&
+		(expected.authToken === undefined ||
+			record.authToken === expected.authToken) &&
+		(expected.pid === undefined || record.pid === expected.pid)
+	);
+}
+
+/**
+ * Remove the discovery record. With `expected`, only while it still describes
+ * that hub: whoever decided the record was stale read it a moment ago, and a
+ * newer hub may have replaced it since. Deleting that one strands the new hub,
+ * which then runs without any record of its auth token.
+ */
+export async function clearHubDiscovery(
+	discoveryPath: string,
+	expected?: HubDiscoveryIdentity,
+): Promise<void> {
+	if (expected) {
+		const current = await readHubDiscovery(discoveryPath);
+		if (!current || !isSameHubDiscovery(current, expected)) {
+			return;
+		}
+	}
 	await rm(discoveryPath, { force: true }).catch(() => undefined);
 }
 

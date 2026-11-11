@@ -250,7 +250,10 @@ describe("ensureDetachedHubServer", () => {
 		const { prewarmDetachedHubServer } = await import(".");
 		prewarmDetachedHubServer("/workspace");
 		await vi.waitFor(() => {
-			expect(clearHubDiscovery).toHaveBeenCalledWith("/tmp/hub-discovery.json");
+			expect(clearHubDiscovery).toHaveBeenCalledWith(
+				"/tmp/hub-discovery.json",
+				expect.anything(),
+			);
 		});
 
 		expect(clearHubDiscovery.mock.invocationCallOrder[0]).toBeGreaterThan(
@@ -391,7 +394,10 @@ describe("ensureDetachedHubServer", () => {
 				"",
 			);
 			expect(kill).toHaveBeenCalledWith(12345, "SIGTERM");
-			expect(clearHubDiscovery).toHaveBeenCalledWith("/tmp/hub-discovery.json");
+			expect(clearHubDiscovery).toHaveBeenCalledWith(
+				"/tmp/hub-discovery.json",
+				expect.anything(),
+			);
 			expect(spawn).toHaveBeenCalledOnce();
 		} finally {
 			kill.mockRestore();
@@ -464,6 +470,7 @@ describe("ensureDetachedHubServer", () => {
 			expect(kill).toHaveBeenCalledWith(222, "SIGTERM");
 			expect(clearHubDiscovery).toHaveBeenCalledWith(
 				"/tmp/legacy-hub-discovery.json",
+				expect.anything(),
 			);
 			expect(spawn).toHaveBeenCalledOnce();
 		} finally {
@@ -472,18 +479,64 @@ describe("ensureDetachedHubServer", () => {
 	});
 
 	it("throws when a compatible expected hub has no discovery record", async () => {
-		readHubDiscovery.mockResolvedValue(undefined);
-		probeHubServer.mockResolvedValue({
-			url: "ws://127.0.0.1:25463/hub",
-			protocolVersion: "v1",
-			buildId: "current-build",
-		});
+		vi.useFakeTimers();
+		try {
+			readHubDiscovery.mockResolvedValue(undefined);
+			probeHubServer.mockResolvedValue({
+				url: "ws://127.0.0.1:25463/hub",
+				protocolVersion: "v1",
+				buildId: "current-build",
+			});
 
-		const { ensureDetachedHubServer } = await import(".");
-		await expect(ensureDetachedHubServer("/workspace")).rejects.toThrow(
-			"A compatible Cline Hub is already running at ws://127.0.0.1:25463/hub, but its discovery record is missing or unreadable.",
-		);
-		expect(spawn).not.toHaveBeenCalled();
+			const { ensureDetachedHubServer } = await import(".");
+			const result = expect(
+				ensureDetachedHubServer("/workspace"),
+			).rejects.toThrow(
+				"A compatible Cline Hub is already running at ws://127.0.0.1:25463/hub, but its discovery record is missing or unreadable.",
+			);
+			await vi.runAllTimersAsync();
+			await result;
+			expect(spawn).not.toHaveBeenCalled();
+		} finally {
+			vi.useRealTimers();
+		}
+	});
+
+	it("waits for a compatible expected hub to write its discovery record back", async () => {
+		vi.useFakeTimers();
+		try {
+			// Missing at first (deleted by the hub this one replaced), then
+			// rewritten by the running hub.
+			readHubDiscovery
+				.mockResolvedValueOnce(undefined)
+				.mockResolvedValueOnce(undefined)
+				.mockResolvedValue({
+					url: "ws://127.0.0.1:25463/hub",
+					authToken: "repaired-token",
+				});
+			probeHubServer.mockResolvedValue({
+				url: "ws://127.0.0.1:25463/hub",
+				protocolVersion: "v1",
+				buildId: "current-build",
+			});
+			verifyHubConnection.mockResolvedValue(true);
+
+			const { ensureDetachedHubServer } = await import(".");
+			const pending = ensureDetachedHubServer("/workspace");
+			await vi.runAllTimersAsync();
+
+			await expect(pending).resolves.toEqual({
+				url: "ws://127.0.0.1:25463/hub",
+				authToken: "repaired-token",
+			});
+			expect(verifyHubConnection).toHaveBeenCalledWith(
+				"ws://127.0.0.1:25463/hub",
+				{ authToken: "repaired-token" },
+			);
+			expect(spawn).not.toHaveBeenCalled();
+		} finally {
+			vi.useRealTimers();
+		}
 	});
 
 	it("uses matching discovery pid and token when retiring an incompatible expected-url hub", async () => {
@@ -586,7 +639,10 @@ describe("ensureDetachedHubServer", () => {
 				"ws://127.0.0.1:25463/hub",
 				"old-token",
 			);
-			expect(clearHubDiscovery).toHaveBeenCalledWith("/tmp/hub-discovery.json");
+			expect(clearHubDiscovery).toHaveBeenCalledWith(
+				"/tmp/hub-discovery.json",
+				expect.anything(),
+			);
 			expect(clearHubDiscovery.mock.invocationCallOrder[0]).toBeGreaterThan(
 				probeHubServer.mock.invocationCallOrder[2],
 			);
