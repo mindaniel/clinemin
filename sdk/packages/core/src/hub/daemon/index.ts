@@ -7,6 +7,7 @@ import {
 	rmSync,
 	statSync,
 } from "node:fs";
+import { userInfo } from "node:os";
 import { basename, dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import {
@@ -238,13 +239,43 @@ function listListeningPids(port: number): number[] {
 	);
 }
 
+/** True when `pid` runs as the current OS user; false when unknown. */
+function isOwnProcess(pid: number): boolean {
+	try {
+		const username = userInfo().username;
+		if (process.platform === "win32") {
+			const result = spawnSync(
+				"tasklist",
+				[
+					"/FI",
+					`PID eq ${pid}`,
+					"/FI",
+					`USERNAME eq ${username}`,
+					"/NH",
+					"/FO",
+					"CSV",
+				],
+				{ encoding: "utf8", windowsHide: true },
+			);
+			return (result.stdout || "").includes(`"${pid}"`);
+		}
+		const result = spawnSync("ps", ["-o", "user=", "-p", String(pid)], {
+			encoding: "utf8",
+		});
+		return (result.stdout || "").trim() === username;
+	} catch {
+		return false;
+	}
+}
+
 /**
  * Stop a hub that answers on `url` but has no discovery record and never
  * writes one back: a build from before the record was self-repairing, whose
  * record a restart deleted. Without its auth token nothing can connect to it
  * or ask it to shut down, and it holds the fixed port, so a new hub cannot
  * start either. Its `/health` reply already proved it is a Cline hub, so the
- * process listening on that port is killed.
+ * process listening on that port is killed, but only when it is this user's:
+ * on a shared machine it may be another user's hub, which is not ours to stop.
  */
 async function retireOrphanedHub(url: string): Promise<boolean> {
 	const port = Number(new URL(url).port);
@@ -252,6 +283,9 @@ async function retireOrphanedHub(url: string): Promise<boolean> {
 		return false;
 	}
 	for (const pid of listListeningPids(port)) {
+		if (!isOwnProcess(pid)) {
+			continue;
+		}
 		try {
 			if (process.platform === "win32") {
 				// `/T` takes the hub's children with it, which `process.kill` cannot.

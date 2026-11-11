@@ -1,12 +1,31 @@
 import { CLINE_BUILD_ENV_ENV } from "@cline/shared";
 import { describe, expect, it } from "vitest";
 import {
-	DEFAULT_HUB_PORT,
+	DEFAULT_HUB_PORT as BASE_HUB_PORT,
+	hubPortUserOffset,
 	resolveDefaultHubPort,
 	resolveHubEndpointOptions,
 } from "./defaults";
 
-const DEV_HUB_PORT = 25466;
+const USERNAME = "alice";
+const DEV_HUB_PORT = 25466 + hubPortUserOffset(USERNAME);
+const DEFAULT_HUB_PORT = BASE_HUB_PORT + hubPortUserOffset(USERNAME);
+
+describe("hubPortUserOffset", () => {
+	it("gives different users different ports, the same user the same one", () => {
+		expect(hubPortUserOffset("alice")).toBe(hubPortUserOffset("ALICE"));
+		expect(hubPortUserOffset("alice")).not.toBe(hubPortUserOffset("bob"));
+		expect(hubPortUserOffset("")).toBe(0);
+	});
+
+	it("keeps every user's ports in range and apart from other users'", () => {
+		for (const name of ["alice", "bob", "qmn1", "yf43", "root"]) {
+			const offset = hubPortUserOffset(name);
+			expect(offset % 10).toBe(0);
+			expect(25466 + offset).toBeLessThan(32768);
+		}
+	});
+});
 
 describe("resolveDefaultHubPort", () => {
 	it("returns the dev hub port when CLINE_BUILD_ENV is development and CLINE_HUB_PORT is unset", () => {
@@ -14,6 +33,7 @@ describe("resolveDefaultHubPort", () => {
 			resolveDefaultHubPort({
 				env: { [CLINE_BUILD_ENV_ENV]: "development" },
 				execArgv: [],
+				username: USERNAME,
 			}),
 		).toBe(DEV_HUB_PORT);
 	});
@@ -23,14 +43,15 @@ describe("resolveDefaultHubPort", () => {
 			resolveDefaultHubPort({
 				env: { [CLINE_BUILD_ENV_ENV]: "production" },
 				execArgv: [],
+				username: USERNAME,
 			}),
 		).toBe(DEFAULT_HUB_PORT);
 	});
 
 	it("returns the production hub port when the build env cannot be determined", () => {
-		expect(resolveDefaultHubPort({ env: {}, execArgv: [] })).toBe(
-			DEFAULT_HUB_PORT,
-		);
+		expect(
+			resolveDefaultHubPort({ env: {}, execArgv: [], username: USERNAME }),
+		).toBe(DEFAULT_HUB_PORT);
 	});
 
 	it("treats --conditions=development as a development build", () => {
@@ -38,6 +59,7 @@ describe("resolveDefaultHubPort", () => {
 			resolveDefaultHubPort({
 				env: {},
 				execArgv: ["--conditions=development"],
+				username: USERNAME,
 			}),
 		).toBe(DEV_HUB_PORT);
 	});
@@ -50,6 +72,7 @@ describe("resolveDefaultHubPort", () => {
 					CLINE_HUB_PORT: "31000",
 				},
 				execArgv: [],
+				username: USERNAME,
 			}),
 		).toBe(31000);
 	});
@@ -62,6 +85,7 @@ describe("resolveDefaultHubPort", () => {
 					CLINE_HUB_PORT: "31000",
 				},
 				execArgv: [],
+				username: USERNAME,
 			}),
 		).toBe(31000);
 	});
@@ -74,6 +98,7 @@ describe("resolveDefaultHubPort", () => {
 					CLINE_HUB_PORT: "not-a-port",
 				},
 				execArgv: [],
+				username: USERNAME,
 			}),
 		).toBe(DEV_HUB_PORT);
 	});
@@ -86,6 +111,7 @@ describe("resolveDefaultHubPort", () => {
 					CLINE_HUB_PORT: "0",
 				},
 				execArgv: [],
+				username: USERNAME,
 			}),
 		).toBe(DEFAULT_HUB_PORT);
 	});
@@ -99,6 +125,7 @@ describe("resolveHubEndpointOptions", () => {
 				{
 					env: { [CLINE_BUILD_ENV_ENV]: "development" },
 					execArgv: [],
+					username: USERNAME,
 				},
 			),
 		).toEqual({
@@ -115,6 +142,7 @@ describe("resolveHubEndpointOptions", () => {
 				{
 					env: { [CLINE_BUILD_ENV_ENV]: "development" },
 					execArgv: [],
+					username: USERNAME,
 				},
 			).port,
 		).toBe(40000);

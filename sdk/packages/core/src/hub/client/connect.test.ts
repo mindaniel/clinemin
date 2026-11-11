@@ -1,4 +1,6 @@
+import { userInfo } from "node:os";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { DEFAULT_HUB_PORT, hubPortUserOffset } from "../discovery/defaults";
 import { resolveHubUrl } from "./connect";
 
 const envSnapshot = {
@@ -81,8 +83,9 @@ describe("resolveHubUrl", () => {
 			await import("../discovery"),
 			"readHubDiscovery",
 		).mockResolvedValue(undefined);
+		const port = DEFAULT_HUB_PORT + hubPortUserOffset(userInfo().username);
 
-		await expect(resolveHubUrl()).resolves.toBe("ws://127.0.0.1:25463/hub");
+		await expect(resolveHubUrl()).resolves.toBe(`ws://127.0.0.1:${port}/hub`);
 	});
 
 	it("uses an explicit endpoint without consulting discovery", async () => {

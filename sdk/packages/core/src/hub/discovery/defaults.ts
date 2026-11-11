@@ -1,3 +1,5 @@
+import { createHash } from "node:crypto";
+import { userInfo } from "node:os";
 import {
 	CLINE_HUB_DEV_PORT,
 	CLINE_HUB_PORT,
@@ -21,12 +23,49 @@ export interface HubEndpointOverrides {
 export interface ResolveHubDefaultsOptions {
 	env?: NodeJS.ProcessEnv;
 	execArgv?: string[];
+	/** OS account the default port is derived for; the current one if unset. */
+	username?: string;
+}
+
+// Ports per user stay 10 apart so a user's production and dev hubs (3 apart)
+// never land on another user's, and below 32768 where Linux starts handing
+// out ephemeral ports.
+const HUB_PORT_USER_STRIDE = 10;
+const HUB_PORT_USER_SLOTS = 700;
+
+function currentUsername(env: NodeJS.ProcessEnv): string {
+	try {
+		return userInfo().username;
+	} catch {
+		return env.USERNAME || env.USER || "";
+	}
+}
+
+/**
+ * How far this OS user's default hub port sits above the base port. Every
+ * user on a machine shares 127.0.0.1, so one fixed port would make each
+ * user's CLI find (and try to use or stop) somebody else's hub.
+ */
+export function hubPortUserOffset(username: string): number {
+	if (!username) {
+		return 0;
+	}
+	const slot =
+		createHash("sha256")
+			.update(username.toLowerCase())
+			.digest()
+			.readUInt32BE(0) % HUB_PORT_USER_SLOTS;
+	return slot * HUB_PORT_USER_STRIDE;
 }
 
 function fallbackHubPort(options: ResolveHubDefaultsOptions): number {
-	return resolveClineBuildEnv(options) === "development"
-		? CLINE_HUB_DEV_PORT
-		: DEFAULT_HUB_PORT;
+	const base =
+		resolveClineBuildEnv(options) === "development"
+			? CLINE_HUB_DEV_PORT
+			: DEFAULT_HUB_PORT;
+	const username =
+		options.username ?? currentUsername(options.env ?? process.env);
+	return base + hubPortUserOffset(username);
 }
 
 export function resolveDefaultHubHost(

@@ -55,6 +55,13 @@ vi.mock("node:child_process", () => ({
 	spawnSync,
 }));
 
+// An empty username keeps the default hub port at its base (no per-user
+// offset), which the URLs below assume.
+vi.mock("node:os", async (importOriginal) => ({
+	...(await importOriginal<typeof import("node:os")>()),
+	userInfo: () => ({ username: "" }),
+}));
+
 vi.mock("node:fs", () => ({
 	closeSync,
 	mkdirSync,
@@ -527,6 +534,12 @@ describe("ensureDetachedHubServer", () => {
 					killed = true;
 					return { status: 0, stdout: "" };
 				}
+				if (command === "tasklist") {
+					return { status: 0, stdout: '"bun.exe","777"' };
+				}
+				if (command === "ps") {
+					return { status: 0, stdout: "\n" };
+				}
 				return {
 					status: 0,
 					stdout:
@@ -562,6 +575,55 @@ describe("ensureDetachedHubServer", () => {
 			});
 			expect(killed).toBe(true);
 			expect(spawn).toHaveBeenCalledOnce();
+		} finally {
+			kill.mockRestore();
+			vi.useRealTimers();
+		}
+	});
+
+	it("leaves a compatible hub without a discovery record alone when another user runs it", async () => {
+		vi.useFakeTimers();
+		const kill = vi.spyOn(process, "kill").mockImplementation(() => true);
+		try {
+			readHubDiscovery.mockResolvedValue(undefined);
+			spawnSync.mockImplementation(((command: string) => {
+				if (command === "tasklist") {
+					return {
+						status: 0,
+						stdout:
+							"INFO: No tasks are running which match the specified criteria.",
+					};
+				}
+				if (command === "ps") {
+					return { status: 0, stdout: "someone-else\n" };
+				}
+				return {
+					status: 0,
+					stdout:
+						process.platform === "win32"
+							? "  TCP    127.0.0.1:25463    0.0.0.0:0    LISTENING    777\r\n"
+							: "777\n",
+				};
+			}) as never);
+			probeHubServer.mockResolvedValue({
+				url: "ws://127.0.0.1:25463/hub",
+				protocolVersion: "v1",
+				buildId: "current-build",
+			});
+
+			const { ensureDetachedHubServer } = await import(".");
+			const result = expect(
+				ensureDetachedHubServer("/workspace"),
+			).rejects.toThrow("discovery record is missing or unreadable");
+			await vi.runAllTimersAsync();
+			await result;
+			expect(spawnSync).not.toHaveBeenCalledWith(
+				"taskkill",
+				expect.anything(),
+				expect.anything(),
+			);
+			expect(kill).not.toHaveBeenCalledWith(777, expect.anything());
+			expect(spawn).not.toHaveBeenCalled();
 		} finally {
 			kill.mockRestore();
 			vi.useRealTimers();
