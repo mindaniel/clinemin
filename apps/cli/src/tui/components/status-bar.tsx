@@ -8,7 +8,6 @@ import {
 	shouldShowCliUsageCost,
 	shouldShowCliUsageCoveredBySubscription,
 } from "../../utils/usage-cost-display";
-import { useBrowserHeadless } from "../browser-mode";
 import {
 	useTerminalBackground,
 	useTerminalTheme,
@@ -18,6 +17,7 @@ import {
 	getModeAccent,
 	getSuccessColor,
 } from "../palette";
+import { useCommandTimeoutInfinite } from "../timeout-mode";
 import { HOME_VIEW_MAX_WIDTH, type WebSessionStatus } from "../types";
 import { formatTokenCount } from "../utils/compaction-status";
 
@@ -289,7 +289,7 @@ export function StatusBar(props: StatusBarProps) {
 	} = props;
 
 	const { width } = useTerminalDimensions();
-	const headless = useBrowserHeadless();
+	const infinite = useCommandTimeoutInfinite();
 	const updatedTo = useSourceUpdate();
 	const terminalBg = useTerminalBackground();
 	const terminalTheme = useTerminalTheme();
@@ -330,10 +330,10 @@ export function StatusBar(props: StatusBarProps) {
 			? Math.min(width, HOME_VIEW_MAX_WIDTH) - 2
 			: width - 2;
 
-	// Row 1 layout: [model + context info] .... [Normal/Headless browser toggle]
+	// Row 1 layout: [model + context info] .... [Finite/Infinite timeout toggle]
 	// When the full row doesn't fit, context info drops to its own row 2.
 	// Model ID truncates with "..." before wrapping; toggle stays right-aligned.
-	const toggleWidth = 26;
+	const toggleWidth = 33;
 	const usageText = formatStatusBarUsageText({
 		totalTokens,
 		totalCost,
@@ -394,11 +394,12 @@ export function StatusBar(props: StatusBarProps) {
 					flexShrink={0}
 					onMouseDown={onToggleMode}
 				>
-					<text fg={headless ? "gray" : actAccent}>
-						{headless ? "○" : "●"} Normal
+					<text fg="gray">Timeout</text>
+					<text fg={infinite ? "gray" : actAccent}>
+						{infinite ? "○" : "●"} Finite
 					</text>
-					<text fg={headless ? planAccent : "gray"}>
-						{headless ? "●" : "○"} Headless
+					<text fg={infinite ? planAccent : "gray"}>
+						{infinite ? "●" : "○"} Infinite
 					</text>
 					<text fg="gray">(Tab)</text>
 				</box>

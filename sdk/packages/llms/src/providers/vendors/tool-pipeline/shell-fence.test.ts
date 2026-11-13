@@ -120,3 +120,29 @@ describe("shell fence flags", () => {
 		expect(parseShellFenceFlags(" -echoes")).toEqual({});
 	});
 });
+
+describe("a report quoting its commands", () => {
+	const LAUNCH = [
+		"```powershell",
+		"Start-Process python -ArgumentList step3.py",
+		"```",
+	].join("\n");
+	const RESULTS = `## Step 3, raw output\n\n${"batch done, part written. ".repeat(30)}`;
+
+	it("runs nothing when a long report follows the last shell fence", () => {
+		const text = `**Status: launched.**\n\n## Step 2, launch\n\n${LAUNCH}\n\n${RESULTS}`;
+		const { remainingText, toolUses } = extractShellFenceCommands(text, TOOLS);
+		expect(toolUses).toEqual([]);
+		expect(remainingText).toBe(text);
+	});
+
+	it("still runs a fence followed by a short line", () => {
+		const text = `${LAUNCH}\n\nI'll wait for the output.`;
+		expect(extractShellFenceCommands(text, TOOLS).toolUses).toHaveLength(1);
+	});
+
+	it("still runs a fence after a long explanation", () => {
+		const text = `${RESULTS}\n\n${LAUNCH}`;
+		expect(extractShellFenceCommands(text, TOOLS).toolUses).toHaveLength(1);
+	});
+});

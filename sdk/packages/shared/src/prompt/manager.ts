@@ -211,6 +211,18 @@ A command is stopped after 120 seconds; write \`\`\`powershell -timeout 600 for
 longer (max 3600), or \`\`\`powershell -echo to run it in the background and get
 the output pasted back when it finishes.
 
+To wait for a long job, don't check on it every few seconds. Send one block
+that waits until it is done and then prints the result, and end your reply;
+the output comes back to you when the block finishes:
+
+\`\`\`powershell -echo -timeout 3600
+while (Get-Process -Id 1234 -ErrorAction SilentlyContinue) { Start-Sleep 60 }
+Get-Content run.log -Tail 20
+\`\`\`
+
+Everything inside a PowerShell block runs as soon as you send it, so never
+put a command you only mean to quote or schedule for later in one.
+
 Keep those read-only. Looking is yours; changing is theirs. An assistant
 reporting on its own work is not evidence.`,
 	];

@@ -167,7 +167,6 @@ import { useDialog } from "@opentui-ui/dialog/react";
 import { useCallback } from "react";
 import { runConnectAdapter, runStopConnector } from "../../commands/connect";
 import { getSourceUpdate } from "../../commands/source-auto-update";
-import { refreshBrowserHeadless } from "../browser-mode";
 import {
 	findUpdateRestartBlocker,
 	requestUpdateRestart,
@@ -1099,7 +1098,6 @@ export function useLocalCommandActions(input: {
 
 		try {
 			setActiveBrowserProfile(name);
-			refreshBrowserHeadless();
 		} catch (error) {
 			session.appendEntry({
 				kind: "error",

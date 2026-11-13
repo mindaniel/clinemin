@@ -33,7 +33,10 @@ import {
 	unappliedPatchNotice,
 } from "../tool-pipeline/patch-block";
 import { stripPreviousUserBlock } from "../tool-pipeline/previous-user-dedupe";
-import { extractShellFenceCommands } from "../tool-pipeline/shell-fence";
+import {
+	extractShellFenceCommands,
+	isShellFenceLanguage,
+} from "../tool-pipeline/shell-fence";
 import {
 	isToolCallStuckInThinking,
 	THINKING_MODE_NUDGE,
@@ -289,6 +292,12 @@ export function parseFallbackToolUses(
 			(full: string, rawLang: string, rawCode: string, offset: number) => {
 				const lang = (rawLang ?? "").toLowerCase();
 				const code = rawCode.replace(/\s+$/, "");
+				if (isShellFenceLanguage(lang)) {
+					// A command quoted in a report (shell-fence.ts left it in
+					// place), never a file.
+					index++;
+					return full;
+				}
 				if (!code.trim()) {
 					index++;
 					return full;

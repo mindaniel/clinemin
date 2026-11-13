@@ -14,7 +14,6 @@ import { setSourceUpdateAction } from "../commands/source-auto-update";
 import type { TeamProgressUpdate } from "../runtime/session-events";
 import type { RepoStatus } from "../utils/repo-status";
 import { readRepoStatus } from "../utils/repo-status";
-import { toggleBrowserHeadless } from "./browser-mode";
 import { BackgroundNotice } from "./components/background-notice";
 import type { TranscriptScrollHandle } from "./components/chat-message-list";
 import {
@@ -57,6 +56,7 @@ import { useRuntimeDialogBridge } from "./hooks/use-runtime-dialog-bridge";
 import { useSlashCommands } from "./hooks/use-slash-commands";
 import { TerminalColorsContext } from "./hooks/use-terminal-background";
 import { useTerminalTitle } from "./hooks/use-terminal-title";
+import { toggleCommandTimeout } from "./timeout-mode";
 import type { AppView, TuiProps, TuiStartupTarget } from "./types";
 import { hydrateSessionMessages } from "./utils/hydrate-messages";
 import { isProviderConfigured } from "./utils/provider-configured";
@@ -197,14 +197,14 @@ function App(props: TuiProps) {
 		void props.onModeChange(newMode);
 	}, [props, session]);
 
-	// Tab: hidden or visible Chrome for the web providers (plan/act stays
-	// in the config panel).
-	const toggleBrowserMode = useCallback(() => {
-		const hidden = toggleBrowserHeadless();
+	// Tab: finite or infinite shell-command timeout (plan/act stays in the
+	// config panel).
+	const toggleTimeoutMode = useCallback(() => {
+		const infinite = toggleCommandTimeout();
 		showToast(
-			hidden
-				? "Browser: headless (applies next turn)"
-				: "Browser: normal (applies next turn)",
+			infinite
+				? "Timeout: infinite (commands run until done)"
+				: "Timeout: finite (commands stop after their timeout)",
 		);
 	}, [showToast]);
 
@@ -898,7 +898,7 @@ function App(props: TuiProps) {
 		setInputValue: promptInput.setInputValue,
 		onAbort: props.onAbort,
 		onExit: exitCline,
-		onToggleMode: toggleBrowserMode,
+		onToggleMode: toggleTimeoutMode,
 		onClearConversation: clearConversation,
 		onRestoreCheckpoint: openCheckpointRestore,
 		onOpenCommandPalette: openCommandPalette,
@@ -942,7 +942,7 @@ function App(props: TuiProps) {
 		onQueuedPromptEditConfirm: (id: string, prompt: string) => {
 			void saveQueuedPromptEdit(id, prompt);
 		},
-		onToggleMode: toggleBrowserMode,
+		onToggleMode: toggleTimeoutMode,
 		runtimeInteraction,
 		onResolveToolApproval: runtimeBridge.resolveToolApproval,
 		onResolveAskQuestion: runtimeBridge.resolveAskQuestion,

@@ -710,3 +710,18 @@ describe("a reply that echoes the manager prompt back", () => {
 		expect(parsed.delegations).toHaveLength(1);
 	});
 });
+
+describe("manager shell fences in a report", () => {
+	it("runs nothing when a long report follows the last fence", () => {
+		const text = [
+			"The job was started with:",
+			"```powershell",
+			"Start-Process python -ArgumentList step3.py",
+			"```",
+			"It is on batch 9 of 13. ".repeat(30),
+		].join("\n");
+		const parsed = parseManagerBlocks(text, { allowCommands: true });
+		expect(parsed.delegations).toEqual([]);
+		expect(parsed.cleanedContent).toContain("Start-Process");
+	});
+});

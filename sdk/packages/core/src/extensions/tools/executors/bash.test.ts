@@ -347,4 +347,28 @@ describe.runIf(process.platform === "win32")("createWindowsExecutor", () => {
 		const output = await executor("echo shell-ok", process.cwd(), ctx);
 		expect(output.trim()).toBe("shell-ok");
 	});
+
+	it("returns when the command exits even though a process it started holds the output pipe", async () => {
+		// `Start-Process` and `nohup ... &` leave a child holding the pipes, so
+		// "close" never comes; this used to hang until the timeout.
+		const shell = createShellExecutor();
+		const script = [
+			"const { spawn } = require('node:child_process');",
+			"const child = spawn(process.execPath, ['-e', 'setTimeout(() => {}, 30000)'], { stdio: 'inherit', detached: true });",
+			"child.unref();",
+			"console.log('started ' + child.pid);",
+		].join(" ");
+		const startedAt = Date.now();
+		const output = await shell(
+			{ command: process.execPath, args: ["-e", script] },
+			process.cwd(),
+			{ ...ctx, metadata: { commandTimeoutMs: 20_000 } },
+		);
+		const pid = Number(/started (\d+)/.exec(output)?.[1]);
+		try {
+			process.kill(pid);
+		} catch {}
+		expect(output).toContain("started");
+		expect(Date.now() - startedAt).toBeLessThan(10_000);
+	}, 25_000);
 });

@@ -39,7 +39,7 @@ import {
 	MANAGER_HANDOVER_TOOL,
 } from "@cline/shared";
 import { parsePatchBlocks } from "./patch-block";
-import { parseShellFenceFlags } from "./shell-fence";
+import { isReportAfterShellFence, parseShellFenceFlags } from "./shell-fence";
 
 const OPEN_TAG_RE = /^[ \t]*<\s*manager\s*>[ \t]*\r?$/im;
 const CLOSE_LINE_RE = /^[ \t]*<\s*\/\s*manager\s*>[ \t]*$/;
@@ -359,7 +359,12 @@ export function scanShellFences(text: string): ShellFenceBlock[] {
  */
 function extractShellFences(text: string): ParsedManagerBlocks {
 	const blocks = scanShellFences(text);
-	if (blocks.length === 0) {
+	const last = blocks.at(-1);
+	if (
+		!last ||
+		(!last.unterminated && isReportAfterShellFence(text.slice(last.end)))
+	) {
+		// No fences, or quotes in a report: see `isReportAfterShellFence`.
 		return { cleanedContent: text, delegations: [], problems: [] };
 	}
 

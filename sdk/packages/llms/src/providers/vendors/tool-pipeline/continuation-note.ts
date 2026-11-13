@@ -38,7 +38,7 @@ import { processGlobal } from "./process-global";
 
 /** Note used when a project has not customised one. */
 export const DEFAULT_CONTINUATION_NOTE =
-	"Use tool to continue the task or if finish, then tell 'finish'. Slow shell command: add -timeout 10m after the fence language; long-running (server, watcher): add -echo.";
+	"Use tool to continue the task or if finish, then tell 'finish'. Slow shell command: add -timeout 10m after the fence language; long-running (server, watcher, job): add -echo and end your turn, its output is sent to you when it ends. Don't poll or relaunch: to wait for a job already running, send one -echo -timeout block that loops until it is done.";
 
 /**
  * Earlier defaults. Still recognised so transcripts written before the default
@@ -46,6 +46,7 @@ export const DEFAULT_CONTINUATION_NOTE =
  */
 const LEGACY_CONTINUATION_NOTES: ReadonlySet<string> = new Set([
 	"Use tool to continue the task or if finish, then tell 'finish'.",
+	"Use tool to continue the task or if finish, then tell 'finish'. Slow shell command: add -timeout 10m after the fence language; long-running (server, watcher): add -echo.",
 ]);
 
 /**

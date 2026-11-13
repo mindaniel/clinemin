@@ -4,6 +4,7 @@
  * Factory functions for creating the default tools.
  */
 
+import { readInfiniteCommandTimeout } from "@cline/llms";
 import {
 	type AgentTool,
 	type AgentToolContext,
@@ -253,7 +254,10 @@ async function executeShellCommands(
 				return {
 					query,
 					result: "",
-					error: `Command failed: ${msg}`,
+					error:
+						error instanceof TimeoutError
+							? `Command failed: ${msg}. It may still be running if it started a separate process. To wait longer, rerun with a larger "timeout_seconds" (max ${MAX_COMMAND_TIMEOUT_MS / 1000}), or with "echo": true to get its output when it finishes; do not poll it.`
+							: `Command failed: ${msg}`,
 					success: false,
 				};
 			}
@@ -519,7 +523,7 @@ export function buildRunCommandsDescription(
 		environmentNote +
 		"Commands should be properly shell-escaped and targeted to avoid error or timeout. Include multiple commands in the same call when they are independent complete shell commands and safe to run concurrently; multiline scripts and heredocs must be a single command string. When independent reads, searches, or edits are also needed, call those tools in the same response. " +
 		`Output beyond ~${Math.round(commandChars / 1000)}k characters is middle-truncated (start and end preserved); pipe through grep/head/tail when you need specific sections of large output. ` +
-		"For long-running commands, run them in background and redirect output to a tmp file that you can read from later."
+		'For a long-running command use "echo": true instead of backgrounding it with & yourself, so its output comes back to you when it finishes without polling.'
 	);
 }
 
@@ -585,7 +589,12 @@ export function createShellTool(
 				? "configured_setting"
 				: timeoutSource;
 
-			if (context.metadata?.[RUN_IN_FOREGROUND_METADATA_KEY] === true) {
+			// Approved foreground run, or the TUI's timeout toggle set to
+			// infinite: wait however long the command takes.
+			if (
+				context.metadata?.[RUN_IN_FOREGROUND_METADATA_KEY] === true ||
+				(!callOptions.echo && readInfiniteCommandTimeout())
+			) {
 				return executeShellCommands(commands, {
 					executor,
 					cwd,
@@ -609,11 +618,14 @@ export function createShellTool(
 					signal: undefined,
 				};
 				const startedAt = Date.now();
+				const backgroundTimeoutMs = readInfiniteCommandTimeout()
+					? undefined
+					: effectiveTimeoutMs;
 				void executeShellCommands(commands, {
 					executor,
 					cwd,
 					context: backgroundContext,
-					timeoutMs: effectiveTimeoutMs,
+					timeoutMs: backgroundTimeoutMs,
 					timeoutSource: effectiveSource,
 					telemetry: config.telemetry,
 				}).then((results) => {
@@ -624,7 +636,7 @@ export function createShellTool(
 				});
 				return commands.map((command) => ({
 					query: formatRunCommandQueryPreview(command),
-					result: `Started in the background (timeout ${Math.round(effectiveTimeoutMs / 1000)}s). Its output will be sent to you as a new message when it finishes; do not wait for it in this turn.`,
+					result: `Started in the background (${backgroundTimeoutMs === undefined ? "no timeout" : `timeout ${Math.round(backgroundTimeoutMs / 1000)}s`}). Its output will be sent to you as a new message when it finishes. Do not check on it, poll it or start it again: end your turn now if nothing else is left to do, and continue when the output arrives.`,
 					success: true,
 				}));
 			}

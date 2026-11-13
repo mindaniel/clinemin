@@ -206,7 +206,7 @@ export {
 	setBrowserProfileLabel,
 	WEB_PROVIDER_BROWSERS,
 } from "./providers/vendors/tool-pipeline/browser-profiles";
-// Hidden/visible Chrome for the web providers (the TUI's Tab key).
+// Hidden/visible Chrome for the web providers.
 export {
 	readHeadlessPreference,
 	writeHeadlessPreference,
@@ -224,6 +224,11 @@ export {
 	getCurrentCliSessionId,
 	runWithCliSession,
 } from "./providers/vendors/tool-pipeline/cli-session-scope";
+// Finite/infinite shell-command timeout (the TUI's Tab key).
+export {
+	readInfiniteCommandTimeout,
+	writeInfiniteCommandTimeout,
+} from "./providers/vendors/tool-pipeline/command-timeout-mode";
 // Post-tool continuation note (the agent runtime appends it; the CLI `/note`
 // command customises it per project).
 export {

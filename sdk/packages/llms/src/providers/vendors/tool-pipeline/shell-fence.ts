@@ -75,13 +75,36 @@ export function parseShellFenceFlags(rest: string | undefined): {
 }
 
 /**
+ * More text than this after the last shell fence makes the reply a report.
+ *
+ * A model asking for a command writes the fence last, or adds a line such as
+ * "waiting for the output". A model reporting what it did quotes the command
+ * it ran and goes on to the results. Running that quote again once relaunched
+ * a 55 GB job twice over the copy already running, so the fences in a report
+ * stay text.
+ */
+const REPORT_TAIL_CHARS = 400;
+
+/**
+ * True when `textAfterLastFence`, the rest of a reply after its last shell
+ * fence, is long enough that the fences above it are quotes in a report, not
+ * commands to run.
+ */
+export function isReportAfterShellFence(textAfterLastFence: string): boolean {
+	return (
+		textAfterLastFence.replace(/\s+/g, " ").trim().length > REPORT_TAIL_CHARS
+	);
+}
+
+/**
  * Pull shell fences out of a reply and turn each into a `run_commands` call.
  *
  * Returns the text with those fences removed, so a caller can hand the rest to
  * a fence-to-file parser without it seeing the commands. When the session has
  * no `run_commands` tool the text comes back untouched: a shell fence we cannot
  * run has to stay visible, because silently deleting it would leave the model
- * believing it asked for something.
+ * believing it asked for something. A reply that is a report (see
+ * `isReportAfterShellFence`) also comes back untouched.
  */
 export function extractShellFenceCommands(
 	text: string,
@@ -94,9 +117,23 @@ export function extractShellFenceCommands(
 		return { remainingText: text, toolUses: [] };
 	}
 
+	const fencePattern = /```([\w+-]*)([^\r\n`]*)\r?\n([\s\S]*?)```/g;
+	let lastShellFenceEnd = -1;
+	for (const match of text.matchAll(fencePattern)) {
+		if (isShellFenceLanguage(match[1]) && match[3].trim()) {
+			lastShellFenceEnd = (match.index ?? 0) + match[0].length;
+		}
+	}
+	if (
+		lastShellFenceEnd >= 0 &&
+		isReportAfterShellFence(text.slice(lastShellFenceEnd))
+	) {
+		return { remainingText: text, toolUses: [] };
+	}
+
 	const toolUses: { name: string; arguments: Record<string, unknown> }[] = [];
 	const remainingText = text.replace(
-		/```([\w+-]*)([^\r\n`]*)\r?\n([\s\S]*?)```/g,
+		fencePattern,
 		(full: string, lang: string, rest: string, code: string) => {
 			if (!isShellFenceLanguage(lang)) {
 				return full;

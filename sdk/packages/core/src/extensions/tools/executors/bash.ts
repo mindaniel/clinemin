@@ -133,6 +133,9 @@ function createRollingCollector(maxChars: number) {
 	};
 }
 
+/** How long output may keep arriving after the command exits (see "exit" below). */
+const EXIT_OUTPUT_GRACE_MS = 1_500;
+
 function spawnAndCollect(
 	config: SpawnConfig,
 	context: AgentToolContext,
@@ -216,9 +219,11 @@ function spawnAndCollect(
 		};
 
 		let timeout: NodeJS.Timeout | undefined;
+		let exitGrace: NodeJS.Timeout | undefined;
 		const abortHandler = () => killAndReject(new Error("Command was aborted"));
 		const cleanup = () => {
 			clearTimeout(timeout);
+			clearTimeout(exitGrace);
 			context.signal?.removeEventListener("abort", abortHandler);
 		};
 		const killAndReject = (error: Error) => {
@@ -256,7 +261,7 @@ function spawnAndCollect(
 			stderr.append(data);
 		});
 
-		child.on("close", (code) => {
+		const finish = (code: number | null) => {
 			cleanup();
 			if (killed) return;
 
@@ -299,6 +304,23 @@ function spawnAndCollect(
 				}
 				settle(() => resolve(output));
 			}
+		};
+
+		child.on("close", finish);
+
+		// "close" waits for every holder of the output pipes, and a process
+		// the command started and left running (`Start-Process`, `nohup ... &`)
+		// inherits them, so the call would hang until its timeout although the
+		// command itself is done. Give late output a moment, then settle with
+		// what arrived and let go of the pipes.
+		child.on("exit", (code) => {
+			if (killed || settled) return;
+			exitGrace = setTimeout(() => {
+				if (killed || settled) return;
+				child.stdout?.destroy();
+				child.stderr?.destroy();
+				finish(code);
+			}, EXIT_OUTPUT_GRACE_MS);
 		});
 
 		child.on("error", (error) => {
