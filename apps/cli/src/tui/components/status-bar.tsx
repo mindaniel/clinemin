@@ -185,9 +185,14 @@ export function formatStatusBarUsageText(input: {
 		Number.isFinite(input.maxInputTokens) &&
 		input.maxInputTokens > 0;
 	const maxInputTokens = hasMaxInputTokens ? input.maxInputTokens : undefined;
+	// Gemini Web keeps the context estimate and adds its limit once spent,
+	// since it reports nothing else about usage.
+	const limitText = status?.limitReached
+		? ` · limit reached${resetSuffix || " · reset time unknown"}`
+		: "";
 	const tokens = maxInputTokens
-		? `(${formatTokenCount(input.totalTokens)}/${formatTokenCount(maxInputTokens)})`
-		: `(${input.totalTokens.toLocaleString()})`;
+		? `(${formatTokenCount(input.totalTokens)}/${formatTokenCount(maxInputTokens)}${limitText})`
+		: `(${input.totalTokens.toLocaleString()}${limitText})`;
 	const costText = formatCostText(input.providerId, input.totalCost);
 
 	if (!costText) {

@@ -6,7 +6,11 @@ import {
 	expandGuideAiPrompt,
 	parseGuideAiCommand,
 } from "./guide";
-import { SIMPLE_WEB_SYSTEM_PROMPT, withWebPromptFolder } from "./simple-web";
+import {
+	SIMPLE_WEB_POWERSHELL_EDIT_PROMPT,
+	SIMPLE_WEB_SYSTEM_PROMPT,
+	withWebPromptFolder,
+} from "./simple-web";
 
 describe("parseGuideAiCommand", () => {
 	it("leaves anything that is not the command alone", () => {
@@ -79,6 +83,18 @@ describe("buildGuideAiReminder", () => {
 		expect(reminder).toContain(withWebPromptFolder(SIMPLE_WEB_SYSTEM_PROMPT));
 		expect(reminder).not.toContain("{{CWD}}");
 		expect(reminder).not.toContain("<tool>");
+	});
+
+	it("restates the PowerShell-edit variant for a session that has it", () => {
+		expect(detectGuideAiStyle(SIMPLE_WEB_POWERSHELL_EDIT_PROMPT)).toBe("patch");
+		const reminder = buildGuideAiReminder({
+			style: "patch",
+			systemPrompt: SIMPLE_WEB_POWERSHELL_EDIT_PROMPT,
+		});
+		expect(reminder).toContain(
+			withWebPromptFolder(SIMPLE_WEB_POWERSHELL_EDIT_PROMPT),
+		);
+		expect(reminder).not.toContain("*** Begin Patch");
 	});
 
 	it("restates the tool contract and the session's own tool list", () => {

@@ -32,7 +32,8 @@
 /** The line `withWebPromptFolder` fills in with the session's working folder. */
 const FOLDER_LINE = "Folder: {{CWD}}";
 
-export const SIMPLE_WEB_SYSTEM_PROMPT = [
+/** Reading the project, and how commands run. */
+const READ_RULES = [
 	"Help me with this problem. Do not give me multiple code options, just 1 option.",
 	"",
 	FOLDER_LINE,
@@ -43,6 +44,10 @@ export const SIMPLE_WEB_SYSTEM_PROMPT = [
 	"",
 	"Commands stop after 120 seconds. For longer, use ```powershell -timeout 600 (max 3600), or ```powershell -echo to run it in the background and I paste the output when it finishes.",
 	"",
+];
+
+/** Editing with a patch block (see the note on patch blocks above). */
+const PATCH_EDIT_RULES = [
 	"When a file needs to be edited, do not ask me to edit it manually, and do not send PowerShell code that writes to the file. Instead send the change as a patch block that I paste into my auto-patcher, in exactly this format:",
 	"",
 	"*** Begin Patch",
@@ -61,7 +66,67 @@ export const SIMPLE_WEB_SYSTEM_PROMPT = [
 	'- One "*** Begin Patch" / "*** End Patch" per reply. Multiple files and multiple "@@" sections inside it are fine.',
 	"- Do not wrap the patch in a code fence, and do not explain anything inside the block.",
 	"",
+];
+
+/**
+ * Marks a prompt that edits with PowerShell, so `/guide-ai` re-sends the same
+ * variant. It is the write call the recipe below ends with.
+ */
+export const POWERSHELL_EDIT_MARKER = "[IO.File]::WriteAllText";
+
+/**
+ * Editing with PowerShell, for a provider that gets patch blocks wrong.
+ *
+ * Gemini on the web often misses the byte-exact context a patch needs, and
+ * writes PowerShell edits even when told not to. So it gets one fixed recipe
+ * that avoids the problems in the note above: the text is replaced exactly
+ * and a miss throws instead of writing nothing, a CRLF file stays CRLF, and
+ * the file is written as UTF-8 without a BOM through .NET (commands run in
+ * Windows PowerShell 5.1, where `Set-Content` writes ANSI and
+ * `-Encoding UTF8` adds a BOM). The fence is read straight off the page, not
+ * copied by hand, and single-quoted here-strings expand nothing, so
+ * PowerShell's parser is the only escaping layer left. A patch block the
+ * model sends anyway is still applied.
+ */
+const POWERSHELL_EDIT_RULES = [
+	"To edit a file, do not ask me to edit it manually. Send one ```powershell block that replaces exact text, in exactly this shape:",
+	"",
+	"```powershell",
+	"$p = 'C:\\full\\path\\to\\file.py'",
+	"$old = @'",
+	"    return x",
+	"'@",
+	"$new = @'",
+	"    return y",
+	"'@",
+	"$t = [IO.File]::ReadAllText($p)",
+	'if ($t.Contains("`r`n")) { $old = $old -replace "(?<!`r)`n", "`r`n"; $new = $new -replace "(?<!`r)`n", "`r`n" }',
+	'if (-not $t.Contains($old)) { throw "old text not found in $p" }',
+	`${POWERSHELL_EDIT_MARKER}($p, $t.Replace($old, $new), [Text.UTF8Encoding]::new($false))`,
+	"```",
+	"",
+	"Edit rules:",
+	"- $old is copied exactly from the file, with enough lines to be unique. More edits: repeat the $old, $new and Replace lines in the same block.",
+	"- The closing '@ starts its line.",
+	`- New file: ${POWERSHELL_EDIT_MARKER}($p, $text, [Text.UTF8Encoding]::new($false)). Never Set-Content or Out-File for code.`,
+	"",
+];
+
+const CLOSING = [
 	"I will then paste you the results of what has been done that I followed you.",
+];
+
+export const SIMPLE_WEB_SYSTEM_PROMPT = [
+	...READ_RULES,
+	...PATCH_EDIT_RULES,
+	...CLOSING,
+].join("\n");
+
+/** `SIMPLE_WEB_SYSTEM_PROMPT` with PowerShell edits in place of patch blocks. */
+export const SIMPLE_WEB_POWERSHELL_EDIT_PROMPT = [
+	...READ_RULES,
+	...POWERSHELL_EDIT_RULES,
+	...CLOSING,
 ].join("\n");
 
 /**

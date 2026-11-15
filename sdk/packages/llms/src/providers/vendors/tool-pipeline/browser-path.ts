@@ -96,6 +96,19 @@ export function findChromePath(): string | undefined {
 }
 
 /**
+ * Launch flag that keeps Edge from signing a profile into the Windows account.
+ *
+ * Edge signs every new `--user-data-dir` into the OS user's Microsoft account
+ * on its own, so each provider profile showed that same account however many
+ * profiles were made, and looked like one browser. The chat sites' logins
+ * were separate all along; this only stops the browser-level sign-in (and the
+ * sign-in Edge offers after a login on a Microsoft site). Chrome and the other
+ * builds ignore feature names they do not know.
+ */
+export const NO_BROWSER_SIGNIN_ARG =
+	"--disable-features=msImplicitSignin,msSeamlessWebToBrowserSignIn,msEnableWebToBrowserSignIn";
+
+/**
  * Message for the case where nothing is installed. Takes the provider's own
  * config path and env var so the user is told exactly which knob to set.
  */

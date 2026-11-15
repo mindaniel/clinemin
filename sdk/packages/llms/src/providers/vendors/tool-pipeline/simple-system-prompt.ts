@@ -1,5 +1,9 @@
 import type { LanguageModelV2Prompt } from "@ai-sdk/provider";
-import { SIMPLE_WEB_SYSTEM_PROMPT, withWebPromptFolder } from "@cline/shared";
+import {
+	SIMPLE_WEB_POWERSHELL_EDIT_PROMPT,
+	SIMPLE_WEB_SYSTEM_PROMPT,
+	withWebPromptFolder,
+} from "@cline/shared";
 
 /**
  * The human-in-the-loop prompt for the smart web providers.
@@ -9,7 +13,7 @@ import { SIMPLE_WEB_SYSTEM_PROMPT, withWebPromptFolder } from "@cline/shared";
  * sits below this one. It is re-exported here so every provider's existing
  * import keeps working and there is still exactly one copy of the grammar.
  */
-export { SIMPLE_WEB_SYSTEM_PROMPT };
+export { SIMPLE_WEB_POWERSHELL_EDIT_PROMPT, SIMPLE_WEB_SYSTEM_PROMPT };
 
 /**
  * Is this the stock coding-agent prompt every plain session gets?

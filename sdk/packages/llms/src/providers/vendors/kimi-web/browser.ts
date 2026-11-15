@@ -14,6 +14,7 @@ import { claimBrowserPort } from "../tool-pipeline/browser-claims";
 import {
 	browserNotFoundMessage,
 	findChromePath,
+	NO_BROWSER_SIGNIN_ARG,
 } from "../tool-pipeline/browser-path";
 import { registerLaunchedBrowser } from "../tool-pipeline/browser-processes";
 import {
@@ -98,6 +99,7 @@ export async function connectBrowser(
 		`--user-data-dir=${profileDir}`,
 		"--no-first-run",
 		"--no-default-browser-check",
+		NO_BROWSER_SIGNIN_ARG,
 		"--remote-allow-origins=*",
 		Kimi_WEB_URL,
 	];

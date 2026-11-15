@@ -1,6 +1,9 @@
 import { describe, expect, it } from "vitest";
 import { getWebProviderPrompts } from "./prompt-registry";
-import { SIMPLE_WEB_SYSTEM_PROMPT } from "./simple-system-prompt";
+import {
+	SIMPLE_WEB_POWERSHELL_EDIT_PROMPT,
+	SIMPLE_WEB_SYSTEM_PROMPT,
+} from "./simple-system-prompt";
 
 /**
  * Every web provider, i.e. every provider on the
@@ -20,6 +23,13 @@ const WEB_PROVIDERS = [
 	"qwen-web",
 ];
 
+/** Gemini edits with PowerShell; the rest with patch blocks. See gemini-web/prompts.ts. */
+function expectedPrompt(providerId: string): string {
+	return providerId === "gemini-web"
+		? SIMPLE_WEB_POWERSHELL_EDIT_PROMPT
+		: SIMPLE_WEB_SYSTEM_PROMPT;
+}
+
 describe("getWebProviderPrompts", () => {
 	it("returns undefined for a provider with no overrides", () => {
 		// Undefined rather than {} so a caller spreading the result adds nothing
@@ -34,7 +44,7 @@ describe("getWebProviderPrompts", () => {
 		// sent, so it never fired.
 		for (const providerId of WEB_PROVIDERS) {
 			expect(getWebProviderPrompts(providerId)?.default).toBe(
-				SIMPLE_WEB_SYSTEM_PROMPT,
+				expectedPrompt(providerId),
 			);
 		}
 	});
@@ -44,7 +54,7 @@ describe("getWebProviderPrompts", () => {
 		// `<tool>{"name": ...}</tool>` contract only costs the turn.
 		for (const providerId of WEB_PROVIDERS) {
 			expect(getWebProviderPrompts(providerId)?.worker).toBe(
-				SIMPLE_WEB_SYSTEM_PROMPT,
+				expectedPrompt(providerId),
 			);
 		}
 	});

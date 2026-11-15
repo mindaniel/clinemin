@@ -1,5 +1,10 @@
 import { renderWebProviderToolDocs, TOOL_CALL_PROTOCOL_RULES } from "./cline";
-import { SIMPLE_WEB_SYSTEM_PROMPT, withWebPromptFolder } from "./simple-web";
+import {
+	POWERSHELL_EDIT_MARKER,
+	SIMPLE_WEB_POWERSHELL_EDIT_PROMPT,
+	SIMPLE_WEB_SYSTEM_PROMPT,
+	withWebPromptFolder,
+} from "./simple-web";
 
 /**
  * `/guide-ai <message>` — re-send the working agreement with this turn.
@@ -105,7 +110,10 @@ export function detectGuideAiStyle(
 	if (prompt.includes("<tool>")) {
 		return "tools";
 	}
-	if (prompt.includes("*** Begin Patch")) {
+	if (
+		prompt.includes("*** Begin Patch") ||
+		prompt.includes(POWERSHELL_EDIT_MARKER)
+	) {
 		return "patch";
 	}
 	return "tools";
@@ -122,12 +130,18 @@ export function detectGuideAiStyle(
 export function buildGuideAiReminder(options: {
 	style: GuideAiStyle;
 	tools?: string[];
+	/** The session's system prompt; picks the PowerShell-edit variant. */
+	systemPrompt?: string;
 }): string {
 	if (options.style === "patch") {
 		return [
 			"Reminder — the working agreement for this conversation, unchanged since it started. Follow it exactly for the request below.",
 			"",
-			withWebPromptFolder(SIMPLE_WEB_SYSTEM_PROMPT),
+			withWebPromptFolder(
+				options.systemPrompt?.includes(POWERSHELL_EDIT_MARKER)
+					? SIMPLE_WEB_POWERSHELL_EDIT_PROMPT
+					: SIMPLE_WEB_SYSTEM_PROMPT,
+			),
 		].join("\n");
 	}
 	return [
@@ -167,6 +181,7 @@ export function expandGuideAiPrompt(options: {
 	const reminder = buildGuideAiReminder({
 		style: parsed.style ?? detectGuideAiStyle(options.systemPrompt),
 		tools: options.tools,
+		systemPrompt: options.systemPrompt,
 	});
 	if (!parsed.message) {
 		return reminder;

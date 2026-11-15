@@ -78,6 +78,19 @@ export function readWebSessionStatus(
 			};
 		}
 	}
+	const gemini = record["gemini-web"] as
+		| { limitReached?: unknown; limitResetsAt?: unknown }
+		| undefined;
+	if (typeof gemini?.limitReached === "boolean") {
+		return gemini.limitReached
+			? {
+					limitReached: true,
+					...(typeof gemini.limitResetsAt === "string"
+						? { resetsAt: gemini.limitResetsAt }
+						: {}),
+				}
+			: {};
+	}
 	return undefined;
 }
 

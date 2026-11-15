@@ -281,6 +281,11 @@ export interface WebSessionStatus {
 	messagesRemaining?: number;
 	messagesTotal?: number;
 	resetsAt?: string;
+	/**
+	 * Gemini Web: its usage limit is spent. Gemini has no usage readout, only
+	 * the notice it answers with, so this and `resetsAt` are all it reports.
+	 */
+	limitReached?: boolean;
 }
 
 export const HOME_VIEW_MAX_WIDTH = 68;

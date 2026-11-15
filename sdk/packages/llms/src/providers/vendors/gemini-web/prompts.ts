@@ -1,5 +1,5 @@
 import type { WebProviderPrompts } from "@cline/shared";
-import { SIMPLE_WEB_SYSTEM_PROMPT } from "../tool-pipeline/simple-system-prompt";
+import { SIMPLE_WEB_POWERSHELL_EDIT_PROMPT } from "../tool-pipeline/simple-system-prompt";
 
 /**
  * Gemini Web's three prompts.
@@ -32,8 +32,11 @@ import { SIMPLE_WEB_SYSTEM_PROMPT } from "../tool-pipeline/simple-system-prompt"
  * cannot diagnose.
  */
 export const geminiWebPrompts: WebProviderPrompts = {
-	// The human-in-the-loop prompt: PowerShell to read with, a patch block to
-	// edit with. Gemini is a strong reasoner behind a scraped chat box, not a
+	// The human-in-the-loop prompt: PowerShell to read with and to edit with.
+	// Gemini kept missing the byte-exact context a patch block needs and wrote
+	// PowerShell edits anyway, so it gets the fixed PowerShell recipe instead
+	// (see POWERSHELL_EDIT_RULES in @cline/shared). A patch it sends anyway is
+	// still applied. Gemini is a strong reasoner behind a scraped chat box, not a
 	// function-calling API, and handing it the JSON tool contract makes it
 	// worse — it spends the turn formatting JSON instead of thinking.
 	//
@@ -46,14 +49,12 @@ export const geminiWebPrompts: WebProviderPrompts = {
 	// Backup: `default: undefined` restores the shared coding-agent prompt built
 	// by `buildClineSystemPrompt` — the full tool-calling contract with
 	// `{{AVAILABLE_TOOLS}}` substituted in.
-	default: SIMPLE_WEB_SYSTEM_PROMPT,
+	default: SIMPLE_WEB_POWERSHELL_EDIT_PROMPT,
 
-	// Gemini workers now use the shorter Web prompt (SIMPLE_WEB_SYSTEM_PROMPT)
-	// instead of the full "# ROLE & OBJECTIVE" tool-calling contract.
-	// The full JSON contract causes Gemini to spend turns formatting JSON
-	// rather than doing the work. The shorter prompt asks for PowerShell to
-	// read with and a patch block to edit with, which works much better.
-	worker: SIMPLE_WEB_SYSTEM_PROMPT,
+	// Gemini workers get the same shorter prompt instead of the full
+	// "# ROLE & OBJECTIVE" tool-calling contract, which makes Gemini spend
+	// turns formatting JSON rather than doing the work.
+	worker: SIMPLE_WEB_POWERSHELL_EDIT_PROMPT,
 
 	// Unset: a manager keeps the shared manager prompt from
 	// `@cline/shared/prompt/manager`. A value here replaces it verbatim, with

@@ -211,6 +211,33 @@ describe("formatStatusBarUsageText", () => {
 		).toBe("(37.5/100%)");
 	});
 
+	it("keeps Gemini's context estimate and adds its limit once spent", () => {
+		const usage = {
+			totalTokens: 60_000,
+			totalCost: 0,
+			providerId: "gemini-web",
+			maxInputTokens: 1_000_000,
+		};
+		expect(formatStatusBarUsageText(usage)).toBe("(60k/1M)");
+		expect(
+			formatStatusBarUsageText({
+				...usage,
+				webSessionStatus: { limitReached: true },
+			}),
+		).toBe("(60k/1M · limit reached · reset time unknown)");
+		const now = new Date("2026-11-15T13:00:00Z");
+		const resetsAt = "2026-11-15T15:24:00Z";
+		expect(
+			formatStatusBarUsageText({
+				...usage,
+				webSessionStatus: { limitReached: true, resetsAt },
+				now,
+			}),
+		).toBe(
+			`(60k/1M · limit reached · resets ${formatResetTime(resetsAt, now)})`,
+		);
+	});
+
 	it("adds the date to a reset more than a day away", () => {
 		const text = formatResetTime(
 			"2026-09-24T22:00:00Z",
@@ -262,6 +289,20 @@ describe("readWebSessionStatus", () => {
 				},
 			}),
 		).toEqual({ percent: 37.5, resetsAt: "2026-10-01T00:00:00Z" });
+	});
+
+	it("reads Gemini's limit, and clears it when Gemini says it lifted", () => {
+		expect(
+			readWebSessionStatus({
+				"gemini-web": {
+					limitReached: true,
+					limitResetsAt: "2026-11-15T15:24:00Z",
+				},
+			}),
+		).toEqual({ limitReached: true, resetsAt: "2026-11-15T15:24:00Z" });
+		expect(
+			readWebSessionStatus({ "gemini-web": { limitReached: false } }),
+		).toEqual({});
 	});
 
 	it("still reads Claude Web's session percentage", () => {

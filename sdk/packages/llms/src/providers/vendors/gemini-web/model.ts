@@ -34,6 +34,7 @@ import { resolveChatKey } from "../tool-pipeline/chat-target";
 import { confirmChatLocation } from "../tool-pipeline/confirm-chat-location";
 import { logConversationTurn } from "../tool-pipeline/conversation-logger";
 import { addToChatContext } from "../tool-pipeline/estimate-usage";
+import { consumePendingInjectedReply } from "../tool-pipeline/injected-reply";
 import { parseInvokeStyleToolCalls } from "../tool-pipeline/invoke-parser";
 import { parseManagerBlocks } from "../tool-pipeline/manager-block";
 import { unappliedPatchNotice } from "../tool-pipeline/patch-block";
@@ -54,6 +55,7 @@ import {
 	resolveGeminiWebV2Config,
 	sleep,
 } from "./config";
+import { geminiLimitProviderMetadata, trackGeminiLimit } from "./limit";
 import { navigateGeminiChat, readPageUrl } from "./navigation";
 
 // ── Main provider ─────────────────────────────────────────────────────────────
@@ -467,6 +469,19 @@ export function createGeminiWebModel(
 		options: LanguageModelV2CallOptions,
 	): Promise<GeminiCompletionResult> {
 		const config = resolveGeminiWebV2Config();
+
+		// `/paste`: the user copied a reply out of the browser. Run its tools
+		// instead of sending the carrier prompt to the chat as a new message.
+		const injected = consumePendingInjectedReply("gemini-web");
+		if (injected) {
+			debugLog(`Using pasted reply (${injected.length} chars)`);
+			return parseCapturedReply(injected, options, {
+				inputTokens: 0,
+				outputTokens: 0,
+				totalTokens: 0,
+			});
+		}
+
 		const chatKey = resolveChatKey("gemini-web", () =>
 			chatKeyFromPrompt(options.prompt),
 		);
@@ -677,6 +692,7 @@ export function createGeminiWebModel(
 					content,
 					finishReason: finishReasonFor(text, toolCalls),
 					usage,
+					...geminiLimitProviderMetadata(trackGeminiLimit(text)),
 					warnings: [],
 				};
 			} catch (error) {
@@ -723,6 +739,7 @@ export function createGeminiWebModel(
 				type: "finish",
 				finishReason: finishReasonFor(text, toolCalls),
 				usage,
+				...geminiLimitProviderMetadata(trackGeminiLimit(text)),
 			});
 
 			const stream = new ReadableStream<LanguageModelV2StreamPart>({

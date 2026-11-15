@@ -322,6 +322,8 @@ export {
 	shortProviderName,
 } from "./prompt/manager";
 export {
+	POWERSHELL_EDIT_MARKER,
+	SIMPLE_WEB_POWERSHELL_EDIT_PROMPT,
 	SIMPLE_WEB_SYSTEM_PROMPT,
 	withWebPromptFolder,
 } from "./prompt/simple-web";

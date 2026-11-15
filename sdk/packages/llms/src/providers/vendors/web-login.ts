@@ -33,6 +33,7 @@ import { QWEN_WEB_URL, resolveQwenWebV2Config } from "./qwen-web/config";
 import {
 	browserNotFoundMessage,
 	findChromePath,
+	NO_BROWSER_SIGNIN_ARG,
 } from "./tool-pipeline/browser-path";
 import { getActiveBrowserProfile } from "./tool-pipeline/browser-profiles";
 import {
@@ -174,6 +175,7 @@ export async function openWebProviderLogin(
 			`--user-data-dir=${profileDir}`,
 			"--no-first-run",
 			"--no-default-browser-check",
+			NO_BROWSER_SIGNIN_ARG,
 			"--remote-allow-origins=*",
 			target.url,
 		],
