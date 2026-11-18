@@ -7,6 +7,12 @@ import {
 } from "../components/autocomplete-dropdown";
 import { InputBar, type TextareaHandle } from "../components/input-bar";
 import {
+	fitTreeSize,
+	LiveTree,
+	liveTreeAvailable,
+	useLiveTree,
+} from "../components/live-tree";
+import {
 	resolveModelDisplayName,
 	resolveModelMaxInputTokens,
 	StatusBar,
@@ -78,9 +84,15 @@ export function HomeView(props: {
 	const maxInputTokens = resolveModelMaxInputTokens(config);
 	const hasAutocomplete =
 		props.autocomplete?.mode && props.autocomplete.options.length > 0;
-	const contentWidth = Math.min(width, HOME_VIEW_MAX_WIDTH);
+	// Wide terminal: chat on the left, live Christmas tree on the right.
+	const tree = fitTreeSize(width - HOME_VIEW_MAX_WIDTH - 8, height - 2);
+	const treeFits = tree.cols >= 30 && tree.rows >= 18 && liveTreeAvailable();
+	const liveTree = useLiveTree(tree.cols, tree.rows, treeFits);
+	const showTree = treeFits && !liveTree.failed;
+	const leftWidth = showTree ? width - tree.cols - 4 : width;
+	const contentWidth = Math.min(leftWidth, HOME_VIEW_MAX_WIDTH);
 	const hasTypedInput = inputValue.trim().length > 0;
-	const inputStartX = Math.floor((width - contentWidth) / 2) + 2;
+	const inputStartX = Math.floor((leftWidth - contentWidth) / 2) + 2;
 	const clamp = (value: number, min: number, max: number) =>
 		Math.max(min, Math.min(max, value));
 	const trackedCursorX = hasTypedInput
@@ -92,77 +104,96 @@ export function HomeView(props: {
 
 	return (
 		<box
-			flexDirection="column"
+			flexDirection="row"
 			width="100%"
 			height="100%"
-			alignItems="center"
-			justifyContent="center"
 			onMouseMove={mouse.onMouseMove}
 		>
-			<TrackedRobot cursorX={trackedCursorX} cursorY={trackedCursorY} />
-			<box marginTop={1} marginBottom={1} flexShrink={0}>
-				<text fg={defaultFg}>
-					<strong>What can I do for you?</strong>
-				</text>
-			</box>
-			<box marginBottom={1} flexShrink={0}>
-				<text fg="gray">
-					<em>
-						Use / for slash commands, @ for file mentions, Ctrl+P for menu
-					</em>
-				</text>
-			</box>
+			<box
+				flexDirection="column"
+				width={leftWidth}
+				height="100%"
+				alignItems="center"
+				justifyContent="center"
+			>
+				{showTree ? null : (
+					<TrackedRobot cursorX={trackedCursorX} cursorY={trackedCursorY} />
+				)}
+				<box marginTop={1} marginBottom={1} flexShrink={0}>
+					<text fg={defaultFg}>
+						<strong>What can I do for you?</strong>
+					</text>
+				</box>
+				<box marginBottom={1} flexShrink={0}>
+					<text fg="gray">
+						<em>
+							Use / for slash commands, @ for file mentions, Ctrl+P for menu
+						</em>
+					</text>
+				</box>
 
-			<box flexDirection="column" width={contentWidth} flexShrink={0}>
-				<InputBar
-					accent={accent}
-					ruleColor={inputRuleColor}
-					inputForeground={inputForeground}
-					inputPlaceholder={inputPlaceholder}
-					placeholder={placeholder}
-					initialValue={inputValue}
-					inputKey={inputKey}
-					onSubmit={onSubmit}
-					onContentChange={onContentChange}
-					onVisualCursorChange={setInputCursor}
-					onImagePaste={onImagePaste}
-					onLargeTextPaste={onLargeTextPaste}
-					onFocusRequest={props.onInputFocusRequest}
-					textareaRef={props.textareaRef}
-				/>
+				<box flexDirection="column" width={contentWidth} flexShrink={0}>
+					<InputBar
+						accent={accent}
+						ruleColor={inputRuleColor}
+						inputForeground={inputForeground}
+						inputPlaceholder={inputPlaceholder}
+						placeholder={placeholder}
+						initialValue={inputValue}
+						inputKey={inputKey}
+						onSubmit={onSubmit}
+						onContentChange={onContentChange}
+						onVisualCursorChange={setInputCursor}
+						onImagePaste={onImagePaste}
+						onLargeTextPaste={onLargeTextPaste}
+						onFocusRequest={props.onInputFocusRequest}
+						textareaRef={props.textareaRef}
+					/>
 
-				<box flexDirection="column" height={DROPDOWN_MAX_HEIGHT + 1}>
-					{hasAutocomplete && props.autocomplete ? (
-						<AutocompleteDropdown
-							{...props.autocomplete}
-							accent={accent}
-							containerWidth={Math.min(width, HOME_VIEW_MAX_WIDTH)}
-						/>
-					) : (
-						<box marginTop={1}>
-							<StatusBar
-								providerId={config.providerId}
-								modelId={modelDisplayName}
-								totalTokens={session.lastTotalTokens}
-								totalCost={session.lastTotalCost}
-								maxInputTokens={maxInputTokens}
-								webSessionStatus={session.webSessionStatus}
-								uiMode={session.uiMode}
-								autoApproveAll={session.autoApproveAll}
-								workspaceName={
-									config.workspaceRoot
-										? (config.workspaceRoot.split("/").pop() ?? "")
-										: ""
-								}
-								gitBranch={repoStatus.branch}
-								gitDiffStats={repoStatus.diffStats}
-								onToggleMode={props.onToggleMode}
-								variant="home"
+					<box flexDirection="column" height={DROPDOWN_MAX_HEIGHT + 1}>
+						{hasAutocomplete && props.autocomplete ? (
+							<AutocompleteDropdown
+								{...props.autocomplete}
+								accent={accent}
+								containerWidth={contentWidth}
 							/>
-						</box>
-					)}
+						) : (
+							<box marginTop={1}>
+								<StatusBar
+									providerId={config.providerId}
+									modelId={modelDisplayName}
+									totalTokens={session.lastTotalTokens}
+									totalCost={session.lastTotalCost}
+									maxInputTokens={maxInputTokens}
+									webSessionStatus={session.webSessionStatus}
+									uiMode={session.uiMode}
+									autoApproveAll={session.autoApproveAll}
+									workspaceName={
+										config.workspaceRoot
+											? (config.workspaceRoot.split("/").pop() ?? "")
+											: ""
+									}
+									gitBranch={repoStatus.branch}
+									gitDiffStats={repoStatus.diffStats}
+									onToggleMode={props.onToggleMode}
+									variant="home"
+								/>
+							</box>
+						)}
+					</box>
 				</box>
 			</box>
+			{showTree ? (
+				<box
+					width={tree.cols + 4}
+					height="100%"
+					alignItems="center"
+					justifyContent="center"
+					flexShrink={0}
+				>
+					<LiveTree lines={liveTree.lines} cols={tree.cols} />
+				</box>
+			) : null}
 		</box>
 	);
 }
