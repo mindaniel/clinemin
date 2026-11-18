@@ -33,6 +33,7 @@ function makeActions(
 		configureTelegram: vi.fn(async () => true),
 		setupWeb: vi.fn(async () => true),
 		setKeepAwake: vi.fn(async () => true),
+		setTemporaryChat: vi.fn(() => true),
 		restartForUpdate: vi.fn(async () => true),
 		openLogin: vi.fn(async () => true),
 		openWatch: vi.fn(async () => true),

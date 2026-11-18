@@ -70,6 +70,11 @@ export interface LocalSlashCommandActionInput {
 	 * "on", "off", or empty to toggle.
 	 */
 	setKeepAwake: (arg: string) => Promise<boolean>;
+	/**
+	 * `/temporary`: open new web chats as the site's temporary/incognito kind.
+	 * `arg` is "on", "off", or empty to toggle.
+	 */
+	setTemporaryChat: (arg: string) => boolean;
 	/** `/update`: restart into the staged update, back on this session. */
 	restartForUpdate: () => Promise<boolean>;
 	/** `/login`: open the web provider's Chrome, visible, to sign in. */
@@ -203,6 +208,9 @@ export function runLocalSlashCommandAction(
 	}
 	if (normalized === "awake") {
 		return input.setKeepAwake(commandArgument(input.invocation?.text));
+	}
+	if (normalized === "temporary") {
+		return input.setTemporaryChat(commandArgument(input.invocation?.text));
 	}
 	if (normalized === "update") {
 		return input.restartForUpdate();

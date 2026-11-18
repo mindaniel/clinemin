@@ -229,6 +229,12 @@ export {
 	readInfiniteCommandTimeout,
 	writeInfiniteCommandTimeout,
 } from "./providers/vendors/tool-pipeline/command-timeout-mode";
+// `/temporary`: new web chats open as the site's temporary/incognito kind.
+export {
+	readTemporaryChat,
+	TEMPORARY_CHAT_SUPPORT,
+	writeTemporaryChat,
+} from "./providers/vendors/tool-pipeline/temporary-chat";
 // Post-tool continuation note (the agent runtime appends it; the CLI `/note`
 // command customises it per project).
 export {

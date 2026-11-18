@@ -2,6 +2,7 @@ import type { BasicLogger } from "@cline/shared";
 import { isSameChatLocation } from "../deepseek-web-v2";
 import type { CdpClient } from "./browser";
 import type { QwenWebV2RuntimeConfig } from "./config";
+import { newChatUrl } from "../tool-pipeline/temporary-chat";
 import { QWEN_WEB_URL, sleep } from "./config";
 
 export async function waitForComposerReady(
@@ -106,7 +107,7 @@ export async function navigateQwenChat(
 	forceReload = false,
 ): Promise<void> {
 	const destination = target.fresh
-		? QWEN_WEB_URL
+		? newChatUrl("qwen-web", QWEN_WEB_URL)
 		: target.sessionId
 			? `https://chat.qwen.ai/c/${target.sessionId}`
 			: QWEN_WEB_URL;

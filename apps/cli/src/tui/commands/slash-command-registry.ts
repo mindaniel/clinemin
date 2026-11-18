@@ -34,6 +34,7 @@ export type LocalSlashCommandName =
 	| "telegram"
 	| "setupweb"
 	| "awake"
+	| "temporary"
 	| "update"
 	| "login"
 	| "watch"
@@ -170,6 +171,11 @@ const TUI_LOCAL_COMMANDS: Array<{
 			"Keep the computer awake while Cline runs (/awake on|off, bare /awake toggles)",
 	},
 	{
+		name: "temporary",
+		description:
+			"Open new web chats as temporary/incognito, out of the account's history (/temporary on|off, bare /temporary toggles)",
+	},
+	{
 		name: "update",
 		description: "Restart into the downloaded update and reopen this chat",
 	},
@@ -244,6 +250,7 @@ const SYSTEM_COMMAND_ORDER = [
 	"telegram",
 	"setupweb",
 	"awake",
+	"temporary",
 	"update",
 	GUIDE_AI_COMMAND,
 	"help",

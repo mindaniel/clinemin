@@ -2,6 +2,7 @@ import type { BasicLogger } from "@cline/shared";
 import { isSameChatLocation } from "../deepseek-web-v2";
 import type { CdpClient } from "./browser";
 import type { ClaudeWebV2RuntimeConfig } from "./config";
+import { newChatUrl } from "../tool-pipeline/temporary-chat";
 import { CLAUDE_WEB_URL, sleep } from "./config";
 
 /** Read the current page URL via CDP. */
@@ -37,7 +38,7 @@ export async function navigateClaudeChat(
 	forceReload = false,
 ): Promise<void> {
 	const destination = target.fresh
-		? CLAUDE_WEB_URL
+		? newChatUrl("claude-web", CLAUDE_WEB_URL)
 		: target.sessionId
 			? `https://claude.ai/chat/${target.sessionId}`
 			: CLAUDE_WEB_URL;

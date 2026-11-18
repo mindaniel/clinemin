@@ -8,6 +8,7 @@ import {
 	setActiveChatGPTCdpSessionId,
 	setActiveChatGPTTargetId,
 } from "./browser";
+import { newChatUrl } from "../tool-pipeline/temporary-chat";
 import { CHATGPT_WEB_URL } from "./config";
 import type { TargetInfo } from "./types";
 
@@ -24,10 +25,11 @@ export async function navigateChatGPTChat(
 
 	if (fresh) {
 		// Navigate to the main ChatGPT URL, which starts a new chat
+		// (the temporary kind when `/temporary` is on)
 		await cdp.send(
 			"Runtime.evaluate",
 			{
-				expression: `window.location.href = ${JSON.stringify(CHATGPT_WEB_URL)};`,
+				expression: `window.location.href = ${JSON.stringify(newChatUrl("chatgpt-web", CHATGPT_WEB_URL))};`,
 				returnByValue: false,
 			},
 			cdpSessionId,

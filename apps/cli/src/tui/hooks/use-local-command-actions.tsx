@@ -1338,6 +1338,35 @@ export function useLocalCommandActions(input: {
 	);
 
 	/**
+	 * `/temporary` - open new web chats as temporary/incognito (ChatGPT, Claude,
+	 * Gemini), so they stay out of the account's history. Applies from the next
+	 * new chat; sites without such a mode keep opening normal chats.
+	 */
+	const setTemporaryChat = useCallback(
+		(arg: string): boolean => {
+			const lowered = arg.toLowerCase();
+			const turnOn =
+				lowered === "on"
+					? true
+					: lowered === "off"
+						? false
+						: !Llms.readTemporaryChat();
+			Llms.writeTemporaryChat(turnOn);
+			const support = Llms.TEMPORARY_CHAT_SUPPORT;
+			const yes = Object.keys(support).filter((p) => support[p] !== "none");
+			const no = Object.keys(support).filter((p) => support[p] === "none");
+			session.appendEntry({
+				kind: "status",
+				text: turnOn
+					? `/temporary: on - new chats on ${yes.join(", ")} open as temporary (not in history; cannot be reopened after the browser restarts). No temporary mode on ${no.join(", ")}: normal chats there. Current chat unchanged; /clear to start one.`
+					: "/temporary: off - new web chats are normal again.",
+			});
+			return true;
+		},
+		[session],
+	);
+
+	/**
 	 * `/update`: exit, stop the hub, and start a new cline on this session so
 	 * the staged update is swapped in on the way (`source-update-restart.ts`).
 	 */
@@ -1522,6 +1551,7 @@ export function useLocalCommandActions(input: {
 				configureTelegram,
 				setupWeb,
 				setKeepAwake,
+				setTemporaryChat,
 				restartForUpdate,
 				openLogin,
 				openWatch,
@@ -1552,6 +1582,7 @@ export function useLocalCommandActions(input: {
 			configureTelegram,
 			setupWeb,
 			setKeepAwake,
+			setTemporaryChat,
 			restartForUpdate,
 			openLogin,
 			openWatch,

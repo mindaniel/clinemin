@@ -2,6 +2,7 @@ import type { BasicLogger } from "@cline/shared";
 import { isSameChatLocation } from "../deepseek-web-v2";
 import type { CdpClient } from "./browser";
 import type { GrokWebV2RuntimeConfig } from "./config";
+import { pressTemporaryChatButton } from "../tool-pipeline/temporary-chat";
 import { Grok_WEB_URL, sleep } from "./config";
 
 /** Read the current page URL via CDP. */
@@ -72,6 +73,7 @@ export async function navigateGrokChat(
 				{ expression: clickNewChatScript, returnByValue: true },
 				cdpSessionId,
 			);
+			await pressTemporaryChatButton("grok-web", cdp, cdpSessionId, logger);
 		}
 		await sleep(300);
 		return;
@@ -98,6 +100,9 @@ export async function navigateGrokChat(
 	// Give the SPA time to route to the target chat and hydrate before
 	// `waitForComposerReady` confirms the composer is usable.
 	await sleep(1500);
+	if (target.fresh) {
+		await pressTemporaryChatButton("grok-web", cdp, cdpSessionId, logger);
+	}
 }
 
 export async function waitForComposerReady(

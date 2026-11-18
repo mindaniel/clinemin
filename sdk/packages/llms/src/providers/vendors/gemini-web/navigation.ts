@@ -5,6 +5,7 @@
 import type { BasicLogger } from "@cline/shared";
 import { isSameChatLocation } from "../deepseek-web-v2";
 import type { CdpClient } from "../tool-pipeline/cdp-client";
+import { pressTemporaryChatButton } from "../tool-pipeline/temporary-chat";
 import { GEMINI_WEB_URL, sleep } from "./config";
 
 // ── Chat navigation (mirrors deepseek-web-v2's navigateDeepSeekChat) ───────────
@@ -77,6 +78,7 @@ export async function navigateGeminiChat(
 				{ expression: clickNewChatScript, returnByValue: true },
 				cdpSessionId,
 			);
+			await pressTemporaryChatButton("gemini-web", cdp, cdpSessionId, logger);
 		}
 		await sleep(300);
 		return;
@@ -103,4 +105,6 @@ export async function navigateGeminiChat(
 	// Give the SPA time to route to the target chat and hydrate before
 	// `waitForComposerReady` confirms the composer is usable.
 	await sleep(1500);
+	if (target.fresh) await pressTemporaryChatButton("gemini-web", cdp, cdpSessionId, logger);
 }
+
