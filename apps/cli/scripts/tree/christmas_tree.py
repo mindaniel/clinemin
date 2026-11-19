@@ -1,7 +1,10 @@
 import math
 import time
 import numpy as np
-import pygame
+try:
+    import pygame  # only the desktop window needs it; the terminal tree does not
+except ImportError:
+    pygame = None
 
 # ── Configuration ────────────────────────────────────────────────────────────
 TAU = 2.0 * np.pi

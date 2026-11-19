@@ -168,6 +168,7 @@ import { useCallback } from "react";
 import { runConnectAdapter, runStopConnector } from "../../commands/connect";
 import { getSourceUpdate } from "../../commands/source-auto-update";
 import {
+	closeOtherClineWindows,
 	findUpdateRestartBlocker,
 	requestUpdateRestart,
 } from "../../commands/source-update-restart";
@@ -1370,7 +1371,7 @@ export function useLocalCommandActions(input: {
 	 * `/update`: exit, stop the hub, and start a new cline on this session so
 	 * the staged update is swapped in on the way (`source-update-restart.ts`).
 	 */
-	const restartForUpdate = useCallback(async (): Promise<boolean> => {
+	const restartForUpdate = useCallback(async (arg: string): Promise<boolean> => {
 		const staged = getSourceUpdate();
 		if (!staged) {
 			session.appendEntry({
@@ -1385,6 +1386,15 @@ export function useLocalCommandActions(input: {
 				text: "/update: the agent is still working. Let the turn finish (or press Esc), then run /update again.",
 			});
 			return true;
+		}
+		if (arg.trim().toLowerCase() === "force") {
+			const closed = await closeOtherClineWindows();
+			if (closed.length > 0) {
+				session.appendEntry({
+					kind: "status",
+					text: `/update force: closed the other cline window${closed.length === 1 ? "" : "s"} (pid ${closed.join(", ")}).`,
+				});
+			}
 		}
 		const blocker = await findUpdateRestartBlocker(getSessionId());
 		if (blocker) {

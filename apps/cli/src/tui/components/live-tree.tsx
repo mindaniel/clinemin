@@ -14,9 +14,13 @@ const SCRIPT = join(
 	"tree",
 	"tree_stream.py",
 );
-const PYTHON =
-	process.env.CLINE_TREE_PYTHON ??
-	(process.platform === "win32" ? "python" : "python3");
+// Tried in order until one streams a frame: a machine may have only one of these,
+// or a "python" that is the Windows Store stub.
+const PYTHONS: [string, ...string[]][] = process.env.CLINE_TREE_PYTHON
+	? [[process.env.CLINE_TREE_PYTHON]]
+	: process.platform === "win32"
+		? [["python"], ["py", "-3"], ["python3"]]
+		: [["python3"], ["python"]];
 
 /** Tree is drawn about 0.65 rows per column; keep that shape when fitting a space. */
 export function fitTreeSize(maxCols: number, maxRows: number) {
@@ -59,10 +63,11 @@ function toSegments(frame: StreamFrame): Segment[][] {
 	});
 }
 
-/** Runs the Python renderer while enabled. `failed` turns true if Python is missing or crashes. */
+/** Runs the Python renderer while enabled. `failed` turns true once no Python can run it (missing, or no numpy). */
 export function useLiveTree(cols: number, rows: number, enabled: boolean) {
 	const [lines, setLines] = useState<Segment[][] | null>(null);
-	const [failed, setFailed] = useState(false);
+	const [attempt, setAttempt] = useState(0);
+	const failed = attempt >= PYTHONS.length;
 	const childRef = useRef<ChildProcess | null>(null);
 	const sizeRef = useRef({ cols, rows });
 	sizeRef.current = { cols, rows };
@@ -72,13 +77,14 @@ export function useLiveTree(cols: number, rows: number, enabled: boolean) {
 		const { cols: c, rows: r } = sizeRef.current;
 		let child: ChildProcess;
 		try {
-			child = spawn(PYTHON, ["-u", SCRIPT, String(c), String(r)], {
+			const [python, ...pre] = PYTHONS[attempt] as [string, ...string[]];
+			child = spawn(python, [...pre, "-u", SCRIPT, String(c), String(r)], {
 				stdio: ["pipe", "pipe", "ignore"],
 				windowsHide: true,
 				env: { ...process.env, PYTHONIOENCODING: "utf-8" },
 			});
 		} catch {
-			setFailed(true);
+			setAttempt((n) => n + 1);
 			return;
 		}
 		childRef.current = child;
@@ -100,20 +106,26 @@ export function useLiveTree(cols: number, rows: number, enabled: boolean) {
 				// partial or malformed line: wait for the next one
 			}
 		});
-		child.on("error", () => setFailed(true));
-		child.on("exit", () => {
-			if (!gotFrame) setFailed(true);
-		});
+		// Missing interpreter or numpy: try the next one (each attempt fails at most once).
+		let given = false;
+		const next = () => {
+			if (gotFrame || given) return;
+			given = true;
+			setAttempt((n) => n + 1);
+		};
+		child.on("error", next);
+		child.on("exit", next);
 		const killChild = () => child.kill();
 		process.once("exit", killChild);
 		return () => {
+			given = true; // stopped on purpose, not a failed interpreter
 			process.off("exit", killChild);
 			child.stdin?.end();
 			child.kill();
 			childRef.current = null;
 			setLines(null);
 		};
-	}, [enabled, failed]);
+	}, [enabled, failed, attempt]);
 
 	useEffect(() => {
 		childRef.current?.stdin?.write(`${cols} ${rows}\n`);
