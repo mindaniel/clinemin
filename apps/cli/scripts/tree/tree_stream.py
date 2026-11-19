@@ -14,7 +14,41 @@ import sys
 import threading
 import time
 
-from terminal_tree import make_scene, render_braille
+import os
+import subprocess
+
+
+def ensure_numpy():
+    """No numpy here: install it once into a private venv (~/.cline/tree-venv)
+    and re-run this script with that Python. Never touches the system Python.
+    A failed install is not retried for a day."""
+    try:
+        import numpy  # noqa: F401
+        return
+    except ImportError:
+        pass
+    home = os.path.join(os.path.expanduser("~"), ".cline")
+    venv = os.path.join(home, "tree-venv")
+    vpy = os.path.join(venv, "Scripts", "python.exe") if os.name == "nt" else os.path.join(venv, "bin", "python")
+    failed = os.path.join(home, "tree-venv-failed")
+    if os.path.abspath(sys.executable) == os.path.abspath(vpy):
+        sys.exit(1)  # the venv itself has no numpy: give up (robot logo)
+    if not os.path.exists(vpy) or subprocess.run([vpy, "-c", "import numpy"], capture_output=True).returncode:
+        if os.path.exists(failed) and time.time() - os.path.getmtime(failed) < 86400:
+            sys.exit(1)
+        quiet = {"stdout": subprocess.DEVNULL, "stderr": subprocess.DEVNULL, "stdin": subprocess.DEVNULL}
+        try:
+            os.makedirs(home, exist_ok=True)
+            subprocess.run([sys.executable, "-m", "venv", venv], check=True, timeout=300, **quiet)
+            subprocess.run([vpy, "-m", "pip", "install", "-q", "numpy"], check=True, timeout=900, **quiet)
+        except Exception:
+            open(failed, "w").close()
+            sys.exit(1)
+    os.execv(vpy, [vpy, "-u", os.path.abspath(__file__), *sys.argv[1:]])
+
+
+ensure_numpy()
+from terminal_tree import make_scene, render_braille  # noqa: E402
 
 FPS = 12
 
