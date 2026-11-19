@@ -76,7 +76,7 @@ export interface LocalSlashCommandActionInput {
 	 */
 	setTemporaryChat: (arg: string) => boolean;
 	/** `/update`: restart into the staged update, back on this session. */
-	restartForUpdate: (arg: string) => Promise<boolean>;
+	restartForUpdate: () => Promise<boolean>;
 	/** `/login`: open the web provider's Chrome, visible, to sign in. */
 	openLogin: () => Promise<boolean>;
 	/**
@@ -213,7 +213,7 @@ export function runLocalSlashCommandAction(
 		return input.setTemporaryChat(commandArgument(input.invocation?.text));
 	}
 	if (normalized === "update") {
-		return input.restartForUpdate(commandArgument(input.invocation?.text));
+		return input.restartForUpdate();
 	}
 	if (normalized === "login") {
 		return input.openLogin();

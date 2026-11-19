@@ -9,8 +9,8 @@
  *
  * It refuses while other work depends on the hub — another cline window or a
  * running `--zen` session — since stopping the hub would cut those off.
- * `/update force` closes the other windows first (for a leftover cline whose
- * terminal is gone, which otherwise blocks every update).
+ * `/update` closes the other cline windows first (they would keep the hub and
+ * the old code running), so only a running `--zen` session still blocks it.
  */
 
 import { execFile, spawnSync } from "node:child_process";
@@ -120,7 +120,7 @@ async function otherClineWindows(): Promise<number[]> {
 		.map((entry) => entry.pid);
 }
 
-/** `/update force`: close the other cline windows so the restart can go ahead. */
+/** `/update`: close the other cline windows so the restart can go ahead. */
 export async function closeOtherClineWindows(): Promise<number[]> {
 	const pids = await otherClineWindows();
 	for (const pid of pids) {
@@ -147,7 +147,7 @@ export async function findUpdateRestartBlocker(
 	}
 	const others = await otherClineWindows();
 	if (others.length > 0) {
-		return `${others.length} other cline window${others.length === 1 ? " is" : "s are"} open (pid ${others.join(", ")}). Close ${others.length === 1 ? "it" : "them"} first, or run /update force to close ${others.length === 1 ? "it" : "them"} and update.`;
+		return `${others.length} other cline window${others.length === 1 ? " is" : "s are"} open (pid ${others.join(", ")}). They could not be closed; close ${others.length === 1 ? "it" : "them"} by hand.`;
 	}
 	const { listSessions } = await import("../session/session");
 	const now = Date.now();

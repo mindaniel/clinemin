@@ -178,7 +178,7 @@ const TUI_LOCAL_COMMANDS: Array<{
 	{
 		name: "update",
 		description:
-			"Restart into the downloaded update and reopen this chat (/update force closes other cline windows first)",
+			"Close other cline windows, restart into the downloaded update and reopen this chat",
 	},
 	{
 		name: "login",

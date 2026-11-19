@@ -1371,7 +1371,7 @@ export function useLocalCommandActions(input: {
 	 * `/update`: exit, stop the hub, and start a new cline on this session so
 	 * the staged update is swapped in on the way (`source-update-restart.ts`).
 	 */
-	const restartForUpdate = useCallback(async (arg: string): Promise<boolean> => {
+	const restartForUpdate = useCallback(async (): Promise<boolean> => {
 		const staged = getSourceUpdate();
 		if (!staged) {
 			session.appendEntry({
@@ -1387,14 +1387,13 @@ export function useLocalCommandActions(input: {
 			});
 			return true;
 		}
-		if (arg.trim().toLowerCase() === "force") {
-			const closed = await closeOtherClineWindows();
-			if (closed.length > 0) {
-				session.appendEntry({
-					kind: "status",
-					text: `/update force: closed the other cline window${closed.length === 1 ? "" : "s"} (pid ${closed.join(", ")}).`,
-				});
-			}
+		// Other cline windows would keep the hub (and the old code) alive: close them.
+		const closed = await closeOtherClineWindows();
+		if (closed.length > 0) {
+			session.appendEntry({
+				kind: "status",
+				text: `/update: closed the other cline window${closed.length === 1 ? "" : "s"} (pid ${closed.join(", ")}).`,
+			});
 		}
 		const blocker = await findUpdateRestartBlocker(getSessionId());
 		if (blocker) {
