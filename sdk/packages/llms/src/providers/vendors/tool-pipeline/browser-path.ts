@@ -109,6 +109,85 @@ export const NO_BROWSER_SIGNIN_ARG =
 	"--disable-features=msImplicitSignin,msSeamlessWebToBrowserSignIn,msEnableWebToBrowserSignIn";
 
 /**
+ * Sign a profile directory out of the browser-level account Edge put there.
+ *
+ * `NO_BROWSER_SIGNIN_ARG` keeps a new profile signed out, but a profile Edge
+ * signed in before that flag existed keeps the Windows account: every provider
+ * profile still showed the same account, so a site could see one browser
+ * identity behind several logins. This clears that account from the profile's
+ * `Preferences` and `Local State` before launch; with the flag, Edge does not
+ * sign it back in. Site cookies live in other files and are left alone, so the
+ * chat logins survive. Call it only while no browser holds the directory (it
+ * rewrites those files on exit). A no-op for a signed-out or non-Edge profile,
+ * and it never throws: the worst case is the profile stays signed in.
+ */
+export function clearBrowserSignin(userDataDir: string): void {
+	try {
+		const localStatePath = path.join(userDataDir, "Local State");
+		if (!fs.existsSync(localStatePath)) return;
+		const localState = JSON.parse(fs.readFileSync(localStatePath, "utf8"));
+		const infoCache: Record<string, Record<string, unknown>> = localState
+			?.profile?.info_cache ?? {};
+		const signedIn = Object.entries(infoCache).filter(
+			([, info]) =>
+				typeof info?.user_name === "string" && info.user_name !== "",
+		);
+		if (signedIn.length === 0) return;
+
+		for (const [name, info] of signedIn) {
+			for (const key of Object.keys(info)) {
+				if (!key.startsWith("edge_account_")) continue;
+				info[key] = typeof info[key] === "number" ? 0 : "";
+			}
+			Object.assign(info, {
+				user_name: "",
+				gaia_id: "",
+				gaia_name: "",
+				is_consented_primary_account: false,
+				use_gaia_picture: false,
+			});
+			clearProfilePreferences(path.join(userDataDir, name, "Preferences"));
+		}
+		if (localState.signin) {
+			delete localState.signin.active_accounts;
+			delete localState.signin.active_accounts_managed;
+		}
+		fs.writeFileSync(localStatePath, JSON.stringify(localState));
+	} catch {
+		// A locked or unreadable profile is launched as it is.
+	}
+}
+
+function clearProfilePreferences(preferencesPath: string): void {
+	if (!fs.existsSync(preferencesPath)) return;
+	const prefs = JSON.parse(fs.readFileSync(preferencesPath, "utf8"));
+	delete prefs.account_info;
+	const services = prefs.google?.services;
+	if (services) {
+		for (const key of [
+			"consented_to_sync",
+			"account_id",
+			"last_account_id",
+			"last_username",
+			"last_gaia_id",
+			"last_signed_in_username",
+		]) {
+			delete services[key];
+		}
+	}
+	if (prefs.edge) {
+		delete prefs.edge.account_type;
+		delete prefs.edge.profile_matches_os_primary_account;
+		if (prefs.edge.services) delete prefs.edge.services.last_gaia_id;
+	}
+	if (prefs.sync) {
+		delete prefs.sync.gaia_id;
+		delete prefs.sync.has_setup_completed;
+	}
+	fs.writeFileSync(preferencesPath, JSON.stringify(prefs));
+}
+
+/**
  * Message for the case where nothing is installed. Takes the provider's own
  * config path and env var so the user is told exactly which knob to set.
  */

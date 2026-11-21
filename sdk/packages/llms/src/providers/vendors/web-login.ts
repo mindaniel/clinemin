@@ -32,6 +32,7 @@ import { Kimi_WEB_URL, resolveKimiWebV2Config } from "./kimi-web/config";
 import { QWEN_WEB_URL, resolveQwenWebV2Config } from "./qwen-web/config";
 import {
 	browserNotFoundMessage,
+	clearBrowserSignin,
 	findChromePath,
 	NO_BROWSER_SIGNIN_ARG,
 } from "./tool-pipeline/browser-path";
@@ -166,6 +167,7 @@ export async function openWebProviderLogin(
 		config.profileDir ??
 		path.join(os.homedir(), ".cline", providerId, "profile");
 	fs.mkdirSync(profileDir, { recursive: true });
+	clearBrowserSignin(profileDir);
 	// Not registered with browser-processes: the user closes this window when
 	// done, and it must outlive the CLI process that opened it.
 	spawn(

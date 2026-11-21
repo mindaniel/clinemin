@@ -13,6 +13,7 @@ import type { BasicLogger } from "@cline/shared";
 import { claimBrowserPort } from "../tool-pipeline/browser-claims";
 import {
 	browserNotFoundMessage,
+	clearBrowserSignin,
 	findChromePath,
 	NO_BROWSER_SIGNIN_ARG,
 } from "../tool-pipeline/browser-path";
@@ -93,6 +94,7 @@ export async function connectBrowser(
 	}
 	const profileDir = config.profileDir ?? path.join(CONFIG_DIR, "profile");
 	fs.mkdirSync(profileDir, { recursive: true });
+	clearBrowserSignin(profileDir);
 
 	const args = [
 		`--remote-debugging-port=${config.debugPort}`,
