@@ -2,7 +2,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
-import { clearBrowserSignin } from "./browser-path";
+import { clearBrowserSignin, nameBrowserProfile } from "./browser-path";
 
 let dir: string | undefined;
 afterEach(() => {
@@ -86,5 +86,26 @@ describe("clearBrowserSignin", () => {
 		).not.toThrow();
 		fs.writeFileSync(path.join(dir, "Local State"), "{not json");
 		expect(() => clearBrowserSignin(dir as string)).not.toThrow();
+	});
+});
+
+describe("nameBrowserProfile", () => {
+	it("names an existing profile and keeps its other settings", () => {
+		const d = makeProfile("");
+		nameBrowserProfile(d, "work@example.com");
+		const info = read(path.join(d, "Local State")).profile.info_cache.Default;
+		expect(info.name).toBe("work@example.com");
+		expect(info.is_using_default_name).toBe(false);
+		expect(info.gaia_id).toBe("abc");
+		const prefs = read(path.join(d, "Default", "Preferences"));
+		expect(prefs.profile.name).toBe("work@example.com");
+		expect(prefs.homepage).toBe("keep");
+	});
+
+	it("names a profile before its first launch", () => {
+		dir = fs.mkdtempSync(path.join(os.tmpdir(), "signin-"));
+		nameBrowserProfile(dir, "m");
+		const info = read(path.join(dir, "Local State")).profile.info_cache.Default;
+		expect(info).toEqual({ name: "m", is_using_default_name: false });
 	});
 });

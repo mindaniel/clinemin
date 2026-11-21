@@ -8,9 +8,9 @@ import * as path from "node:path";
 import { claimBrowserPort } from "../tool-pipeline/browser-claims";
 import {
 	browserNotFoundMessage,
-	clearBrowserSignin,
 	findChromePath,
 	NO_BROWSER_SIGNIN_ARG,
+	prepareBrowserProfile,
 } from "../tool-pipeline/browser-path";
 import { registerLaunchedBrowser } from "../tool-pipeline/browser-processes";
 import {
@@ -78,7 +78,7 @@ export async function connectBrowser(
 	}
 	const profileDir = config.profileDir ?? path.join(CONFIG_DIR, "profile");
 	fs.mkdirSync(profileDir, { recursive: true });
-	clearBrowserSignin(profileDir);
+	prepareBrowserProfile(profileDir);
 
 	const args = [
 		`--remote-debugging-port=${config.debugPort}`,

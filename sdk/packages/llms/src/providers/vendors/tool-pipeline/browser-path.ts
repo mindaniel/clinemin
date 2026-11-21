@@ -19,6 +19,11 @@
 
 import fs from "node:fs";
 import path from "node:path";
+import {
+	browserProfileDisplayName,
+	getActiveBrowserProfile,
+	listBrowserProfiles,
+} from "./browser-profiles";
 
 /** A browser we found, with the name to use when reporting what we launched. */
 export interface FoundBrowser {
@@ -107,6 +112,58 @@ export function findChromePath(): string | undefined {
  */
 export const NO_BROWSER_SIGNIN_ARG =
 	"--disable-features=msImplicitSignin,msSeamlessWebToBrowserSignIn,msEnableWebToBrowserSignIn";
+
+/**
+ * Get a profile directory ready for launch: signed out of Edge's browser
+ * account (see `clearBrowserSignin`) and named after the active clinemin
+ * profile, so the window title says which login it holds. Signed out, every
+ * Edge profile is "Profile 1", and two providers' windows on different
+ * profiles look the same.
+ */
+export function prepareBrowserProfile(userDataDir: string): void {
+	clearBrowserSignin(userDataDir);
+	try {
+		const active = getActiveBrowserProfile();
+		const entry = listBrowserProfiles().find((p) => p.name === active);
+		nameBrowserProfile(
+			userDataDir,
+			entry ? browserProfileDisplayName(entry) : active,
+		);
+	} catch {
+		// An unreadable profile store leaves the default name.
+	}
+}
+
+/**
+ * Set the browser's own name for a profile directory, which Chromium and Edge
+ * show in the window title. Works before the first launch too: a `Local State`
+ * holding only the name is filled in by the browser. Never throws.
+ */
+export function nameBrowserProfile(userDataDir: string, name: string): void {
+	try {
+		const localStatePath = path.join(userDataDir, "Local State");
+		const localState = fs.existsSync(localStatePath)
+			? JSON.parse(fs.readFileSync(localStatePath, "utf8"))
+			: {};
+		localState.profile ??= {};
+		localState.profile.info_cache ??= {};
+		const info = (localState.profile.info_cache.Default ??= {});
+		if (info.name === name && info.is_using_default_name === false) return;
+		info.name = name;
+		info.is_using_default_name = false;
+		fs.writeFileSync(localStatePath, JSON.stringify(localState));
+
+		const preferencesPath = path.join(userDataDir, "Default", "Preferences");
+		if (fs.existsSync(preferencesPath)) {
+			const prefs = JSON.parse(fs.readFileSync(preferencesPath, "utf8"));
+			prefs.profile ??= {};
+			prefs.profile.name = name;
+			fs.writeFileSync(preferencesPath, JSON.stringify(prefs));
+		}
+	} catch {
+		// A locked or unreadable profile keeps its name.
+	}
+}
 
 /**
  * Sign a profile directory out of the browser-level account Edge put there.
