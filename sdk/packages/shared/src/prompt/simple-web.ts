@@ -89,6 +89,8 @@ export const POWERSHELL_EDIT_MARKER = "[IO.File]::WriteAllText";
  * model sends anyway is still applied.
  */
 const POWERSHELL_EDIT_RULES = [
+	"You have no patch tool, apply_patch or batch-edit tool here, so a patch block is not applied. PowerShell replaces all of them. Every change to a file (editing, creating, overwriting, writing results or data) is a ```powershell block that I run. So never say you cannot write or change files: send the PowerShell that does it.",
+	"",
 	"To edit a file, do not ask me to edit it manually. Send one ```powershell block that replaces exact text, in exactly this shape:",
 	"",
 	"```powershell",
@@ -107,8 +109,20 @@ const POWERSHELL_EDIT_RULES = [
 	"",
 	"Edit rules:",
 	"- $old is copied exactly from the file, with enough lines to be unique. More edits: repeat the $old, $new and Replace lines in the same block.",
-	"- The closing '@ starts its line.",
-	`- New file: ${POWERSHELL_EDIT_MARKER}($p, $text, [Text.UTF8Encoding]::new($false)). Never Set-Content or Out-File for code.`,
+	"- The closing '@ starts its line, in every block.",
+	"",
+	"To create a file or write it whole (new code, results, data such as .jsonl):",
+	"",
+	"```powershell",
+	"$p = 'C:\\full\\path\\to\\out.jsonl'",
+	"$text = @'",
+	'{"id": 1, "label": "a"}',
+	"'@",
+	`${POWERSHELL_EDIT_MARKER}($p, $text + "\`n", [Text.UTF8Encoding]::new($false))`,
+	"```",
+	"",
+	'- Long output: write it in parts of at most 80 lines, one part per reply. The first part uses WriteAllText as above; each later part appends with [IO.File]::AppendAllText($p, $text + "`n", [Text.UTF8Encoding]::new($false)). Do not try to fit a big file into one reply.',
+	"- Never Set-Content, Out-File or > for code or data: they change the encoding.",
 	"",
 ];
 

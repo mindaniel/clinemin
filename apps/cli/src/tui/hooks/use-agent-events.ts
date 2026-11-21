@@ -79,17 +79,35 @@ export function readWebSessionStatus(
 		}
 	}
 	const gemini = record["gemini-web"] as
-		| { limitReached?: unknown; limitResetsAt?: unknown }
+		| {
+				limitReached?: unknown;
+				limitResetsAt?: unknown;
+				sessionPercent?: unknown;
+				sessionResetsAt?: unknown;
+		  }
 		| undefined;
 	if (typeof gemini?.limitReached === "boolean") {
+		// Its usage meter (percent of the fuller pool, and when it refills),
+		// when the page could read it; the limit notice otherwise.
+		const meter =
+			typeof gemini.sessionPercent === "number" &&
+			Number.isFinite(gemini.sessionPercent)
+				? {
+						percent: Math.max(0, Math.min(gemini.sessionPercent, 100)),
+						...(typeof gemini.sessionResetsAt === "string"
+							? { resetsAt: gemini.sessionResetsAt }
+							: {}),
+					}
+				: {};
 		return gemini.limitReached
 			? {
+					...meter,
 					limitReached: true,
 					...(typeof gemini.limitResetsAt === "string"
 						? { resetsAt: gemini.limitResetsAt }
 						: {}),
 				}
-			: {};
+			: meter;
 	}
 	return undefined;
 }

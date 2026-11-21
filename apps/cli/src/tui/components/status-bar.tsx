@@ -187,9 +187,13 @@ export function formatStatusBarUsageText(input: {
 	const maxInputTokens = hasMaxInputTokens ? input.maxInputTokens : undefined;
 	// Gemini Web keeps the context estimate and adds its limit once spent,
 	// since it reports nothing else about usage.
+	// Its usage meter, when the page could read it, goes after the context:
+	// "(21k/1M · 50% used · resets 16:55)".
 	const limitText = status?.limitReached
 		? ` · limit reached${resetSuffix || " · reset time unknown"}`
-		: "";
+		: typeof status?.percent === "number" && Number.isFinite(status.percent)
+			? ` · ${Math.round(Math.max(0, Math.min(status.percent, 100)))}% used${resetSuffix}`
+			: "";
 	const tokens = maxInputTokens
 		? `(${formatTokenCount(input.totalTokens)}/${formatTokenCount(maxInputTokens)}${limitText})`
 		: `(${input.totalTokens.toLocaleString()}${limitText})`;

@@ -1,3 +1,5 @@
+import type { GeminiUsage } from "./usage";
+
 /**
  * Gemini's usage limit, read off the message it shows when the limit is hit.
  *
@@ -114,12 +116,29 @@ export function trackGeminiLimit(
  * the status bar keeps the last status it was given, so without the `false` a
  * limit once shown would never clear.
  */
-export function geminiLimitProviderMetadata(limit: GeminiLimit | undefined) {
+export function geminiLimitProviderMetadata(
+	limit: GeminiLimit | undefined,
+	quota?: GeminiUsage,
+) {
+	// The meter is the better source: it knows the limit is spent (100%) and
+	// when it refills even when the notice gave no readable time.
+	const spent = !!limit || (quota ? quota.binding.percent >= 100 : false);
+	const resetsAt =
+		limit?.resetsAt ?? (spent ? quota?.binding.resetsAt : undefined);
 	return {
 		providerMetadata: {
 			"gemini-web": {
-				limitReached: !!limit,
-				...(limit?.resetsAt ? { limitResetsAt: limit.resetsAt } : {}),
+				limitReached: spent,
+				...(resetsAt ? { limitResetsAt: resetsAt } : {}),
+				...(quota
+					? {
+							sessionPercent: quota.binding.percent,
+							...(quota.binding.resetsAt
+								? { sessionResetsAt: quota.binding.resetsAt }
+								: {}),
+							...(quota.weekly ? { weeklyPercent: quota.weekly.percent } : {}),
+						}
+					: {}),
 			},
 		},
 	};

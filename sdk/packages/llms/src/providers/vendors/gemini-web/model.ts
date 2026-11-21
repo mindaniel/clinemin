@@ -30,6 +30,7 @@ import {
 } from "../deepseek-web";
 import { buildLeanConversation, currentUserLabel } from "../deepseek-web-v2";
 import { withBrowserLock } from "../tool-pipeline/browser-lock";
+import type { CdpClient } from "../tool-pipeline/cdp-client";
 import { resolveChatKey } from "../tool-pipeline/chat-target";
 import { confirmChatLocation } from "../tool-pipeline/confirm-chat-location";
 import { logConversationTurn } from "../tool-pipeline/conversation-logger";
@@ -57,6 +58,11 @@ import {
 } from "./config";
 import { geminiLimitProviderMetadata, trackGeminiLimit } from "./limit";
 import { navigateGeminiChat, readPageUrl } from "./navigation";
+import {
+	type GeminiUsage,
+	parseGeminiUsage,
+	READ_GEMINI_USAGE_SCRIPT,
+} from "./usage";
 
 // ── Main provider ─────────────────────────────────────────────────────────────
 
@@ -71,6 +77,31 @@ export interface GeminiCompletionResult {
 	 * client's server-side history has no idea we rejected anything.
 	 */
 	retryPrompt?: string;
+	/** Gemini's usage meter, read after the turn; absent when the read failed. */
+	quota?: GeminiUsage;
+}
+
+/** Read Gemini's usage meter from the page; undefined on any failure. */
+async function readGeminiUsage(
+	cdp: CdpClient,
+	cdpSessionId: string,
+): Promise<GeminiUsage | undefined> {
+	try {
+		const res = await cdp.send(
+			"Runtime.evaluate",
+			{
+				expression: READ_GEMINI_USAGE_SCRIPT,
+				returnByValue: true,
+				awaitPromise: true,
+			},
+			cdpSessionId,
+			15_000,
+		);
+		const body = res.result?.value;
+		return typeof body === "string" ? parseGeminiUsage(body) : undefined;
+	} catch {
+		return undefined;
+	}
 }
 
 /**
@@ -660,7 +691,13 @@ export function createGeminiWebModel(
 			currentGeminiSession = geminiSession;
 		}
 
-		return parsed;
+		const quota = await readGeminiUsage(cdp, cdpSessionId);
+		debugLog(
+			quota
+				? `usage: ${quota.binding.percent.toFixed(1)}% (resets ${quota.binding.resetsAt ?? "?"})`
+				: "usage meter not readable",
+		);
+		return quota ? { ...parsed, quota } : parsed;
 	}
 
 	const provider: LanguageModelV2 = {
@@ -671,7 +708,7 @@ export function createGeminiWebModel(
 
 		async doGenerate(options: LanguageModelV2CallOptions) {
 			try {
-				const { text, toolCalls, usage } = await withBrowserLock(
+				const { text, toolCalls, usage, quota } = await withBrowserLock(
 					"gemini-web",
 					options.abortSignal,
 					() => runCompletion(options),
@@ -692,7 +729,7 @@ export function createGeminiWebModel(
 					content,
 					finishReason: finishReasonFor(text, toolCalls),
 					usage,
-					...geminiLimitProviderMetadata(trackGeminiLimit(text)),
+					...geminiLimitProviderMetadata(trackGeminiLimit(text), quota),
 					warnings: [],
 				};
 			} catch (error) {
@@ -703,7 +740,7 @@ export function createGeminiWebModel(
 		},
 
 		async doStream(options: LanguageModelV2CallOptions) {
-			const { text, toolCalls, usage } = await withBrowserLock(
+			const { text, toolCalls, usage, quota } = await withBrowserLock(
 				"gemini-web",
 				options.abortSignal,
 				() => runCompletion(options),
@@ -739,7 +776,7 @@ export function createGeminiWebModel(
 				type: "finish",
 				finishReason: finishReasonFor(text, toolCalls),
 				usage,
-				...geminiLimitProviderMetadata(trackGeminiLimit(text)),
+				...geminiLimitProviderMetadata(trackGeminiLimit(text), quota),
 			});
 
 			const stream = new ReadableStream<LanguageModelV2StreamPart>({
