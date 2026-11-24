@@ -85,6 +85,7 @@ function sseToolCall(toolName: string, args: string): string {
 async function streamToolCallEvents(
 	sseBody: string,
 	tools: AgentToolDefinition[],
+	providerId = "openai-compatible",
 ): Promise<AgentModelEvent[]> {
 	const config = {
 		providerId: "openai-compatible",
@@ -113,7 +114,7 @@ async function streamToolCallEvents(
 		config,
 	} as unknown as GatewayProviderContext;
 	const request = {
-		providerId: "openai-compatible",
+		providerId,
 		modelId: "test-model",
 		messages: [
 			{
@@ -260,5 +261,77 @@ describe("repairMalformedToolCall", () => {
 			error: new Error("JSON parsing failed"),
 		});
 		expect(repaired).toBeNull();
+	});
+});
+
+function sseText(text: string): string {
+	const chunk = (delta: unknown, finish: string | null = null) =>
+		`data: ${JSON.stringify({
+			id: "cmpl-1",
+			object: "chat.completion.chunk",
+			created: 1,
+			model: "test-model",
+			choices: [{ index: 0, delta, finish_reason: finish }],
+		})}\n\n`;
+	return (
+		chunk({ role: "assistant", content: text }) +
+		chunk({}, "stop") +
+		"data: [DONE]\n\n"
+	);
+}
+
+function toolCalls(events: AgentModelEvent[]) {
+	return events.filter((event) => event.type === "tool-call-delta");
+}
+
+const FENCE_REPLY =
+	"Let me look at the folder.\n\n```powershell\nGet-ChildItem -Path D:\\x -File\n```";
+
+describe("ai-sdk adapter shell-fence fallback for local models", () => {
+	it("turns a powershell fence from llama.cpp into a run_commands call", async () => {
+		const events = await streamToolCallEvents(
+			sseText(FENCE_REPLY),
+			[RUN_COMMANDS_TOOL],
+			"llamacpp",
+		);
+		expect(findToolInput(events)).toEqual({
+			commands: ["Get-ChildItem -Path D:\\x -File"],
+		});
+		const finish = events.find((event) => event.type === "finish");
+		expect(finish).toMatchObject({ reason: "tool-calls" });
+	});
+
+	it("leaves the fence as text for a hosted provider", async () => {
+		const events = await streamToolCallEvents(sseText(FENCE_REPLY), [
+			RUN_COMMANDS_TOOL,
+		]);
+		expect(toolCalls(events)).toHaveLength(0);
+	});
+
+	it("does not run an untagged fence or a fence in a report", async () => {
+		const untagged = await streamToolCallEvents(
+			sseText("Output was:\n```\ndir\n```"),
+			[RUN_COMMANDS_TOOL],
+			"llamacpp",
+		);
+		expect(toolCalls(untagged)).toHaveLength(0);
+
+		const report = await streamToolCallEvents(
+			sseText(
+				`${FENCE_REPLY}\n\n${"The results show many files. ".repeat(30)}`,
+			),
+			[RUN_COMMANDS_TOOL],
+			"llamacpp",
+		);
+		expect(toolCalls(report)).toHaveLength(0);
+	});
+
+	it("does nothing when the session has no run_commands tool", async () => {
+		const events = await streamToolCallEvents(
+			sseText(FENCE_REPLY),
+			[READ_FILES_TOOL],
+			"llamacpp",
+		);
+		expect(toolCalls(events)).toHaveLength(0);
 	});
 });

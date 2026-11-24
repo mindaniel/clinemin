@@ -35,6 +35,7 @@ import {
 	type AiSdkProviderOptionsTarget,
 	composeAiSdkProviderOptions,
 } from "./routing/provider-options";
+import { extractShellFenceCommands } from "./vendors/tool-pipeline/shell-fence";
 import type {
 	AiSdkStreamPart,
 	AiSdkStreamResult,
@@ -953,6 +954,19 @@ function extractGoogleThoughtMetadata(
 	return Object.keys(metadata).length > 0 ? metadata : undefined;
 }
 
+/**
+ * Local models (llama.cpp, LM Studio, Ollama) are prompted, like the web
+ * providers, to send commands as ```powershell fences, and a local model often
+ * does exactly that instead of a native `run_commands` call. Over this generic
+ * OpenAI-compatible path the fence was only ever text, so the command never ran
+ * and the turn stalled. A narrowly scoped fallback: local providers only, and
+ * only on a reply with no native tool call; the shared extractor leaves a
+ * report (a fence followed by a long write-up) and untagged fences alone.
+ */
+function isLocalFenceFallbackProvider(providerId: string): boolean {
+	return /^(llamacpp|lmstudio|ollama)/.test(providerId);
+}
+
 async function* emitAiSdkEvents(
 	stream: AiSdkStreamResult,
 	request: GatewayStreamRequest,
@@ -966,6 +980,8 @@ async function* emitAiSdkEvents(
 	let streamError: string | undefined;
 	let finishUsage: unknown;
 	let finishProviderMetadata: unknown;
+	const fenceFallback = isLocalFenceFallbackProvider(request.providerId);
+	let replyText = "";
 
 	try {
 		if (stream.fullStream) {
@@ -976,6 +992,7 @@ async function* emitAiSdkEvents(
 						(part.text as string | undefined) ??
 						(part.delta as string | undefined);
 					if (text) {
+						if (fenceFallback) replyText += text;
 						yield { type: "text-delta", text };
 					}
 					continue;
@@ -1100,6 +1117,28 @@ async function* emitAiSdkEvents(
 		// Prefer the real provider error from onError over the generic
 		// NoOutputGeneratedError the AI SDK throws when 0 steps are recorded.
 		streamError = capturedError?.current ?? extractErrorMessage(error);
+	}
+
+	if (fenceFallback && !streamError && !sawToolCalls && replyText) {
+		const { toolUses } = extractShellFenceCommands(
+			replyText,
+			(request.tools ?? []).map((tool) => tool.name),
+		);
+		for (const use of toolUses) {
+			sawToolCalls = true;
+			yield {
+				type: "tool-call-delta",
+				toolCallId: `tool_${nanoid()}`,
+				toolName: use.name,
+				input: use.arguments,
+				inputText: JSON.stringify(use.arguments),
+				metadata: buildToolCallMetadata({
+					metadata: undefined,
+					request,
+					context,
+				}),
+			};
+		}
 	}
 
 	// Prefer stream.usage (has raw cost data) over finish part usage.
