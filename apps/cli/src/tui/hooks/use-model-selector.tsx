@@ -518,6 +518,7 @@ export function useModelSelector(opts: {
 
 			let modelOptions = buildModelOptions(
 				config.knownModels as Record<string, Llms.ModelInfo>,
+				config.providerId,
 			);
 			let providerDisplayName = config.providerId;
 			let endpointModelOptions: ModelOption[] = [];
@@ -525,6 +526,7 @@ export function useModelSelector(opts: {
 			const refreshProviderContext = async () => {
 				modelOptions = buildModelOptions(
 					config.knownModels as Record<string, Llms.ModelInfo>,
+					config.providerId,
 				);
 				providerDisplayName = await getProviderDisplayName(config.providerId);
 				// Free-text providers (openai-compatible) can still suggest model
@@ -537,6 +539,7 @@ export function useModelSelector(opts: {
 									(id) => [id, { id, name: id }],
 								),
 							),
+							config.providerId,
 						)
 					: [];
 				if (endpointModelOptions.length > 0) {
@@ -578,6 +581,31 @@ export function useModelSelector(opts: {
 					!config.providerId.startsWith("llamacpp-")
 				)
 					return false;
+				// Thinking level is set here, before the model loads: llama-server
+				// reads it per request (thinking off / token budget).
+				const level = await dialog.choice<ThinkingLevel>({
+					style: { maxHeight: termHeight - 2 },
+					content: (ctx: ChoiceContext<ThinkingLevel>) => (
+						<ThinkingLevelContent
+							{...ctx}
+							modelName={config.modelId.split(/[\\/]/).pop() || config.modelId}
+							currentLevel={
+								config.reasoningEffort
+									? (config.reasoningEffort as ThinkingLevel)
+									: config.thinking
+										? "medium"
+										: "none"
+							}
+						/>
+					),
+				});
+				if (level === "none") {
+					config.thinking = false;
+					config.reasoningEffort = undefined;
+				} else if (level !== undefined) {
+					config.thinking = true;
+					config.reasoningEffort = level;
+				}
 				await withLoadingDialog(dialog, "Applying model...", async () => {
 					await onModelChange();
 				});

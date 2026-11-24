@@ -303,6 +303,8 @@ const REASONING_MODEL_ID_PATTERNS: readonly RegExp[] = [
 	/qwen[-_]?3/i,
 	/qwq/i,
 	/deepseek[-_]?r1/i,
+	// DeepSeek V3.1 onward are hybrid: thinking on/off per request.
+	/deepseek[-_]?v(?:3\.[1-9]|[4-9])/i,
 	/magistral/i,
 	/(?:^|[^a-z0-9])r1(?:[^a-z0-9]|$)/i,
 	/thinking/i,

@@ -594,8 +594,18 @@ function ModelRow(props: {
 
 // -- Build model options from catalog --
 
+/**
+ * llama.cpp models always get the thinking-level picker: whether a GGUF can
+ * think is decided by its chat template, not by anything the model list
+ * reports, and llama-server ignores the controls for templates without them.
+ */
+export function providerAlwaysOffersThinking(providerId?: string): boolean {
+	return providerId === "llamacpp" || !!providerId?.startsWith("llamacpp-");
+}
+
 export function buildModelOptions(
 	knownModels?: Record<string, Llms.ModelInfo>,
+	providerId?: string,
 ): ModelOption[] {
 	if (!knownModels) return [];
 	return Object.entries(knownModels)
@@ -604,7 +614,9 @@ export function buildModelOptions(
 			name: info.name ?? key,
 			maxInputTokens: info.maxInputTokens ?? info.contextWindow,
 			family: info.family,
-			supportsReasoning: info.capabilities?.includes("reasoning") ?? false,
+			supportsReasoning:
+				providerAlwaysOffersThinking(providerId) ||
+				(info.capabilities?.includes("reasoning") ?? false),
 		}))
 		.sort((a, b) => a.name.localeCompare(b.name));
 }

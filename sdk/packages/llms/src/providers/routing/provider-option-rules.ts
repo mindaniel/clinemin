@@ -532,6 +532,70 @@ const ollamaReasoningDefaultOnDisableRule: ProviderOptionRule = {
 	},
 };
 
+/**
+ * Thinking budget per effort level for llama.cpp. llama-server ignores
+ * `reasoning_effort`; it reads `thinking_budget_tokens` (a per-request cap on
+ * the thinking block) and `chat_template_kwargs` (which switches thinking off
+ * in the chat template: `thinking` for DeepSeek, `enable_thinking` for Qwen).
+ * `high`/`xhigh` leave the budget unset, i.e. unlimited.
+ */
+const LLAMACPP_THINKING_BUDGETS: Record<string, number> = {
+	minimal: 256,
+	low: 1024,
+	medium: 4096,
+};
+
+function isLlamaCppProvider(input: ProviderOptionMatchInput): boolean {
+	const id = input.request.providerId;
+	return id === "llamacpp" || id.startsWith("llamacpp-");
+}
+
+export function buildLlamaCppThinkingOptions(
+	reasoning: ProviderOptionMatchInput["request"]["reasoning"],
+): Record<string, unknown> | undefined {
+	if (!reasoning) return undefined;
+	if (reasoning.enabled === false) {
+		return {
+			chat_template_kwargs: { thinking: false, enable_thinking: false },
+		};
+	}
+	if (reasoning.enabled !== true && !reasoning.effort) return undefined;
+	const budget =
+		reasoning.budgetTokens ??
+		(reasoning.effort
+			? LLAMACPP_THINKING_BUDGETS[reasoning.effort]
+			: undefined);
+	return {
+		chat_template_kwargs: { thinking: true, enable_thinking: true },
+		...(budget !== undefined && budget > 0
+			? { thinking_budget_tokens: budget }
+			: {}),
+	};
+}
+
+const llamaCppThinkingRule: ProviderOptionRule = {
+	id: "provider.llamacpp.thinking",
+	phase: "provider-reasoning",
+	description:
+		"llama-server: thinking off via chat_template_kwargs, effort as thinking_budget_tokens.",
+	applies: (input) =>
+		isLlamaCppProvider(input) &&
+		buildLlamaCppThinkingOptions(input.request.reasoning) !== undefined,
+	suppresses: { genericThinking: true, genericEffort: true },
+	build: (input) => {
+		const bucketOptions = buildLlamaCppThinkingOptions(input.request.reasoning);
+		if (!bucketOptions) return undefined;
+		return {
+			...buildProviderAndAliasPatch({
+				providerId: input.request.providerId,
+				providerOptionsKey: input.providerOptionsKey,
+				bucketOptions,
+			}),
+			openaiCompatible: bucketOptions,
+		};
+	},
+};
+
 const nonGlmProviderRoutingSuppressionRule: ProviderOptionRule = {
 	id: "provider.routing.glm-thinking.non-glm.suppress-generic-thinking",
 	phase: "provider",
@@ -614,6 +678,7 @@ export const PROVIDER_OPTION_RULES: ReadonlyArray<ProviderOptionRule> = [
 	kimiK26ThinkingRule,
 	deepSeekThinkingRule,
 	ollamaReasoningDefaultOnDisableRule,
+	llamaCppThinkingRule,
 	nonGlmProviderRoutingSuppressionRule,
 	nativeZaiGlmThinkingRule,
 	miniMaxThinkingRule,

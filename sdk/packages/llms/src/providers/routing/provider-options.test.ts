@@ -2373,3 +2373,99 @@ describe("composeAiSdkProviderOptions: provider-specific overlays", () => {
 		expect(result.google).toBeUndefined();
 	});
 });
+
+describe("composeAiSdkProviderOptions: llama.cpp thinking control", () => {
+	const OFF = {
+		chat_template_kwargs: { thinking: false, enable_thinking: false },
+	};
+	const ON = {
+		chat_template_kwargs: { thinking: true, enable_thinking: true },
+	};
+	runCases([
+		{
+			name: "llamacpp reasoning disabled -> template thinking off",
+			request: {
+				providerId: "llamacpp",
+				modelId: "D:mDeepSeek-V4-Flash.gguf",
+				reasoning: { enabled: false },
+			},
+			context: { family: "deepseek" },
+			expect: [
+				{
+					bucket: "llamacpp",
+					has: OFF,
+					lacks: ["thinking_budget_tokens", "reasoningEffort"],
+				},
+				{ bucket: "openaiCompatible", has: OFF },
+			],
+		},
+		{
+			name: "llamacpp low effort -> 1024-token thinking budget",
+			request: {
+				providerId: "llamacpp",
+				modelId: "qwen3-8b.gguf",
+				reasoning: { enabled: true, effort: "low" },
+			},
+			expect: [
+				{
+					bucket: "llamacpp",
+					has: { ...ON, thinking_budget_tokens: 1024 },
+					lacks: ["reasoningEffort"],
+				},
+			],
+		},
+		{
+			name: "llamacpp explicit budgetTokens wins over effort",
+			request: {
+				providerId: "llamacpp-big",
+				modelId: "m.gguf",
+				reasoning: { enabled: true, effort: "low", budgetTokens: 3000 },
+			},
+			expect: [
+				{
+					bucket: "llamacpp-big",
+					has: { ...ON, thinking_budget_tokens: 3000 },
+				},
+			],
+		},
+		{
+			name: "llamacpp high -> thinking on, no budget cap",
+			request: {
+				providerId: "llamacpp",
+				modelId: "m.gguf",
+				reasoning: { enabled: true, effort: "high" },
+			},
+			expect: [
+				{
+					bucket: "llamacpp",
+					has: ON,
+					lacks: ["thinking_budget_tokens", "reasoningEffort"],
+				},
+			],
+		},
+	]);
+
+	it("llamacpp with unset reasoning sends nothing (server default)", () => {
+		const result = composeAiSdkProviderOptions(
+			makeRequest({ providerId: "llamacpp", modelId: "m.gguf" }),
+			makeContext({ providerId: "llamacpp", modelId: "m.gguf" }),
+		);
+		expect(result.llamacpp ?? {}).not.toHaveProperty("chat_template_kwargs");
+		expect(result.llamacpp ?? {}).not.toHaveProperty("thinking_budget_tokens");
+	});
+
+	it("non-llamacpp providers never get llama-server fields", () => {
+		for (const providerId of ["ollama", "lmstudio", "openai-compatible"]) {
+			const result = composeAiSdkProviderOptions(
+				makeRequest({
+					providerId,
+					modelId: "qwen3-8b",
+					reasoning: { enabled: false },
+				}),
+				makeContext({ providerId, modelId: "qwen3-8b" }),
+			);
+			expect(JSON.stringify(result)).not.toContain("chat_template_kwargs");
+			expect(JSON.stringify(result)).not.toContain("thinking_budget_tokens");
+		}
+	});
+});
