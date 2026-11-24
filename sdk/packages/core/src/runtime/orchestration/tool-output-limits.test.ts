@@ -1,6 +1,7 @@
 import { afterEach, describe, expect, it } from "vitest";
 import {
 	DEFAULT_TOOL_OUTPUT_LIMITS,
+	LOCAL_MODEL_TOOL_OUTPUT_LIMITS,
 	WEB_ATTACH_TOOL_OUTPUT_LIMITS,
 } from "../../extensions/tools/executors/output-limits";
 import { resolveToolOutputLimits } from "./tool-output-limits";
@@ -32,6 +33,15 @@ describe("resolveToolOutputLimits", () => {
 		process.env[ENV] = "4000";
 		expect(resolveToolOutputLimits("anthropic")).toBe(
 			DEFAULT_TOOL_OUTPUT_LIMITS,
+		);
+	});
+
+	it("keeps whole results for local models", () => {
+		for (const id of ["llamacpp", "llamacpp-2", "ollama", "lmstudio"]) {
+			expect(resolveToolOutputLimits(id)).toBe(LOCAL_MODEL_TOOL_OUTPUT_LIMITS);
+		}
+		expect(resolveToolOutputLimits("ollama-cloud")).not.toBe(
+			LOCAL_MODEL_TOOL_OUTPUT_LIMITS,
 		);
 	});
 });

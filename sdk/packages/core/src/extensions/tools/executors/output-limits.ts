@@ -85,3 +85,19 @@ export const WEB_ATTACH_TOOL_OUTPUT_LIMITS: ToolOutputLimits = {
 	toolResultChars: 200_000,
 	fileContentChars: 200_000,
 };
+
+/**
+ * Caps for a model running on this machine (llama.cpp, Ollama, LM Studio).
+ * Tokens cost nothing there, and a cut-off file read makes the model guess at
+ * the missing middle, so results go in whole. The model's own context window
+ * is the real limit; compaction handles that. Still capped, like the web set,
+ * so a runaway command cannot produce megabytes.
+ */
+export const LOCAL_MODEL_TOOL_OUTPUT_LIMITS: ToolOutputLimits = {
+	commandChars: 200_000,
+	readLines: 20_000,
+	readChars: 400_000,
+	searchChars: 200_000,
+	toolResultChars: 400_000,
+	fileContentChars: 400_000,
+};
