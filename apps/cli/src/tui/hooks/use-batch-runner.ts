@@ -19,6 +19,11 @@ import type { ChatEntry } from "../types";
  * not, several per line) become batches; a single file path while no prompt
  * is set, or any other text, becomes the prompt. `go`/`start` runs the
  * pending batches; Esc stops the current turn and pauses the run.
+ *
+ * The prompt opens a new chat and every batch follows in that chat. `go`
+ * after a stop carries on there; `clear` (or `off`, `new`) makes the next
+ * `go` open a new chat with the prompt, so the model does not reread the old
+ * one. `/runbatch fresh N` also starts a new chat every N batches.
  */
 
 export type BatchStatus = "pending" | "running" | "done" | "error";
@@ -73,9 +78,18 @@ export function replyPathFor(batchPath: string): string {
 	return candidate;
 }
 
-/** The message as sent: verbatim-marked for web providers, plain otherwise. */
-export function batchMessage(text: string, verbatim: boolean): string {
-	return verbatim ? `${RAW_WEB_MESSAGE_MARKER}\n${text.trim()}` : text.trim();
+/**
+ * The message as sent: verbatim-marked for web providers, plain otherwise.
+ * `chatTag` (on a chat's first message) makes the web provider open a new chat
+ * even though the prompt text is the same as last time.
+ */
+export function batchMessage(
+	text: string,
+	verbatim: boolean,
+	chatTag?: string,
+): string {
+	if (!verbatim) return text.trim();
+	return `${RAW_WEB_MESSAGE_MARKER}${chatTag ? `#${chatTag}` : ""}\n${text.trim()}`;
 }
 
 /** Assistant text written after `marker` (an entry object in the list). */
@@ -108,6 +122,8 @@ export function useBatchRunner(input: {
 	setChatView: () => void;
 	/** Web provider: send messages verbatim (no system prompt or labels). */
 	verbatim: boolean;
+	/** Start a new chat (what /clear does). */
+	newChat: () => Promise<void>;
 }) {
 	const session = useSession();
 	const [enabled, setEnabled] = useState(false);
@@ -127,6 +143,11 @@ export function useBatchRunner(input: {
 	const stopRef = useRef(false);
 	// The prompt text already sent as this chat's first message.
 	const promptSentRef = useRef<string | null>(null);
+	// New chat every N batches (0 = one chat); batches sent in the current chat.
+	const [freshEvery, setFreshEvery] = useState(0);
+	const freshEveryRef = useRef(freshEvery);
+	freshEveryRef.current = freshEvery;
+	const inChatRef = useRef(0);
 
 	const note = useCallback(
 		(text: string) => session.appendEntry({ kind: "status", text }),
@@ -140,13 +161,35 @@ export function useBatchRunner(input: {
 	}, []);
 
 	const addBatches = useCallback((paths: string[]) => {
-		setBatches((list) => {
-			const have = new Set(list.map((b) => b.path.toLowerCase()));
+		setBatches((old) => {
+			// Finished rows make way once new files come in; a file dropped
+			// again is queued again.
+			const want = new Set(paths.map((p) => p.toLowerCase()));
+			const list = old.some(
+				(b) => b.status === "pending" || b.status === "running",
+			)
+				? old
+				: [];
+			const kept = list.map((b) =>
+				want.has(b.path.toLowerCase()) && b.status !== "running"
+					? { path: b.path, status: "pending" as const }
+					: b,
+			);
+			const have = new Set(kept.map((b) => b.path.toLowerCase()));
 			const fresh = paths
 				.filter((p) => !have.has(p.toLowerCase()))
 				.map((p): BatchItem => ({ path: p, status: "pending" }));
-			return [...list, ...fresh];
+			return [...kept, ...fresh];
 		});
+	}, []);
+
+	/** Forget the prompt, the batches and the chat they went to. */
+	const reset = useCallback(() => {
+		stopRef.current = true;
+		setBatches([]);
+		setPrompt(null);
+		promptSentRef.current = null;
+		inChatRef.current = 0;
 	}, []);
 
 	const start = useCallback(async () => {
@@ -167,22 +210,34 @@ export function useBatchRunner(input: {
 		setRunning(true);
 		let done = 0;
 		try {
-			if (promptSentRef.current !== p.text) {
-				const runTurn = input.runTurnRef.current;
-				if (!runTurn) return;
-				note("/runbatch ▶ sending the prompt");
-				await runTurn(batchMessage(p.text, input.verbatim));
-				if (abortRef.current) {
-					note(
-						"/runbatch: stopped (Esc) before the batches. Type go to start again.",
-					);
-					return;
-				}
-				promptSentRef.current = p.text;
-			}
+			// One chat until clear/off/new: `go` after a stop carries on in it.
+			// `fresh N` also starts a new chat (prompt again) every N batches.
 			for (;;) {
 				const item = batchesRef.current.find((b) => b.status === "pending");
 				if (!item || stopRef.current) break;
+				const every = freshEveryRef.current;
+				if (
+					promptSentRef.current === null ||
+					promptSentRef.current !== p.text ||
+					(every > 0 && inChatRef.current >= every)
+				) {
+					await input.newChat();
+					input.setChatView();
+					inChatRef.current = 0;
+					const first = input.runTurnRef.current;
+					if (!first) break;
+					note("/runbatch ▶ new chat, sending the prompt");
+					await first(
+						batchMessage(p.text, input.verbatim, Date.now().toString(36)),
+					);
+					if (abortRef.current) {
+						note(
+							"/runbatch: stopped (Esc) before the batch. Type go to carry on.",
+						);
+						break;
+					}
+					promptSentRef.current = p.text;
+				}
 				const runTurn = input.runTurnRef.current;
 				if (!runTurn) break;
 				update(item.path, { status: "running" });
@@ -201,6 +256,7 @@ export function useBatchRunner(input: {
 				session.appendEntry(marker);
 				try {
 					await runTurn(batchMessage(content, input.verbatim));
+					inChatRef.current++;
 				} catch (e) {
 					update(item.path, { status: "error", detail: String(e) });
 					break;
@@ -240,21 +296,23 @@ export function useBatchRunner(input: {
 			).length;
 			note(`/runbatch: ${done} saved this run, ${left} pending.`);
 		}
-	}, [input.runTurnRef, input.verbatim, note, session, update]);
+	}, [input, note, session, update]);
 
 	/** `/runbatch [on|off|start|stop|clear|prompt|retry]`. */
 	const handleCommand = useCallback(
 		(arg: string) => {
 			const a = arg.trim().toLowerCase();
 			if (a === "off" || (a === "" && enabled)) {
-				stopRef.current = true;
+				reset();
 				setEnabled(false);
-				note("/runbatch: off. Messages go to the model as usual.");
+				note(
+					"/runbatch: off; prompt and batch list cleared. Messages go to the model as usual.",
+				);
 				return;
 			}
 			if (a === "on" || a === "") {
+				if (!runningRef.current) reset();
 				setEnabled(true);
-				promptSentRef.current = null;
 				input.setChatView();
 				note(
 					"/runbatch: on. Type or paste the prompt (or drag its .txt), then drag the batch files in and press Enter. Type go to run, /runbatch off to leave.",
@@ -270,10 +328,29 @@ export function useBatchRunner(input: {
 				note("/runbatch: will stop after the current batch.");
 				return;
 			}
-			if (a === "clear") {
+			if (a === "clear" || a === "reset") {
 				if (runningRef.current) return note("/runbatch: stop the run first.");
-				setBatches([]);
-				setPrompt(null);
+				reset();
+				note(
+					"/runbatch: prompt and batch list cleared. Paste the prompt, drag the batches in, then go: it opens a new chat.",
+				);
+				return;
+			}
+			if (a === "new") {
+				if (runningRef.current) return note("/runbatch: stop the run first.");
+				promptSentRef.current = null;
+				note("/runbatch: the next batch starts a new chat with the prompt.");
+				return;
+			}
+			const fm = /^fresh(?:\s+(\d+))?$/.exec(a);
+			if (fm) {
+				const n = fm[1] === undefined ? 1 : Number(fm[1]);
+				setFreshEvery(n);
+				note(
+					n === 0
+						? "/runbatch: one chat for the whole run (the prompt is sent once)."
+						: `/runbatch: new chat with the prompt every ${n === 1 ? "batch" : `${n} batches`}.`,
+				);
 				return;
 			}
 			if (a === "prompt") {
@@ -291,9 +368,9 @@ export function useBatchRunner(input: {
 				);
 				return;
 			}
-			note("/runbatch on|off|go|stop|clear|prompt|retry");
+			note("/runbatch on|off|go|stop|clear|new|fresh [N]|prompt|retry");
 		},
-		[enabled, input, note, start],
+		[enabled, input, note, reset, start],
 	);
 
 	/** Input submitted while batch mode is on. Returns true when consumed. */
@@ -304,6 +381,10 @@ export function useBatchRunner(input: {
 			if (!t) return true;
 			if (/^(go|start|run)$/i.test(t)) {
 				void start();
+				return true;
+			}
+			if (/^(clear|reset|off|stop|new|fresh(\s+\d+)?)$/i.test(t)) {
+				handleCommand(t);
 				return true;
 			}
 			if (runningRef.current) {
@@ -333,7 +414,7 @@ export function useBatchRunner(input: {
 			setPrompt({ text: t });
 			return true;
 		},
-		[addBatches, enabled, note, start],
+		[addBatches, enabled, handleCommand, note, start],
 	);
 
 	// Esc during a turn pauses the whole run, not just that batch.
@@ -341,7 +422,15 @@ export function useBatchRunner(input: {
 		if (session.abortRequested && runningRef.current) stopRef.current = true;
 	}, [session.abortRequested]);
 
-	return { enabled, prompt, batches, running, handleCommand, handleInput };
+	return {
+		enabled,
+		prompt,
+		batches,
+		running,
+		freshEvery,
+		handleCommand,
+		handleInput,
+	};
 }
 
 export type BatchRunner = ReturnType<typeof useBatchRunner>;

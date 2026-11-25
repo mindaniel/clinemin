@@ -151,7 +151,7 @@ const TUI_LOCAL_COMMANDS: Array<{
 	{
 		name: "runbatch",
 		description:
-			"Batch mode: one prompt plus each batch file, one message per batch, replies saved next to the batches (/runbatch on|off|go|stop)",
+			"Batch mode: the prompt, then each batch file in the same chat; replies saved next to the batches; clear starts over in a new chat (/runbatch on|off|go|stop|clear)",
 	},
 	{
 		name: "note",

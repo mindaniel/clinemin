@@ -45,6 +45,10 @@ describe("runbatch helpers", () => {
 		expect(
 			extractRawWebMessage([{ role: "user", content: "plain" }]),
 		).toBeUndefined();
+		// a chat tag changes the message (so a new web chat opens), not the text sent
+		const tagged = batchMessage("P", true, "k1");
+		expect(tagged).not.toBe(batchMessage("P", true));
+		expect(extractRawWebMessage([{ role: "user", content: tagged }])).toBe("P");
 	});
 
 	it("collects assistant text after the marker only", () => {

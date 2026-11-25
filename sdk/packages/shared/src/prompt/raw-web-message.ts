@@ -10,6 +10,13 @@
  */
 export const RAW_WEB_MESSAGE_MARKER = "[[cline:raw-message]]";
 
+/**
+ * Optional `#<tag>` right after the marker, dropped before sending. The web
+ * providers pick the chat by hashing the first message, so a new tag makes the
+ * same prompt open a new web chat instead of the old one.
+ */
+const TAG = /^#[A-Za-z0-9_-]+/;
+
 type PromptLike = ReadonlyArray<{
 	role: string;
 	content: unknown;
@@ -38,7 +45,7 @@ export function extractRawWebMessage(prompt: PromptLike): string | undefined {
 		const text = partText(m.content);
 		const at = text.indexOf(RAW_WEB_MESSAGE_MARKER);
 		if (at < 0) return undefined;
-		let body = text.slice(at + RAW_WEB_MESSAGE_MARKER.length);
+		let body = text.slice(at + RAW_WEB_MESSAGE_MARKER.length).replace(TAG, "");
 		const close = body.lastIndexOf("</user_input>");
 		if (close >= 0) body = body.slice(0, close);
 		return body.trim();

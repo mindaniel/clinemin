@@ -23,8 +23,16 @@ export function BatchPanel(props: {
 	prompt: BatchPrompt | null;
 	batches: BatchItem[];
 	running: boolean;
+	/** New chat every N batches (0 = one chat for the run). */
+	freshEvery: number;
 }) {
-	const { prompt, batches, running } = props;
+	const { prompt, batches, running, freshEvery } = props;
+	const chats =
+		freshEvery === 0
+			? "same chat until clear"
+			: freshEvery === 1
+				? "new chat per batch"
+				: `new chat every ${freshEvery} batches`;
 	const preview = (prompt?.text ?? "")
 		.split(/\r?\n/)
 		.map((l) => l.trim())
@@ -47,7 +55,7 @@ export function BatchPanel(props: {
 			? "Type or paste the prompt, or drag the prompt .txt in, then Enter."
 			: batches.length === 0
 				? "Drag the batch files in (several at once is fine), then Enter."
-				: "Type go to run. /runbatch prompt replaces the prompt, /runbatch off leaves.";
+				: `Type go to run (${chats}). Drop more files to queue them; clear empties the lists and the next go opens a new chat.`;
 
 	return (
 		<box flexDirection="column" flexShrink={0}>

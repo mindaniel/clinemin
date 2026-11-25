@@ -789,6 +789,7 @@ function App(props: TuiProps) {
 	const batchRunner = useBatchRunner({
 		runTurnRef: batchTurnRef,
 		verbatim: isWebChatProvider(props.config.providerId),
+		newChat: clearConversation,
 		setChatView: () => {
 			session.setHasSubmitted(true);
 			setAppView("chat");
@@ -981,6 +982,7 @@ function App(props: TuiProps) {
 				prompt={batchRunner.prompt}
 				batches={batchRunner.batches}
 				running={batchRunner.running}
+				freshEvery={batchRunner.freshEvery}
 			/>
 		) : undefined,
 		backgroundRuns: backgroundRuns.runs,
