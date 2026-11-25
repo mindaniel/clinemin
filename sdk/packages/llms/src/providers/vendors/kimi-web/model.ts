@@ -21,6 +21,7 @@ import type {
 	GatewayProviderContext,
 	GatewayResolvedProviderConfig,
 } from "@cline/shared";
+import { extractRawWebMessage } from "@cline/shared";
 import {
 	messagesToPrompt,
 	parseDeepSeekToolCalls,
@@ -119,6 +120,9 @@ export function buildKimiPrompt(
 	reInjectSystem: boolean,
 	preserveCompactionContext: boolean,
 ): string {
+	// `/runbatch`: a marked message goes to the chat exactly as written.
+	const rawMessage = extractRawWebMessage(prompt);
+	if (rawMessage !== undefined) return rawMessage;
 	// The system prompt arrives already chosen: `buildClineSystemPrompt`
 	// picks this provider's `default` / `worker` / `manager` wording from
 	// its prompts file. This used to call `applySimpleWebSystemPrompt`,

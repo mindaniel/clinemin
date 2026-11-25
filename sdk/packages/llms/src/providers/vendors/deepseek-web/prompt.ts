@@ -3,6 +3,7 @@ import type {
 	LanguageModelV2Message,
 	LanguageModelV2Prompt,
 } from "@ai-sdk/provider";
+import { extractRawWebMessage } from "@cline/shared";
 import { isSyntheticUserText } from "../tool-pipeline/continuation-note";
 
 // ── Prompt building (the web endpoint only accepts a flat `prompt` string) ──
@@ -537,6 +538,9 @@ export function buildPrompt(
 	prompt: LanguageModelV2Prompt,
 	_tools: LanguageModelV2FunctionTool[] | undefined,
 ): string {
+	// `/runbatch`: a marked message goes to the chat exactly as written.
+	const rawMessage = extractRawWebMessage(prompt);
+	if (rawMessage !== undefined) return rawMessage;
 	return messagesToPrompt(prompt, {
 		toolResultMaxLines: DEEPSEEK_WEB_TOOL_RESULT_MAX_LINES,
 		keepTaskVisible: true,

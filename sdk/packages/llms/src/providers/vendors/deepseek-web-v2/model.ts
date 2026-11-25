@@ -13,6 +13,7 @@ import type {
 	GatewayProviderContext,
 	GatewayResolvedProviderConfig,
 } from "@cline/shared";
+import { extractRawWebMessage } from "@cline/shared";
 import {
 	COMPACTION_SUMMARY_PREFIX,
 	type DeepSeekWebUsageEstimate,
@@ -581,6 +582,9 @@ export function buildPrompt(
 	reInjectSystem = false,
 	preserveCompactionContext = false,
 ): string {
+	// `/runbatch`: a marked message goes to the chat exactly as written.
+	const rawMessage = extractRawWebMessage(prompt);
+	if (rawMessage !== undefined) return rawMessage;
 	const conversation = buildLeanConversation(prompt, preserveCompactionContext);
 	const systemMessage = prompt.find((m) => m.role === "system");
 	// Avoid doubling the system prompt: on a first turn the lean conversation

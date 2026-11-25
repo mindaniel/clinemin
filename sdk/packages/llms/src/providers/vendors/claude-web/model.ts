@@ -12,6 +12,7 @@ import type {
 	GatewayProviderContext,
 	GatewayResolvedProviderConfig,
 } from "@cline/shared";
+import { extractRawWebMessage } from "@cline/shared";
 
 import {
 	messagesToPrompt,
@@ -52,7 +53,7 @@ import {
 	setActiveClaudeCdpSessionId,
 	setActiveClaudeTargetId,
 } from "./browser";
-import { sendAndCapture } from "./capture";
+import { fetchClaudeSessionStatus, sendAndCapture } from "./capture";
 import {
 	chatKeyFromPrompt,
 	extractClaudeSessionId,
@@ -234,6 +235,9 @@ function buildClaudePrompt(
 	reInjectSystem: boolean,
 	preserveCompactionContext: boolean,
 ): string {
+	// `/runbatch`: a marked message goes to the chat exactly as written.
+	const rawMessage = extractRawWebMessage(prompt);
+	if (rawMessage !== undefined) return rawMessage;
 	// The system prompt arrives already chosen: `buildClineSystemPrompt`
 	// picks this provider's `default` / `worker` / `manager` wording from
 	// its prompts file. This used to call `applySimpleWebSystemPrompt`,
@@ -547,6 +551,11 @@ function createClaudeWebModel(
 		// `message_limit` event, so it has no percentage of its own. Showing the
 		// last one Claude reported beats falling back to a token count against a
 		// window that means nothing for this provider.
+		if (!parsed.sessionStatus) {
+			// Claude sends `message_limit` on some replies only; ask its usage
+			// endpoint for the rest.
+			parsed.sessionStatus = await fetchClaudeSessionStatus(cdp, cdpSessionId);
+		}
 		if (parsed.sessionStatus) {
 			lastSessionStatus = parsed.sessionStatus;
 		} else if (lastSessionStatus) {

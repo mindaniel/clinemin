@@ -17,6 +17,7 @@ export type CommandPaletteAction =
 	| "profiles"
 	| "findchat"
 	| "paste"
+	| "runbatch"
 	| "note"
 	| "profile"
 	| "telegram"
@@ -188,6 +189,14 @@ const ACTION_ITEMS: Array<{
 		shortcut: "Opt+V",
 		description: "Preview the clipboard, then use it as the model reply",
 		keywords: ["paste", "clipboard", "reply", "recovery", "web"],
+	},
+	{
+		action: "runbatch",
+		label: "Batch Mode",
+		shortcut: "Opt+B",
+		description:
+			"One prompt plus each batch file, one message per batch, replies saved next to the batches",
+		keywords: ["runbatch", "batch", "prompt", "files", "bulk"],
 	},
 	{
 		action: "note",

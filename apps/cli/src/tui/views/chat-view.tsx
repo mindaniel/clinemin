@@ -67,6 +67,8 @@ export function ChatView(props: {
 	selectedQueuedPromptId?: string | null;
 	editingQueuedPrompt?: QueuedPromptItem;
 	onQueuedPromptEditConfirm: (id: string, prompt: string) => void;
+	/** `/runbatch` panes, shown above the input while batch mode is on. */
+	batchPanel?: React.ReactNode;
 	onToggleMode: () => void;
 	runtimeInteraction?: RuntimeToolInteraction | null;
 	onResolveToolApproval: (id: number, outcome: ToolApprovalOutcome) => void;
@@ -151,6 +153,8 @@ export function ChatView(props: {
 								now={props.backgroundRunsNow ?? Date.now()}
 							/>
 						)}
+
+						{props.batchPanel}
 
 						{props.queuedPrompts && props.queuedPrompts.length > 0 && (
 							<QueuedPrompts

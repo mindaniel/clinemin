@@ -29,6 +29,7 @@ export type LocalSlashCommandName =
 	| "profiles"
 	| "manager"
 	| "paste"
+	| "runbatch"
 	| "note"
 	| "profile"
 	| "telegram"
@@ -148,6 +149,11 @@ const TUI_LOCAL_COMMANDS: Array<{
 			"Preview the clipboard, then use it as the model reply (web provider recovery)",
 	},
 	{
+		name: "runbatch",
+		description:
+			"Batch mode: one prompt plus each batch file, one message per batch, replies saved next to the batches (/runbatch on|off|go|stop)",
+	},
+	{
 		name: "note",
 		description: "Show or set this project's post-tool continuation note",
 	},
@@ -245,6 +251,7 @@ const SYSTEM_COMMAND_ORDER = [
 	"history",
 	"findchat",
 	"paste",
+	"runbatch",
 	"note",
 	"profile",
 	"login",

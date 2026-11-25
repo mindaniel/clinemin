@@ -12,6 +12,7 @@ import type {
 	GatewayProviderContext,
 	GatewayResolvedProviderConfig,
 } from "@cline/shared";
+import { extractRawWebMessage } from "@cline/shared";
 
 import {
 	messagesToPrompt,
@@ -92,6 +93,9 @@ function buildQwenPrompt(
 	reInjectSystem: boolean,
 	preserveCompactionContext: boolean,
 ): string {
+	// `/runbatch`: a marked message goes to the chat exactly as written.
+	const rawMessage = extractRawWebMessage(prompt);
+	if (rawMessage !== undefined) return rawMessage;
 	const conversation = buildLeanConversation(prompt, preserveCompactionContext);
 	const systemMessage = prompt.find((m) => m.role === "system");
 	const alreadyHasSystem = conversation.some((m) => m.role === "system");

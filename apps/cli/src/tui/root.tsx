@@ -1,6 +1,10 @@
 import { getCurrentContextSize, summarizeUsageFromMessages } from "@cline/core";
 import type { Message } from "@cline/shared";
-import { formatDisplayUserInput, truncateStr } from "@cline/shared";
+import {
+	formatDisplayUserInput,
+	isWebChatProvider,
+	truncateStr,
+} from "@cline/shared";
 import type { KeyEvent } from "@opentui/core";
 import { useRenderer, useTerminalDimensions } from "@opentui/react";
 import type { ChoiceContext } from "@opentui-ui/dialog";
@@ -15,6 +19,7 @@ import type { TeamProgressUpdate } from "../runtime/session-events";
 import type { RepoStatus } from "../utils/repo-status";
 import { readRepoStatus } from "../utils/repo-status";
 import { BackgroundNotice } from "./components/background-notice";
+import { BatchPanel } from "./components/batch-panel";
 import type { TranscriptScrollHandle } from "./components/chat-message-list";
 import {
 	CheckpointConfirmContent,
@@ -45,6 +50,7 @@ import { useAccountDialog } from "./hooks/use-account-dialog";
 import { useAgentEventHandlers } from "./hooks/use-agent-events";
 import { useAutocomplete } from "./hooks/use-autocomplete";
 import { useBackgroundRuns } from "./hooks/use-background-runs";
+import { type BatchRunner, useBatchRunner } from "./hooks/use-batch-runner";
 import { useConfigPanel } from "./hooks/use-config-panel";
 import { useLocalCommandActions } from "./hooks/use-local-command-actions";
 import { useMcpManager } from "./hooks/use-mcp-manager";
@@ -157,6 +163,8 @@ function App(props: TuiProps) {
 			options?: { silent?: boolean },
 		) => void
 	>(() => {});
+	// `/runbatch` from the command palette; set once the batch runner exists.
+	const batchCommandRef = useRef<(arg: string) => void>(() => {});
 	const insertSkillCommandRef = useRef<
 		(command: string, invocation?: LocalSlashCommandInvocation) => void
 	>(() => {});
@@ -693,6 +701,10 @@ function App(props: TuiProps) {
 
 	const runCommandPaletteResult = useCallback(
 		async (result: CommandPaletteResult) => {
+			if (result.action === "runbatch") {
+				batchCommandRef.current("");
+				return;
+			}
 			if (result.action === "change-provider") {
 				await openModelSelector({ startWithProviderChange: true });
 				return;
@@ -771,10 +783,36 @@ function App(props: TuiProps) {
 		modelId: props.config.modelId,
 	});
 
+	// `/runbatch`: the runner sends its messages through the prompt controller,
+	// which is created after it, hence the refs in both directions.
+	const batchTurnRef = useRef<((text: string) => Promise<void>) | null>(null);
+	const batchRunner = useBatchRunner({
+		runTurnRef: batchTurnRef,
+		verbatim: isWebChatProvider(props.config.providerId),
+		setChatView: () => {
+			session.setHasSubmitted(true);
+			setAppView("chat");
+		},
+	});
+	const batchRunnerRef = useRef<BatchRunner | null>(batchRunner);
+	batchRunnerRef.current = batchRunner;
+	batchCommandRef.current = batchRunner.handleCommand;
+
 	const promptInput = usePromptInputController({
+		batchRunnerRef,
 		autocomplete,
 		slashCommandRegistry,
-		handleSlashCommand,
+		// `/runbatch` picked from autocomplete reaches here, not the batch intercept.
+		handleSlashCommand: (command, invocation) => {
+			if (command.toLowerCase() === "runbatch") {
+				const arg = (invocation?.text ?? "")
+					.trim()
+					.replace(/^\/?runbatch(?=\s|$)/i, "");
+				batchCommandRef.current(arg.trim());
+				return true;
+			}
+			return handleSlashCommand(command, invocation);
+		},
 		onSubmit: props.onSubmit,
 		initialPrompt: props.initialPrompt,
 		providerId: props.config.providerId,
@@ -788,6 +826,9 @@ function App(props: TuiProps) {
 	const submitInitialPrompt = promptInput.submitInitialPrompt;
 	refocusTextareaRef.current = promptInput.refocusTextarea;
 	submitTextRef.current = promptInput.submitText;
+	batchTurnRef.current = async (text: string) => {
+		await promptInput.submitText(text, undefined, { silent: true, raw: true });
+	};
 	populateInputRef.current = (value: string) => {
 		promptInput.populateInput(value);
 	};
@@ -935,6 +976,13 @@ function App(props: TuiProps) {
 		transcriptScrollRef,
 		loadIndividualSubscriptionPlans: props.loadIndividualSubscriptionPlans,
 		queuedPrompts,
+		batchPanel: batchRunner.enabled ? (
+			<BatchPanel
+				prompt={batchRunner.prompt}
+				batches={batchRunner.batches}
+				running={batchRunner.running}
+			/>
+		) : undefined,
 		backgroundRuns: backgroundRuns.runs,
 		backgroundRunsNow: backgroundRuns.now,
 		selectedQueuedPromptId,

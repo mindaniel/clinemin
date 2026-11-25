@@ -43,6 +43,13 @@ export function usePromptInputController(input: {
 	refreshRepoStatus: () => void;
 	setAppView: (view: AppView) => void;
 	turnErrorReportedRef: { current: boolean };
+	/** `/runbatch`: takes over submitted input while batch mode is on. */
+	batchRunnerRef?: {
+		current: {
+			handleCommand: (arg: string) => void;
+			handleInput: (text: string) => boolean;
+		} | null;
+	};
 }) {
 	const {
 		autocomplete,
@@ -56,6 +63,7 @@ export function usePromptInputController(input: {
 		refreshRepoStatus,
 		setAppView,
 		turnErrorReportedRef,
+		batchRunnerRef,
 	} = input;
 	const session = useSession();
 	const [inputKey, setInputKey] = useState(0);
@@ -260,7 +268,10 @@ export function usePromptInputController(input: {
 	selectRef.current = selectAutocompleteOption;
 
 	const submitPrompt = useCallback(
-		async (delivery?: "queue" | "steer", options?: { silent?: boolean }) => {
+		async (
+			delivery?: "queue" | "steer",
+			options?: { silent?: boolean; raw?: boolean },
+		) => {
 			if (localCommandInFlightRef.current) return;
 
 			// `silent` hides the user bubble; it does NOT defer the turn. `delivery`
@@ -270,6 +281,37 @@ export function usePromptInputController(input: {
 			const silent = options?.silent === true;
 			const prompt = inputValueRef.current.trim();
 			if (!prompt) return;
+
+			// `/runbatch`: its own command, and while batch mode is on the input
+			// fills the prompt and batch panes instead of going to the model.
+			// `raw` is the batch runner's own message, which must reach the model.
+			const batch = batchRunnerRef?.current;
+			if (batch && !delivery && !options?.raw) {
+				const m = /^\/runbatch(?:\s+([\s\S]*))?$/i.exec(prompt);
+				const typed = (text: string) => {
+					setInputKey((k) => k + 1);
+					setInputValue("");
+					clearPasteAttachments();
+					if (text) inputHistory.recordHistoryEntry(text);
+				};
+				if (m) {
+					typed(prompt);
+					batch.handleCommand(m[1] ?? "");
+					return;
+				}
+				if (!prompt.startsWith("/")) {
+					const expanded = expandPastedTextSnippets(
+						prompt,
+						pastedTextSnippetsRef.current.filter((s) =>
+							prompt.includes(s.marker),
+						),
+					);
+					if (batch.handleInput(expanded)) {
+						typed("");
+						return;
+					}
+				}
+			}
 
 			if (!delivery && prompt.startsWith("/")) {
 				const parts = prompt.split(/\s+/);
@@ -411,6 +453,7 @@ export function usePromptInputController(input: {
 			setAppView,
 			slashCommandRegistry,
 			turnErrorReportedRef,
+			batchRunnerRef,
 		],
 	);
 
@@ -440,8 +483,8 @@ export function usePromptInputController(input: {
 		(
 			text: string,
 			delivery?: "queue" | "steer",
-			options?: { silent?: boolean },
-		) => {
+			options?: { silent?: boolean; raw?: boolean },
+		): Promise<void> | undefined => {
 			const prompt = text.trim();
 			if (!prompt) return;
 			inputValueRef.current = prompt;
@@ -460,7 +503,7 @@ export function usePromptInputController(input: {
 				}, 0);
 				return;
 			}
-			submitRef.current(delivery, options);
+			return submitRef.current(delivery, options);
 		},
 		[],
 	);

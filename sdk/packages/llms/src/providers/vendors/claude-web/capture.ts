@@ -167,6 +167,76 @@ async function fetchLatestReplyMarkdown(
 	}
 }
 
+/**
+ * The session percentage from claude.ai's own usage endpoint (the numbers on
+ * its Settings > Usage page), read with the page's logged-in session.
+ *
+ * The completion stream carries a `message_limit` event only on some replies:
+ * in a long run of short turns (`/runbatch`) none of them had one, so the
+ * status bar sat at "(0/1M)". Asking the endpoint after such a reply keeps the
+ * percentage current. Returns undefined when it cannot be read.
+ */
+const FETCH_USAGE_EXPRESSION = `(async () => {
+	try {
+		let org = (document.cookie.match(/(?:^|;\\s*)lastActiveOrg=([^;]+)/) || [])[1];
+		if (!org) {
+			const orgs = await fetch('/api/organizations', { credentials: 'include' });
+			if (orgs.ok) org = ((await orgs.json())[0] || {}).uuid;
+		}
+		if (!org) return '';
+		const res = await fetch('/api/organizations/' + org + '/usage', { credentials: 'include' });
+		if (!res.ok) return '';
+		return JSON.stringify(await res.json());
+	} catch {
+		return '';
+	}
+})()`;
+
+/** `{ five_hour: { utilization, resets_at } }` -> percent and reset time. */
+export function parseClaudeUsage(
+	raw: string,
+): { percent: number; resetsAt?: string } | undefined {
+	try {
+		const data = JSON.parse(raw) as {
+			five_hour?: { utilization?: unknown; resets_at?: unknown } | null;
+		};
+		const window = data?.five_hour;
+		const value = window?.utilization;
+		if (typeof value !== "number" || !Number.isFinite(value)) return undefined;
+		// The endpoint reports 0-100; a 0-1 fraction is scaled like the SSE's.
+		const percent = value <= 1 && value > 0 ? value * 100 : value;
+		return {
+			percent: Math.round(Math.max(0, Math.min(percent, 100)) * 10) / 10,
+			...(typeof window?.resets_at === "string"
+				? { resetsAt: window.resets_at }
+				: {}),
+		};
+	} catch {
+		return undefined;
+	}
+}
+
+export async function fetchClaudeSessionStatus(
+	cdp: CdpClient,
+	cdpSessionId: string,
+): Promise<{ percent: number; resetsAt?: string } | undefined> {
+	try {
+		const result = await cdp.send(
+			"Runtime.evaluate",
+			{
+				expression: FETCH_USAGE_EXPRESSION,
+				returnByValue: true,
+				awaitPromise: true,
+			},
+			cdpSessionId,
+		);
+		const raw = result?.result?.value;
+		return typeof raw === "string" && raw ? parseClaudeUsage(raw) : undefined;
+	} catch {
+		return undefined;
+	}
+}
+
 export interface PageReplyState {
 	count: number;
 	streaming: boolean;
