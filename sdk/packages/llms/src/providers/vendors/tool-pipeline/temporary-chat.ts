@@ -40,6 +40,7 @@ export const TEMPORARY_CHAT_SUPPORT: Record<string, TemporaryChatMethod> = {
 	"deepseek-web": "none",
 	"deepseek-web-v2": "none",
 	"grok-web": "button",
+	"copilot-web": "button",
 	"kimi-web": "none",
 	"qwen-web": "url",
 };
@@ -78,6 +79,10 @@ const BUTTONS: Record<string, { on: string; off: string }> = {
 		off: "turn off temporary|exit temporary|tắt cuộc trò chuyện tạm thời",
 	},
 	"grok-web": { on: "switch to private chat", off: "exit private chat" },
+	"copilot-web": {
+		on: "^temporary chat$",
+		off: "exit temporary chat|turn off temporary",
+	},
 };
 
 /**
@@ -120,7 +125,11 @@ export async function pressTemporaryChatButton(
 	for (let attempt = 0; attempt < 5; attempt++) {
 		await new Promise((r) => setTimeout(r, 1000));
 		const res = (await cdp
-			.send("Runtime.evaluate", { expression: script, returnByValue: true }, cdpSessionId)
+			.send(
+				"Runtime.evaluate",
+				{ expression: script, returnByValue: true },
+				cdpSessionId,
+			)
 			.catch(() => undefined)) as { result?: { value?: unknown } } | undefined;
 		if (res?.result?.value === true) {
 			logger?.debug?.(`[${provider}] temporary chat on`);

@@ -604,6 +604,7 @@ export const WEB_PROVIDER_BROWSERS = [
 	{ providerId: "gemini-web", defaultDebugPort: 9226 },
 	{ providerId: "kimi-web", defaultDebugPort: 9227 },
 	{ providerId: "grok-web", defaultDebugPort: 9228 },
+	{ providerId: "copilot-web", defaultDebugPort: 9229 },
 ] as const;
 
 /** Where one provider keeps its browser state under a NAMED profile. */

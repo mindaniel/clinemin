@@ -665,6 +665,7 @@ export function isLeanSummaryProvider(providerId: string): boolean {
 		providerId === "claude-web" ||
 		providerId === "chatgpt-web" ||
 		providerId === "grok-web" ||
+		providerId === "copilot-web" ||
 		providerId === "kimi-web" ||
 		providerId.startsWith("llamacpp") ||
 		providerId === "ollama" ||
@@ -702,6 +703,7 @@ export function isStatefulWebChatProvider(providerId: string): boolean {
 		providerId === "chatgpt-web" ||
 		providerId === "gemini-web" ||
 		providerId === "grok-web" ||
+		providerId === "copilot-web" ||
 		providerId === "kimi-web"
 	);
 }

@@ -1296,6 +1296,12 @@ async function createProviderModule(
 			);
 			return createGrokWebProviderModule(config, context);
 		}
+		case "copilot-web": {
+			const { createCopilotWebProviderModule } = await import(
+				"./vendors/copilot-web"
+			);
+			return createCopilotWebProviderModule(config, context);
+		}
 	}
 }
 
@@ -1473,3 +1479,4 @@ export const createClaudeWebProvider = createAiSdkProvider("claude-web");
 export const createGeminiWebProvider = createAiSdkProvider("gemini-web");
 export const createKimiWebProvider = createAiSdkProvider("kimi-web");
 export const createGrokWebProvider = createAiSdkProvider("grok-web");
+export const createCopilotWebProvider = createAiSdkProvider("copilot-web");

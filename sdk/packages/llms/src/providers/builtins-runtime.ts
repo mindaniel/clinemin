@@ -103,6 +103,10 @@ async function loadFamilyFactory(
 				const module = await import("./ai-sdk");
 				return module.createGrokWebProvider;
 			}
+			case "copilot-web": {
+				const module = await import("./ai-sdk");
+				return module.createCopilotWebProvider;
+			}
 			default: {
 				throw new Error(`Unsupported provider family: ${family}`);
 			}

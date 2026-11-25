@@ -24,7 +24,11 @@ import { parseCompactionNoticeMetadata } from "../utils/compaction-status";
 const PERCENT_LIMIT_PROVIDERS = ["claude-web", "kimi-web"] as const;
 
 /** Providers that report a remaining message/query count instead. */
-const COUNT_LIMIT_PROVIDERS = ["chatgpt-web", "grok-web"] as const;
+const COUNT_LIMIT_PROVIDERS = [
+	"chatgpt-web",
+	"grok-web",
+	"copilot-web",
+] as const;
 
 /**
  * A web provider's own usage limit, from the provider metadata on a usage

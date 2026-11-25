@@ -105,7 +105,11 @@ export function formatResetTime(resetsAt: string, now = new Date()): string {
 const PERCENT_LIMIT_PROVIDERS = new Set(["claude-web", "kimi-web"]);
 
 /** Providers whose status bar shows a remaining message/query count. */
-const COUNT_LIMIT_PROVIDERS = new Set(["chatgpt-web", "grok-web"]);
+const COUNT_LIMIT_PROVIDERS = new Set([
+	"chatgpt-web",
+	"grok-web",
+	"copilot-web",
+]);
 
 function messagesRemaining(
 	providerId: string,

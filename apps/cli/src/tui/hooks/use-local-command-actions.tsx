@@ -20,6 +20,7 @@ import {
 	deleteChatGPTChatSession,
 	deleteChatSession,
 	deleteClaudeChatSession,
+	deleteCopilotChatSession,
 	deleteGeminiChatSession,
 	deleteGrokChatSession,
 	deleteKimiChatSession,
@@ -32,6 +33,7 @@ import {
 	listBrowserProfiles,
 	listChatGPTWebChats,
 	listClaudeWebChats,
+	listCopilotWebChats,
 	listDeepSeekWebV2Chats,
 	listGeminiWebChats,
 	listGrokWebChats,
@@ -39,6 +41,7 @@ import {
 	listQwenWebChats,
 	openChatGPTWebChat,
 	openClaudeWebChat,
+	openCopilotWebChat,
 	openDeepSeekWebV2Chat,
 	openGeminiWebChat,
 	openGrokWebChat,
@@ -50,6 +53,7 @@ import {
 	resetBrowserProfileData,
 	resolveChatGPTWebV2Config,
 	resolveClaudeWebV2Config,
+	resolveCopilotWebV2Config,
 	resolveDeepSeekWebV2Config,
 	resolveGeminiWebV2Config,
 	resolveGrokWebV2Config,
@@ -156,6 +160,15 @@ const webProviderConfigs: Record<string, WebProviderConfig> = {
 		deleteChat: (chatKey: string) => {
 			const config = resolveGrokWebV2Config();
 			deleteGrokChatSession(config.chatsFile, chatKey);
+		},
+	},
+	"copilot-web": {
+		name: "Copilot Web",
+		listChats: listCopilotWebChats,
+		openChat: openCopilotWebChat,
+		deleteChat: (chatKey: string) => {
+			const config = resolveCopilotWebV2Config();
+			deleteCopilotChatSession(config.chatsFile, chatKey);
 		},
 	},
 };

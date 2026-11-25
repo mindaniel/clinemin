@@ -123,6 +123,13 @@ export {
 	openClaudeWebChat,
 	resolveClaudeWebV2Config,
 } from "./providers/vendors/claude-web";
+export {
+	type CopilotWebChatEntry,
+	deleteCopilotChatSession,
+	listCopilotWebChats,
+	openCopilotWebChat,
+	resolveCopilotWebV2Config,
+} from "./providers/vendors/copilot-web";
 // Web chat-session helpers (used by the CLI `/findchat` command).
 export {
 	type DeepSeekWebV2ChatEntry,
@@ -229,12 +236,6 @@ export {
 	readInfiniteCommandTimeout,
 	writeInfiniteCommandTimeout,
 } from "./providers/vendors/tool-pipeline/command-timeout-mode";
-// `/temporary`: new web chats open as the site's temporary/incognito kind.
-export {
-	readTemporaryChat,
-	TEMPORARY_CHAT_SUPPORT,
-	writeTemporaryChat,
-} from "./providers/vendors/tool-pipeline/temporary-chat";
 // Post-tool continuation note (the agent runtime appends it; the CLI `/note`
 // command customises it per project).
 export {
@@ -256,6 +257,12 @@ export {
 // Per-provider prompt overrides: which providers word the default / worker /
 // manager prompt differently from the shared text.
 export { getWebProviderPrompts } from "./providers/vendors/tool-pipeline/prompt-registry";
+// `/temporary`: new web chats open as the site's temporary/incognito kind.
+export {
+	readTemporaryChat,
+	TEMPORARY_CHAT_SUPPORT,
+	writeTemporaryChat,
+} from "./providers/vendors/tool-pipeline/temporary-chat";
 // Web chats that attach long text as a file get wider tool-output caps (core).
 export { webChatAttachesLongText } from "./providers/vendors/web-attachments";
 // `/login`: open a web provider's Chrome, visible, on its site.

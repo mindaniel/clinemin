@@ -93,6 +93,7 @@ export const DEFAULT_MODEL_TOOL_ROUTING_RULES: ToolRoutingRule[] = [
 			"deepseek-web-v2",
 			"gemini-web",
 			"grok-web",
+			"copilot-web",
 			"kimi-web",
 			"qwen-web",
 		],

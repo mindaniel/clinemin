@@ -17,6 +17,7 @@ import {
 	createChatGPTWebProvider,
 	createClaudeCodeProvider,
 	createClaudeWebProvider,
+	createCopilotWebProvider,
 	createDeepSeekWebProvider,
 	createDeepSeekWebV2Provider,
 	createDifyProvider,
@@ -192,6 +193,8 @@ function resolveFactory(
 			return createKimiWebProvider;
 		case "grok-web":
 			return createGrokWebProvider;
+		case "copilot-web":
+			return createCopilotWebProvider;
 		default:
 			return createOpenAICompatibleProvider;
 	}

@@ -24,7 +24,18 @@ import type { ChatEntry } from "../types";
  * after a stop carries on there; `clear` (or `off`, `new`) makes the next
  * `go` open a new chat with the prompt, so the model does not reread the old
  * one. `/runbatch fresh N` also starts a new chat every N batches.
+ *
+ * By default (`fresh auto`) every provider stays in one chat. A web chat
+ * keeps its history on the site. A local or API model is sent the whole
+ * conversation every turn, but caches the part it has already read, so each
+ * batch costs about its own text; that chat only grows. Once it fills
+ * `AUTO_FRESH_CONTEXT_RATIO` of the model's input budget, the next batch opens
+ * a new chat with the prompt instead, before compaction (about 81%) would
+ * summarise the prompt away.
  */
+
+/** Share of the model's input budget at which auto mode opens a new chat. */
+export const AUTO_FRESH_CONTEXT_RATIO = 0.6;
 
 export type BatchStatus = "pending" | "running" | "done" | "error";
 
@@ -124,6 +135,8 @@ export function useBatchRunner(input: {
 	verbatim: boolean;
 	/** Start a new chat (what /clear does). */
 	newChat: () => Promise<void>;
+	/** The model's input budget in tokens, when known (not used on web chats). */
+	maxInputTokens?: number;
 }) {
 	const session = useSession();
 	const [enabled, setEnabled] = useState(false);
@@ -144,7 +157,16 @@ export function useBatchRunner(input: {
 	// The prompt text already sent as this chat's first message.
 	const promptSentRef = useRef<string | null>(null);
 	// New chat every N batches (0 = one chat); batches sent in the current chat.
-	const [freshEvery, setFreshEvery] = useState(0);
+	// `null` is auto: one chat, renewed when it nears the context limit.
+	const [freshOverride, setFreshEvery] = useState<number | null>(null);
+	const freshEvery = freshOverride ?? 0;
+	const autoRef = useRef(true);
+	autoRef.current = freshOverride === null;
+	const contextRef = useRef({ used: 0, max: input.maxInputTokens });
+	contextRef.current = {
+		used: session.lastTotalTokens,
+		max: input.maxInputTokens,
+	};
 	const freshEveryRef = useRef(freshEvery);
 	freshEveryRef.current = freshEvery;
 	const inChatRef = useRef(0);
@@ -216,10 +238,24 @@ export function useBatchRunner(input: {
 				const item = batchesRef.current.find((b) => b.status === "pending");
 				if (!item || stopRef.current) break;
 				const every = freshEveryRef.current;
+				const { used, max } = contextRef.current;
+				const contextFull =
+					autoRef.current &&
+					!input.verbatim &&
+					inChatRef.current > 0 &&
+					typeof max === "number" &&
+					max > 0 &&
+					used >= max * AUTO_FRESH_CONTEXT_RATIO;
+				if (contextFull) {
+					note(
+						`/runbatch: context at ${Math.round((used / max) * 100)}%, starting a new chat with the prompt.`,
+					);
+				}
 				if (
 					promptSentRef.current === null ||
 					promptSentRef.current !== p.text ||
-					(every > 0 && inChatRef.current >= every)
+					(every > 0 && inChatRef.current >= every) ||
+					contextFull
 				) {
 					await input.newChat();
 					input.setChatView();
@@ -342,6 +378,13 @@ export function useBatchRunner(input: {
 				note("/runbatch: the next batch starts a new chat with the prompt.");
 				return;
 			}
+			if (a === "fresh auto") {
+				setFreshEvery(null);
+				note(
+					`/runbatch: auto (one chat${input.verbatim ? "" : `, a new one with the prompt at ${AUTO_FRESH_CONTEXT_RATIO * 100}% context`}).`,
+				);
+				return;
+			}
 			const fm = /^fresh(?:\s+(\d+))?$/.exec(a);
 			if (fm) {
 				const n = fm[1] === undefined ? 1 : Number(fm[1]);
@@ -368,7 +411,7 @@ export function useBatchRunner(input: {
 				);
 				return;
 			}
-			note("/runbatch on|off|go|stop|clear|new|fresh [N]|prompt|retry");
+			note("/runbatch on|off|go|stop|clear|new|fresh [N|auto]|prompt|retry");
 		},
 		[enabled, input, note, reset, start],
 	);
@@ -383,7 +426,7 @@ export function useBatchRunner(input: {
 				void start();
 				return true;
 			}
-			if (/^(clear|reset|off|stop|new|fresh(\s+\d+)?)$/i.test(t)) {
+			if (/^(clear|reset|off|stop|new|fresh(\s+(\d+|auto))?)$/i.test(t)) {
 				handleCommand(t);
 				return true;
 			}
@@ -428,6 +471,7 @@ export function useBatchRunner(input: {
 		batches,
 		running,
 		freshEvery,
+		freshAuto: freshOverride === null,
 		handleCommand,
 		handleInput,
 	};

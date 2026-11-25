@@ -31,7 +31,8 @@ export type ProviderFamily =
 	| "deepseek-web"
 	| "deepseek-web-v2"
 	| "kimi-web"
-	| "grok-web";
+	| "grok-web"
+	| "copilot-web";
 
 export type ProviderApiLine = "china" | "international";
 

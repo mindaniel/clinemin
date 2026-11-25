@@ -538,6 +538,7 @@ function inferClient(spec: BuiltinSpec): ProviderClient {
 		case "deepseek-web-v2":
 		case "kimi-web":
 		case "grok-web":
+		case "copilot-web":
 			return "ai-sdk-community";
 		default:
 			return "openai-compatible";
@@ -1367,6 +1368,25 @@ const BUILTIN_SPEC_OVERRIDES: BuiltinSpecOverride[] = [
 				name: "Grok Auto",
 				capabilities: ["streaming"],
 				contextWindow: 1_000_000,
+			},
+		}),
+		metadata: { usageCostDisplay: "hide" },
+	},
+	{
+		id: "copilot-web",
+		name: "Copilot (Web — Browser)",
+		description:
+			"Microsoft Copilot via your real browser session (CDP) — no API key needed. Sign in to copilot.com once in the browser profile. Options (headless, debug, chromePath, profileDir, debugPort) in ~/.cline/copilot-web/config.json or COPILOT_WEB_* env vars",
+		family: "copilot-web",
+		popular: 26,
+		capabilities: ["local-auth", "tools", "streaming"],
+		defaultModelId: "copilot-auto",
+		modelsFactory: () => ({
+			"copilot-auto": {
+				id: "copilot-auto",
+				name: "Copilot Auto",
+				capabilities: ["streaming"],
+				contextWindow: 128_000,
 			},
 		}),
 		metadata: { usageCostDisplay: "hide" },

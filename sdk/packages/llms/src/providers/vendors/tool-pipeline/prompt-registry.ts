@@ -1,6 +1,7 @@
 import type { WebProviderPrompts } from "@cline/shared";
 import { chatgptWebPrompts } from "../chatgpt-web/prompts";
 import { claudeWebPrompts } from "../claude-web/prompts";
+import { copilotWebPrompts } from "../copilot-web/prompts";
 import { deepseekWebPrompts } from "../deepseek-web/prompts";
 import { deepseekWebV2Prompts } from "../deepseek-web-v2/prompts";
 import { geminiWebPrompts } from "../gemini-web/prompts";
@@ -34,6 +35,7 @@ const WEB_PROVIDER_PROMPTS: Record<string, WebProviderPrompts> = {
 	"deepseek-web-v2": deepseekWebV2Prompts,
 	"gemini-web": geminiWebPrompts,
 	"grok-web": grokWebPrompts,
+	"copilot-web": copilotWebPrompts,
 	"kimi-web": kimiWebPrompts,
 	"qwen-web": qwenWebPrompts,
 };

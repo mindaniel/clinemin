@@ -26,7 +26,8 @@ export type AiSdkProviderOptionsTarget =
 	| "deepseek-web"
 	| "deepseek-web-v2"
 	| "kimi-web"
-	| "grok-web";
+	| "grok-web"
+	| "copilot-web";
 
 export type ProviderOptionSuppression = {
 	genericThinking?: boolean;
@@ -113,6 +114,8 @@ export function inferProviderOptionsTarget(
 			return "kimi-web";
 		case "grok-web":
 			return "grok-web";
+		case "copilot-web":
+			return "copilot-web";
 
 		default:
 			return "openai-compatible";

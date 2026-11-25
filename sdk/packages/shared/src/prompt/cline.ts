@@ -342,7 +342,8 @@ export function isWebChatProvider(providerId: string): boolean {
 		providerId === "chatgpt-web" ||
 		providerId === "gemini-web" ||
 		providerId === "kimi-web" ||
-		providerId === "grok-web"
+		providerId === "grok-web" ||
+		providerId === "copilot-web"
 	);
 }
 

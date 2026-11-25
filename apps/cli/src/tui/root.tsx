@@ -43,6 +43,7 @@ import {
 	SKILLS_MARKETPLACE_URL,
 	SkillsPickerContent,
 } from "./components/dialogs/skills-picker";
+import { resolveModelMaxInputTokens } from "./components/status-bar";
 import { Toast, type ToastState, type ToastVariant } from "./components/toast";
 import { EventBridgeProvider } from "./contexts/event-bridge-context";
 import { SessionProvider, useSession } from "./contexts/session-context";
@@ -790,6 +791,7 @@ function App(props: TuiProps) {
 		runTurnRef: batchTurnRef,
 		verbatim: isWebChatProvider(props.config.providerId),
 		newChat: clearConversation,
+		maxInputTokens: resolveModelMaxInputTokens(props.config),
 		setChatView: () => {
 			session.setHasSubmitted(true);
 			setAppView("chat");
@@ -983,6 +985,7 @@ function App(props: TuiProps) {
 				batches={batchRunner.batches}
 				running={batchRunner.running}
 				freshEvery={batchRunner.freshEvery}
+				freshAuto={batchRunner.freshAuto}
 			/>
 		) : undefined,
 		backgroundRuns: backgroundRuns.runs,

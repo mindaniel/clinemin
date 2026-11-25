@@ -23,6 +23,10 @@ import {
 } from "./chatgpt-web/config";
 import { CLAUDE_WEB_URL, resolveClaudeWebV2Config } from "./claude-web/config";
 import {
+	COPILOT_WEB_URL,
+	resolveCopilotWebV2Config,
+} from "./copilot-web/config";
+import {
 	DEEPSEEK_WEB_URL,
 	resolveDeepSeekWebV2Config,
 } from "./deepseek-web-v2/config";
@@ -95,6 +99,12 @@ const LOGIN_TARGETS: Record<string, LoginTarget> = {
 		url: Grok_WEB_URL,
 		envPrefix: "Grok_WEB",
 		resolve: resolveGrokWebV2Config,
+	},
+	"copilot-web": {
+		name: "Copilot",
+		url: COPILOT_WEB_URL,
+		envPrefix: "COPILOT_WEB",
+		resolve: resolveCopilotWebV2Config,
 	},
 };
 
