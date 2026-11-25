@@ -6,6 +6,7 @@ import { describe, expect, it } from "vitest";
 import type { ChatEntry } from "../types";
 import {
 	batchMessage,
+	isLimitNotice,
 	parsePathList,
 	replyAfter,
 	replyPathFor,
@@ -66,5 +67,16 @@ describe("runbatch helpers", () => {
 			"one\n\ntwo",
 		);
 		expect(replyAfter(entries, { kind: "status", text: "other" })).toBe("");
+	});
+});
+
+describe("isLimitNotice", () => {
+	it("spots a site's limit notice but not an answer", () => {
+		expect(
+			isLimitNotice(
+				"You've reached your daily limit. Get more usage now or check back at 12:00 AM.",
+			),
+		).toBe(true);
+		expect(isLimitNotice('{"report_id": "1", "forecasts": []}')).toBe(false);
 	});
 });

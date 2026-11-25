@@ -360,4 +360,29 @@ describe("resolveModelDisplayName", () => {
 			}),
 		).toBe("GLM 5.2");
 	});
+
+	it("shows Copilot's daily count, and the daily limit with its reset", () => {
+		const base = { totalTokens: 0, totalCost: 0, providerId: "copilot-web" };
+		expect(
+			formatStatusBarUsageText({
+				...base,
+				webSessionStatus: {
+					messagesRemaining: 589,
+					messagesTotal: 600,
+					messagesToday: 11,
+					tokensToday: 90_000,
+				},
+			}),
+		).toBe("(11 today (90k tok) · 589/600 left in chat)");
+		const resetsAt = "2026-11-26T00:00:00Z";
+		expect(
+			formatStatusBarUsageText({
+				...base,
+				now: new Date("2026-11-25T23:20:00Z"),
+				webSessionStatus: { messagesToday: 13, limitReached: true, resetsAt },
+			}),
+		).toBe(
+			`(daily limit reached after 13 today · resets ${formatResetTime(resetsAt, new Date("2026-11-25T23:20:00Z"))})`,
+		);
+	});
 });

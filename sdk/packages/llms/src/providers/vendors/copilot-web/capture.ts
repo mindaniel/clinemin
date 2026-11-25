@@ -67,7 +67,11 @@ export function parseChathubFrame(payload: string): ChathubFrameInfo {
 			target?: string;
 			arguments?: HubUpdate[];
 			error?: string;
-			item?: { result?: { value?: string; message?: string } };
+			item?: {
+				result?: { value?: string; message?: string };
+				turnState?: string;
+				messages?: HubMessage[];
+			};
 		};
 		try {
 			msg = JSON.parse(record);
@@ -100,6 +104,15 @@ export function parseChathubFrame(payload: string): ChathubFrameInfo {
 			const r = msg.item?.result;
 			if (r && r.value && r.value !== "Success") {
 				info.error = r.message || r.value;
+			}
+			// A turn Copilot refuses outright (the daily limit) has no update
+			// frame with text: its notice is only in the result's messages.
+			if (msg.item?.turnState === "Failed") {
+				for (const m of msg.item.messages ?? []) {
+					if (m.author !== "bot" || typeof m.text !== "string") continue;
+					if (m.messageType || m.contentType) continue;
+					info.text = m.text;
+				}
 			}
 		} else if (msg.type === 3) {
 			info.done = true;

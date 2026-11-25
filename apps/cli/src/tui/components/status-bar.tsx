@@ -152,6 +152,35 @@ export function formatStatusBarUsageText(input: {
 		return `(${Number.isInteger(percent) ? percent : percent.toFixed(1)}/100%${resetSuffix})`;
 	}
 
+	// Copilot: its binding cap is daily and unseen until spent (about 14
+	// long messages on the free plan), so show today's own count beside the
+	// per-chat allowance, and the limit with its reset once it is hit.
+	if (input.providerId === "copilot-web") {
+		const today =
+			typeof status?.messagesToday === "number"
+				? `${status.messagesToday} today${
+						typeof status.tokensToday === "number" && status.tokensToday > 0
+							? ` (${formatTokenCount(status.tokensToday)} tok)`
+							: ""
+					}`
+				: "";
+		if (status?.limitReached) {
+			return `(daily limit reached${today ? ` after ${today}` : ""}${resetSuffix || " · reset time unknown"})`;
+		}
+		const remaining = messagesRemaining(input.providerId, status);
+		const chat =
+			remaining === undefined
+				? ""
+				: `${remaining}${
+						typeof status?.messagesTotal === "number" &&
+						status.messagesTotal > 0
+							? `/${status.messagesTotal}`
+							: ""
+					} left in chat`;
+		const parts = [today, chat].filter(Boolean);
+		return `(${parts.length ? parts.join(" · ") : "messages left: —"})`;
+	}
+
 	// ChatGPT Web and Grok: a token estimate against a nominal window says
 	// nothing about when the session stops. Their own caps do, so show that —
 	// the count the provider reports after each reply, and when it refills.

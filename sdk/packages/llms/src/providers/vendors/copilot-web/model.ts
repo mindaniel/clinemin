@@ -61,6 +61,13 @@ import {
 	readPageUrl,
 	waitForComposerReady,
 } from "./navigation";
+import {
+	type CopilotDayUsage,
+	copilotLimitActive,
+	readCopilotUsage,
+	recordCopilotTurn,
+	usageFileFor,
+} from "./usage";
 
 // ── Main provider ──────────────────────────────────────────────────────────────
 
@@ -70,6 +77,8 @@ interface CopilotCompletionResult {
 	usage: { inputTokens: number; outputTokens: number; totalTokens: number };
 	/** Copilot's own query allowance, when the page reported one this turn. */
 	rateLimit?: CopilotRateLimitInfo;
+	/** Today's messages and tokens on this profile, and the daily limit. */
+	day?: CopilotDayUsage;
 }
 
 /**
@@ -82,18 +91,27 @@ interface CopilotCompletionResult {
  */
 function rateLimitProviderMetadata(
 	rateLimit: CopilotRateLimitInfo | undefined,
+	day?: CopilotDayUsage,
 ) {
 	const max = Number(rateLimit?.maxNumUserMessagesInConversation);
 	const used = Number(rateLimit?.numUserMessagesInConversation);
-	if (!Number.isFinite(max) || max <= 0 || !Number.isFinite(used)) return {};
-	return {
-		providerMetadata: {
-			"copilot-web": {
-				messagesRemaining: Math.max(0, Math.floor(max - used)),
-				messagesTotal: Math.floor(max),
-			},
-		},
-	};
+	const meta: Record<string, number | boolean | string> = {};
+	if (Number.isFinite(max) && max > 0 && Number.isFinite(used)) {
+		meta.messagesRemaining = Math.max(0, Math.floor(max - used));
+		meta.messagesTotal = Math.floor(max);
+	}
+	// The daily allowance is the one that actually stops a run; Copilot only
+	// says so once it is spent, so the day's own count goes with it.
+	if (day) {
+		meta.messagesToday = day.messages;
+		meta.tokensToday = day.tokensIn + day.tokensOut;
+		meta.limitReached = copilotLimitActive(day);
+		if (day.limitResetsAt && meta.limitReached) {
+			meta.limitResetsAt = day.limitResetsAt;
+		}
+	}
+	if (Object.keys(meta).length === 0) return {};
+	return { providerMetadata: { "copilot-web": meta } };
 }
 
 /** The text of the last user message in the prompt (for dedup + fallback filename hints). */
@@ -170,6 +188,8 @@ function createCopilotWebModel(
 	// Copilot reports its query allowance only on some turns. Hold the last
 	// answer so the status bar keeps showing a number in between.
 	let lastRateLimit: CopilotRateLimitInfo | undefined;
+	// Today's count on the active profile, as of this turn (see usage.ts).
+	let lastDay: CopilotDayUsage | undefined;
 
 	const debugLog = (msg: string) => {
 		if (runtimeConfig.debug) logger?.debug(`[copilot-web] ${msg}`);
@@ -184,6 +204,7 @@ function createCopilotWebModel(
 		options: LanguageModelV2CallOptions,
 	): Promise<CopilotCompletionResult> {
 		runtimeConfig = resolveCopilotWebV2Config();
+		lastDay = undefined;
 		debugLog("runCompletion called");
 
 		// A reply the user pasted back with `/paste` after a network error ate
@@ -360,6 +381,13 @@ function createCopilotWebModel(
 			);
 
 			debugLog(`Received response (${result.text.length} chars)`);
+			if (result.text) {
+				lastDay = recordCopilotTurn(usageFileFor(runtimeConfig.chatsFile), {
+					tokensIn: result.usage.inputTokens,
+					tokensOut: result.usage.outputTokens,
+					replyText: result.text,
+				});
+			}
 
 			if (functionTools.length === 0) {
 				finalText = result.text;
@@ -501,6 +529,7 @@ ${patchNotice}`.trim();
 			toolCalls: finalToolCalls,
 			usage: result.usage,
 			...(lastRateLimit ? { rateLimit: lastRateLimit } : {}),
+			day: lastDay ?? readCopilotUsage(usageFileFor(runtimeConfig.chatsFile)),
 		};
 	}
 
@@ -593,11 +622,10 @@ ${patchNotice}`.trim(),
 
 		async doGenerate(options: LanguageModelV2CallOptions) {
 			try {
-				const { text, toolCalls, usage, rateLimit } = await withBrowserLock(
-					"copilot-web",
-					options.abortSignal,
-					() => runCompletion(options),
-				);
+				const { text, toolCalls, usage, rateLimit, day } =
+					await withBrowserLock("copilot-web", options.abortSignal, () =>
+						runCompletion(options),
+					);
 
 				const content: LanguageModelV2Content[] = [];
 				if (text) content.push({ type: "text", text });
@@ -614,7 +642,7 @@ ${patchNotice}`.trim(),
 					content,
 					finishReason: finishReasonFor(text, toolCalls),
 					usage,
-					...rateLimitProviderMetadata(rateLimit),
+					...rateLimitProviderMetadata(rateLimit, day),
 					warnings: [],
 				};
 			} catch (error) {
@@ -625,7 +653,7 @@ ${patchNotice}`.trim(),
 		},
 
 		async doStream(options: LanguageModelV2CallOptions) {
-			const { text, toolCalls, usage, rateLimit } = await withBrowserLock(
+			const { text, toolCalls, usage, rateLimit, day } = await withBrowserLock(
 				"copilot-web",
 				options.abortSignal,
 				() => runCompletion(options),
@@ -661,7 +689,7 @@ ${patchNotice}`.trim(),
 				type: "finish",
 				finishReason: finishReasonFor(text, toolCalls),
 				usage,
-				...rateLimitProviderMetadata(rateLimit),
+				...rateLimitProviderMetadata(rateLimit, day),
 			});
 
 			const stream = new ReadableStream<LanguageModelV2StreamPart>({

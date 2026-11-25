@@ -58,6 +58,37 @@ export function readWebSessionStatus(
 			};
 		}
 	}
+	const copilot = record["copilot-web"] as
+		| {
+				messagesRemaining?: unknown;
+				messagesTotal?: unknown;
+				messagesToday?: unknown;
+				tokensToday?: unknown;
+				limitReached?: unknown;
+				limitResetsAt?: unknown;
+		  }
+		| undefined;
+	if (copilot && typeof copilot === "object") {
+		const num = (v: unknown) =>
+			typeof v === "number" && Number.isFinite(v) ? Math.max(0, v) : undefined;
+		const remaining = num(copilot.messagesRemaining);
+		const total = num(copilot.messagesTotal);
+		const today = num(copilot.messagesToday);
+		const tokens = num(copilot.tokensToday);
+		if (remaining !== undefined || today !== undefined) {
+			return {
+				...(remaining !== undefined ? { messagesRemaining: remaining } : {}),
+				...(total !== undefined ? { messagesTotal: total } : {}),
+				...(today !== undefined ? { messagesToday: today } : {}),
+				...(tokens !== undefined ? { tokensToday: tokens } : {}),
+				...(copilot.limitReached === true ? { limitReached: true } : {}),
+				...(copilot.limitReached === true &&
+				typeof copilot.limitResetsAt === "string"
+					? { resetsAt: copilot.limitResetsAt }
+					: {}),
+			};
+		}
+	}
 	for (const providerId of COUNT_LIMIT_PROVIDERS) {
 		const entry = record[providerId] as
 			| {

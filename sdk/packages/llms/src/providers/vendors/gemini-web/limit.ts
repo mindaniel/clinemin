@@ -36,11 +36,12 @@ const MONTHS = [
 ];
 
 /**
- * "until|resets [on|at] [Mon D[,]] [at] H[:MM] [AM|PM]". The date part is
- * optional (a time alone means the next time it comes round).
+ * "until|resets|back [on|at] [Mon D[,]] [at] H[:MM] [AM|PM]". The date part is
+ * optional (a time alone means the next time it comes round). "back" is
+ * Copilot's "check back at 12:00 AM".
  */
 const RESET_RE =
-	/(?:until|resets?|reset)\s+(?:on\s+|at\s+)?(?:([A-Za-z]{3,9})\.?\s+(\d{1,2})(?:st|nd|rd|th)?,?\s+)?(?:at\s+)?(\d{1,2})(?::(\d{2}))?\s*([AaPp])?\.?\s*[Mm]?\.?(?![\w:])/;
+	/(?:until|resets?|reset|back)\s+(?:on\s+|at\s+)?(?:([A-Za-z]{3,9})\.?\s+(\d{1,2})(?:st|nd|rd|th)?,?\s+)?(?:at\s+)?(\d{1,2})(?::(\d{2}))?\s*([AaPp])?\.?\s*[Mm]?\.?(?![\w:])/;
 
 export interface GeminiLimit {
 	/** When the limit lifts, ISO; absent when the notice gave no readable time. */

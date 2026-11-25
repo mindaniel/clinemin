@@ -286,6 +286,12 @@ export interface WebSessionStatus {
 	 * the notice it answers with, so this and `resetsAt` are all it reports.
 	 */
 	limitReached?: boolean;
+	/**
+	 * Copilot Web: messages and tokens sent today on this browser profile,
+	 * counted locally, since Copilot shows its daily allowance only once spent.
+	 */
+	messagesToday?: number;
+	tokensToday?: number;
 }
 
 export const HOME_VIEW_MAX_WIDTH = 68;

@@ -44,3 +44,24 @@ describe("parseChathubFrame", () => {
 		expect(info).toMatchObject({ done: true, error: "boom" });
 	});
 });
+
+describe("parseChathubFrame daily limit", () => {
+	it("reads the notice off a failed turn's result", () => {
+		const frame = `${JSON.stringify({
+			type: 2,
+			invocationId: "0",
+			item: {
+				turnState: "Failed",
+				messages: [
+					{ author: "user", text: "batch" },
+					{
+						author: "bot",
+						text: "You've reached your daily limit. Get more usage now or check back at 12:00 AM.",
+						turnState: "Failed",
+					},
+				],
+			},
+		})}\u001e`;
+		expect(parseChathubFrame(frame).text).toContain("daily limit");
+	});
+});

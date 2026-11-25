@@ -1,5 +1,6 @@
 import {
 	estimateTokens,
+	extractRawWebMessage,
 	serializeRequestInputForEstimate,
 } from "@cline/shared";
 import {
@@ -287,6 +288,19 @@ export function createContextCompactionPrepareTurn(
 		: strategy;
 
 	return async (context) => {
+		// `/runbatch` on a web provider: each message goes to the site exactly
+		// as written and the site keeps the chat's history, so the local
+		// history is never sent and needs no summary. Compacting would post a
+		// summary request into the chat and move the run to a new web chat
+		// that never saw the prompt.
+		if (
+			mode === "auto" &&
+			extractRawWebMessage(
+				context.messages as ReadonlyArray<{ role: string; content: unknown }>,
+			) !== undefined
+		) {
+			return undefined;
+		}
 		const apiMessageTokens = context.apiMessages.reduce(
 			(total: number, message) => total + estimateMessageTokens(message),
 			0,

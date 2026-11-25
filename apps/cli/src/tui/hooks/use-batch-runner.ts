@@ -103,6 +103,22 @@ export function batchMessage(
 	return `${RAW_WEB_MESSAGE_MARKER}${chatTag ? `#${chatTag}` : ""}\n${text.trim()}`;
 }
 
+/**
+ * A reply that is the site's usage-limit notice ("You've reached your daily
+ * limit. ... check back at 12:00 AM") rather than an answer. Short replies
+ * only, so a batch whose answer mentions limits is not mistaken for one.
+ */
+export function isLimitNotice(reply: string): boolean {
+	const t = reply.trim();
+	return (
+		t.length > 0 &&
+		t.length < 600 &&
+		/(reached|hit) (your|the) [\w .-]{0,40}limit|usage limit|daily limit/i.test(
+			t,
+		)
+	);
+}
+
 /** Assistant text written after `marker` (an entry object in the list). */
 export function replyAfter(entries: ChatEntry[], marker: ChatEntry): string {
 	// appendEntry stores a copy (it stamps the mode), so match by kind and text
@@ -262,13 +278,26 @@ export function useBatchRunner(input: {
 					inChatRef.current = 0;
 					const first = input.runTurnRef.current;
 					if (!first) break;
-					note("/runbatch ▶ new chat, sending the prompt");
+					const promptMarker: ChatEntry = {
+						kind: "status",
+						text: `/runbatch ▶ new chat, sending the prompt (${new Date().toLocaleTimeString()})`,
+					};
+					session.appendEntry(promptMarker);
 					await first(
 						batchMessage(p.text, input.verbatim, Date.now().toString(36)),
 					);
 					if (abortRef.current) {
 						note(
 							"/runbatch: stopped (Esc) before the batch. Type go to carry on.",
+						);
+						break;
+					}
+					await new Promise((r) => setTimeout(r, 300));
+					const ack = replyAfter(entriesRef.current, promptMarker);
+					if (isLimitNotice(ack)) {
+						// The prompt was refused, so the next go sends it again.
+						note(
+							`/runbatch: stopped, the usage limit is reached ("${ack.trim()}"). Type go once it resets.`,
 						);
 						break;
 					}
@@ -304,6 +333,13 @@ export function useBatchRunner(input: {
 					update(item.path, { status: "pending" });
 					note(
 						"/runbatch: stopped (Esc). Type go to carry on from this batch.",
+					);
+					break;
+				}
+				if (isLimitNotice(reply)) {
+					update(item.path, { status: "pending" });
+					note(
+						`/runbatch: stopped, the usage limit is reached ("${reply.trim()}"). ${name} is still pending; type go once it resets.`,
 					);
 					break;
 				}
