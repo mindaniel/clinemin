@@ -1,4 +1,4 @@
-import { existsSync, statSync } from "node:fs";
+import { existsSync, readdirSync, statSync } from "node:fs";
 import { readFile, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { RAW_WEB_MESSAGE_MARKER } from "@cline/shared";
@@ -16,7 +16,9 @@ import type { ChatEntry } from "../types";
  *
  * While batch mode is on, what the user submits fills the two panes instead
  * of going to the model: file paths (typed, pasted or dragged in, quoted or
- * not, several per line) become batches; a single file path while no prompt
+ * not, several per line) become batches; a folder queues every batch .txt in
+ * it (sub-folders too) that has no reply yet. The list is kept in file-name
+ * order, so batch_0009 runs before batch_0010. A single file path while no prompt
  * is set, or any other text, becomes the prompt. `go`/`start` runs the
  * pending batches; Esc stops the current turn and pauses the run.
  *
@@ -76,6 +78,57 @@ function isFile(p: string): boolean {
 	} catch {
 		return false;
 	}
+}
+
+function isDir(p: string): boolean {
+	try {
+		return existsSync(p) && statSync(p).isDirectory();
+	} catch {
+		return false;
+	}
+}
+
+/** A reply file this runner wrote (`<stem>_reply.txt`, `_reply_2.txt` ...). */
+function isReplyFile(name: string): boolean {
+	return /_reply(_\d+)?\.txt$/i.test(name);
+}
+
+/**
+ * The batch .txt files under a folder (recursively) that have no reply yet,
+ * in file-name order: what is left to run there.
+ */
+export function unrepliedBatches(dir: string): string[] {
+	const out: string[] = [];
+	const walk = (d: string) => {
+		let names: string[];
+		try {
+			names = readdirSync(d);
+		} catch {
+			return;
+		}
+		const replied = new Set(
+			names
+				.filter(isReplyFile)
+				.map((n) => n.replace(/_reply(_\d+)?\.txt$/i, "").toLowerCase()),
+		);
+		for (const n of names) {
+			const full = path.join(d, n);
+			if (isDir(full)) walk(full);
+			else if (
+				/\.txt$/i.test(n) &&
+				!isReplyFile(n) &&
+				!replied.has(n.replace(/\.txt$/i, "").toLowerCase())
+			)
+				out.push(full);
+		}
+	};
+	walk(dir);
+	return out.sort(byFileName);
+}
+
+/** Natural path order: batch_9 before batch_10, case ignored. */
+export function byFileName(a: string, b: string): number {
+	return a.localeCompare(b, undefined, { numeric: true, sensitivity: "base" });
 }
 
 /** `<dir>/<stem>_reply.txt`, or `_reply_2`, `_reply_3` ... when taken. */
@@ -217,7 +270,7 @@ export function useBatchRunner(input: {
 			const fresh = paths
 				.filter((p) => !have.has(p.toLowerCase()))
 				.map((p): BatchItem => ({ path: p, status: "pending" }));
-			return [...kept, ...fresh];
+			return [...kept, ...fresh].sort((a, b) => byFileName(a.path, b.path));
 		});
 	}, []);
 
@@ -344,9 +397,14 @@ export function useBatchRunner(input: {
 					break;
 				}
 				if (!reply) {
-					update(item.path, { status: "error", detail: "empty reply" });
-					note(`/runbatch: ${name}: no reply text, nothing saved.`);
-					continue;
+					// An empty reply is what a spent daily limit (or a dropped
+					// connection) looks like when the site sends no notice text.
+					// Stop rather than burn through the rest of the list.
+					update(item.path, { status: "pending" });
+					note(
+						`/runbatch: stopped, ${name} got no reply text (usage limit or connection). It is still pending; type go to try again (after the limit resets).`,
+					);
+					break;
 				}
 				const out = replyPathFor(item.path);
 				try {
@@ -470,7 +528,24 @@ export function useBatchRunner(input: {
 				note("/runbatch: a run is in progress. /runbatch stop pauses it.");
 				return true;
 			}
-			const paths = parsePathList(t);
+			const listed = parsePathList(t);
+			// Only when every word is a path, so prompt text that happens to
+			// contain "." or a folder name is still taken as the prompt.
+			const dirs = listed.filter(isDir);
+			if (dirs.length > 0 && listed.every((p) => isDir(p) || isFile(p))) {
+				const found = dirs.flatMap(unrepliedBatches);
+				note(
+					found.length
+						? `/runbatch: ${found.length} batch file(s) with no reply queued from ${dirs.map((d) => path.basename(d)).join(", ")}.`
+						: `/runbatch: every batch in ${dirs.map((d) => path.basename(d)).join(", ")} has a reply.`,
+				);
+				if (found.length) addBatches(found);
+				if (dirs.length === listed.length) return true;
+			}
+			const paths =
+				dirs.length > 0 && listed.every((p) => isDir(p) || isFile(p))
+					? listed.filter((p) => !isDir(p))
+					: listed;
 			const allFiles = paths.length > 0 && paths.every(isFile);
 			if (allFiles) {
 				if (!promptRef.current && paths.length === 1) {

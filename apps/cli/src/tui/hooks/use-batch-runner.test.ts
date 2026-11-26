@@ -1,4 +1,4 @@
-import { mkdtempSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { extractRawWebMessage, RAW_WEB_MESSAGE_MARKER } from "@cline/shared";
@@ -6,10 +6,12 @@ import { describe, expect, it } from "vitest";
 import type { ChatEntry } from "../types";
 import {
 	batchMessage,
+	byFileName,
 	isLimitNotice,
 	parsePathList,
 	replyAfter,
 	replyPathFor,
+	unrepliedBatches,
 } from "./use-batch-runner";
 
 describe("runbatch helpers", () => {
@@ -78,5 +80,29 @@ describe("isLimitNotice", () => {
 			),
 		).toBe(true);
 		expect(isLimitNotice('{"report_id": "1", "forecasts": []}')).toBe(false);
+	});
+});
+
+describe("batch order and folders", () => {
+	it("sorts batch files by number", () => {
+		const list = ["b/batch_0010.txt", "b/batch_0009.txt", "a/batch_0100.txt"];
+		expect([...list].sort(byFileName)).toEqual([
+			"a/batch_0100.txt",
+			"b/batch_0009.txt",
+			"b/batch_0010.txt",
+		]);
+	});
+
+	it("queues only the batches in a folder that have no reply", () => {
+		const dir = mkdtempSync(path.join(tmpdir(), "rb-"));
+		const part = path.join(dir, "part01");
+		mkdirSync(part);
+		for (const n of ["batch_0002.txt", "batch_0010.txt", "batch_0001.txt"])
+			writeFileSync(path.join(part, n), "x");
+		writeFileSync(path.join(part, "batch_0001_reply.txt"), "y");
+		writeFileSync(path.join(part, "batch_0010_reply_2.txt"), "y");
+		expect(unrepliedBatches(dir).map((p) => path.basename(p))).toEqual([
+			"batch_0002.txt",
+		]);
 	});
 });

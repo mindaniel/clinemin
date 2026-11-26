@@ -42,6 +42,8 @@ export function BatchPanel(props: {
 		.filter(Boolean)
 		.slice(0, MAX_ROWS - 2);
 	const done = batches.filter((b) => b.status === "done").length;
+	const failed = batches.filter((b) => b.status === "error").length;
+	const next = batches.find((b) => b.status === "pending");
 	const firstShown = Math.max(
 		0,
 		Math.min(
@@ -103,6 +105,8 @@ export function BatchPanel(props: {
 					<text fg="gray">
 						<em>
 							Batches · {done}/{batches.length} saved
+							{failed ? ` · ${failed} failed (retry)` : ""}
+							{next ? ` · next ${path.basename(next.path)}` : ""}
 						</em>
 					</text>
 					{batches.length === 0 ? (
