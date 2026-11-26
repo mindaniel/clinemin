@@ -172,6 +172,45 @@ export function isLimitNotice(reply: string): boolean {
 	);
 }
 
+/** IDs a batch names (`=== REPORT <id> | ...`). */
+function batchIds(content: string): Set<string> {
+	return new Set(
+		[...content.matchAll(/^=== REPORT ([^\s|=]+)/gm)].map(
+			(m) => m[1] as string,
+		),
+	);
+}
+
+/** IDs a reply answers for (`"report_id": "<id>"`). */
+function replyIds(reply: string): string[] {
+	return [...reply.matchAll(/"report_id"\s*:\s*"?([^",}\s]+)/g)].map(
+		(m) => m[1] as string,
+	);
+}
+
+/**
+ * Why a reply is not this batch's answer, or undefined when it looks right.
+ * When the site refuses a turn (a spent daily limit) the page can hand back
+ * the previous reply again, so a reply identical to the last one saved, or one
+ * whose report IDs are all from another batch, is not saved.
+ */
+export function wrongReplyReason(
+	batchContent: string,
+	reply: string,
+	lastReply: string | null,
+): string | undefined {
+	const t = reply.trim();
+	if (lastReply !== null && t.length > 0 && t === lastReply.trim()) {
+		return "the reply is the same as the previous batch's (the site probably refused the turn)";
+	}
+	const want = batchIds(batchContent);
+	const got = replyIds(t);
+	if (want.size > 0 && got.length > 0 && !got.some((id) => want.has(id))) {
+		return `the reply answers other reports (${got.slice(0, 3).join(", ")}), not this batch's`;
+	}
+	return undefined;
+}
+
 /** Assistant text written after `marker` (an entry object in the list). */
 export function replyAfter(entries: ChatEntry[], marker: ChatEntry): string {
 	// appendEntry stores a copy (it stamps the mode), so match by kind and text
@@ -239,6 +278,8 @@ export function useBatchRunner(input: {
 	const freshEveryRef = useRef(freshEvery);
 	freshEveryRef.current = freshEvery;
 	const inChatRef = useRef(0);
+	// The last reply saved, to catch the page handing it back again.
+	const lastReplyRef = useRef<string | null>(null);
 
 	const note = useCallback(
 		(text: string) => session.appendEntry({ kind: "status", text }),
@@ -406,9 +447,18 @@ export function useBatchRunner(input: {
 					);
 					break;
 				}
+				const wrong = wrongReplyReason(content, reply, lastReplyRef.current);
+				if (wrong) {
+					update(item.path, { status: "pending" });
+					note(
+						`/runbatch: stopped, ${name} not saved: ${wrong}. It is still pending; type go to try again (after the limit resets).`,
+					);
+					break;
+				}
 				const out = replyPathFor(item.path);
 				try {
 					await writeFile(out, `${reply}\n`, "utf8");
+					lastReplyRef.current = reply;
 					update(item.path, { status: "done", outPath: out });
 					note(
 						`/runbatch ✓ ${name} → ${path.basename(out)} (${reply.length} chars)`,

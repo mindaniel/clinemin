@@ -12,6 +12,7 @@ import {
 	replyAfter,
 	replyPathFor,
 	unrepliedBatches,
+	wrongReplyReason,
 } from "./use-batch-runner";
 
 describe("runbatch helpers", () => {
@@ -104,5 +105,33 @@ describe("batch order and folders", () => {
 		expect(unrepliedBatches(dir).map((p) => path.basename(p))).toEqual([
 			"batch_0002.txt",
 		]);
+	});
+});
+
+describe("wrongReplyReason", () => {
+	const batch =
+		"=== REPORT 4493 | ABC | SSI | 2023-01-01 ===\ntext\n=== REPORT 4491 | XYZ | VCSC | 2023-01-02 ===\n";
+	const own =
+		'{"report_id": "4493", "forecasts": []}\n{"report_id": "4491", "forecasts": []}';
+	const stale =
+		'{"report_id": "4455", "forecasts": []}\n{"report_id": "4458", "forecasts": []}';
+
+	it("accepts the batch's own answer", () => {
+		expect(wrongReplyReason(batch, own, stale)).toBeUndefined();
+		expect(wrongReplyReason(batch, own, null)).toBeUndefined();
+	});
+
+	it("rejects the previous reply handed back again", () => {
+		expect(wrongReplyReason(batch, `${stale}\n`, stale)).toMatch(/same as/);
+	});
+
+	it("rejects a reply for other reports", () => {
+		expect(wrongReplyReason(batch, stale, null)).toMatch(/other reports/);
+	});
+
+	it("does not judge replies without report IDs", () => {
+		expect(
+			wrongReplyReason("plain batch", "plain answer", "other"),
+		).toBeUndefined();
 	});
 });
